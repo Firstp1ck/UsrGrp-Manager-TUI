@@ -8,7 +8,7 @@ On OSX, the information reported will not be accurate. The tool relies on the `/
  - [bubbletea](https://github.com/charmbracelet/bubbletea) and its ecosystem
  - [bubble-table](https://github.com/Evertras/bubble-table)
 
-## Plan: Rewrite to Rust
+## Plan
 
 - **Goals**
   - Reach feature parity with the Go TUI: users/groups tabs, paging, search, vim/arrow keys.
@@ -193,3 +193,29 @@ fixtures/
     passwd.sample
     group.sample
 ```
+
+## Things to consider
+### Security and Risk Concerns
+User management is inherently high-risk from a security perspective
+
+### Privilege Escalation Risks
+- User management tools must run with elevated privileges to modify system files
+
+- Any bugs or vulnerabilities in such tools can lead to root account exploits
+
+- Race conditions in user management operations could compromise system security
+
+### System Integrity to consider
+- Incorrect user modifications can lock administrators out of systems
+
+- File permission changes can expose sensitive data
+
+- Centralized authentication complexity makes comprehensive tools risky
+
+### Philosophy
+
+- "Fail noisily and as soon as possible"
+
+- Provide transparent operation for debugging
+
+- Handle partial failures gracefully in multi-user operations
