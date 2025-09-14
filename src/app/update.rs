@@ -28,6 +28,11 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                                 app.search_query.clear();
                                 app.input_mode = match app.active_tab { ActiveTab::Users => InputMode::SearchUsers, ActiveTab::Groups => InputMode::SearchGroups };
                             }
+                            KeyCode::Char('n') => {
+                                // Open create user modal; default to create home
+                                app.modal = Some(ModalState::UserAddInput { name: String::new(), create_home: true });
+                                app.input_mode = InputMode::Modal;
+                            }
                             KeyCode::Tab => {
                                 app.active_tab = match app.active_tab { ActiveTab::Users => ActiveTab::Groups, ActiveTab::Groups => ActiveTab::Users };
                             }
@@ -178,7 +183,7 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                             if let Some(user) = app.users.get(app.selected_user_index) {
                                 let allowed = user.uid >= 1000 && user.uid <= 1999;
                                 if allowed {
-                                    app.modal = Some(ModalState::DeleteConfirm { selected: 1, allowed });
+                                    app.modal = Some(ModalState::DeleteConfirm { selected: 1, allowed, delete_home: false });
                                 } else {
                                     app.modal = Some(ModalState::Info { message: format!("Deletion not allowed. Only UID 1000-1999 allowed: {}", user.name) });
                                 }
@@ -194,13 +199,59 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             match code {
                 KeyCode::Esc => close_modal(app),
                 KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 2 { *selected += 1; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 3 { *selected += 1; } },
                 KeyCode::Enter => {
                     match *selected {
                         0 => app.modal = Some(ModalState::ModifyGroupsAdd { selected: 0, offset: 0 }),
                         1 => app.modal = Some(ModalState::ModifyGroupsRemove { selected: 0, offset: 0 }),
                         2 => app.modal = Some(ModalState::ModifyDetailsMenu { selected: 0 }),
+                        3 => app.modal = Some(ModalState::ModifyPasswordMenu { selected: 0 }),
                         _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(ModalState::ModifyPasswordMenu { selected }) => {
+            match code {
+                KeyCode::Esc => close_modal(app),
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 1 { *selected += 1; } },
+                KeyCode::Enter => {
+                    match *selected {
+                        0 => app.modal = Some(ModalState::ChangePassword { selected: 0, password: String::new(), confirm: String::new(), must_change: false }),
+                        1 => {
+                            if let Some(user) = app.users.get(app.selected_user_index) {
+                                let pending = PendingAction::ResetPassword { username: user.name.clone() };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            } else { close_modal(app); }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(ModalState::ChangePassword { selected, password, confirm, must_change }) => {
+            match code {
+                KeyCode::Esc => close_modal(app),
+                KeyCode::Up => { if *selected > 0 { *selected -= 1; } },
+                KeyCode::Down => { if *selected < 3 { *selected += 1; } },
+                KeyCode::Backspace => { match *selected { 0 => { password.pop(); }, 1 => { confirm.pop(); }, _ => {} } }
+                KeyCode::Char(' ') => { if *selected == 2 { *must_change = !*must_change; } }
+                KeyCode::Char(c) => { match *selected { 0 => password.push(c), 1 => confirm.push(c), _ => {} } }
+                KeyCode::Enter => {
+                    if *selected == 3 {
+                        if password.is_empty() || password != confirm {
+                            app.modal = Some(ModalState::Info { message: "Passwords do not match or empty".to_string() });
+                        } else if let Some(user) = app.users.get(app.selected_user_index) {
+                            let pending = PendingAction::SetPassword { username: user.name.clone(), password: password.clone(), must_change: *must_change };
+                            if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                            }
+                        } else { close_modal(app); }
                     }
                 }
                 _ => {}
@@ -218,8 +269,8 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                     let group_name = app.groups_all.get(*selected).map(|g| g.name.clone());
                     if let (Some(user), Some(group_name)) = (app.users.get(app.selected_user_index), group_name) {
                         let pending = PendingAction::AddUserToGroup { username: user.name.clone(), groupname: group_name.clone() };
-                        if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                        if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                         }
                     } else { close_modal(app); }
                 }
@@ -242,8 +293,8 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                             app.modal = Some(ModalState::Info { message: "Cannot remove user from primary group.".to_string() });
                         } else {
                             let pending = PendingAction::RemoveUserFromGroup { username: user.name.clone(), groupname: group.name.clone() };
-                            if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                            if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                             }
                         }
                     } else { close_modal(app); }
@@ -282,8 +333,8 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                 KeyCode::Enter => {
                     if let (Some(user), Some(new_shell)) = (app.users.get(app.selected_user_index), shells.get(*selected)) {
                         let pending = PendingAction::ChangeShell { username: user.name.clone(), new_shell: new_shell.clone() };
-                        if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                        if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                         }
                     } else { close_modal(app); }
                 }
@@ -296,8 +347,8 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                 KeyCode::Enter => {
                     if let Some(user) = app.users.get(app.selected_user_index) {
                         let pending = match field { ModifyField::Username => PendingAction::ChangeUsername { old_username: user.name.clone(), new_username: value.clone() }, ModifyField::Fullname => PendingAction::ChangeFullname { username: user.name.clone(), new_fullname: value.clone() } };
-                        if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                        if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                         }
                     } else { close_modal(app); }
                 }
@@ -306,15 +357,19 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                 _ => {}
             }
         }
-        Some(ModalState::DeleteConfirm { selected, allowed }) => {
+        Some(ModalState::DeleteConfirm { selected, allowed, delete_home }) => {
             match code {
                 KeyCode::Esc => close_modal(app),
+                KeyCode::Char(' ') => { *delete_home = !*delete_home; }
                 KeyCode::Left | KeyCode::Right => { *selected = if *selected == 0 { 1 } else { 0 }; },
                 KeyCode::Enter => {
                     if *selected == 0 {
                         if *allowed {
                             if let Some(user) = app.users.get(app.selected_user_index) {
-                                app.modal = Some(ModalState::Info { message: format!("Would delete user '{}'(uid {}). Not implemented.", user.name, user.uid) });
+                                let pending = PendingAction::DeleteUser { username: user.name.clone(), delete_home: *delete_home };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
                             } else { close_modal(app); }
                         } else {
                             app.modal = Some(ModalState::Info { message: "Deletion not allowed.".to_string() });
@@ -345,8 +400,8 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                 KeyCode::Esc => close_modal(app),
                 KeyCode::Enter => {
                     let pending = PendingAction::CreateGroup { groupname: name.clone() };
-                    if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                        app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                    if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                        app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                     }
                 }
                 KeyCode::Backspace => { name.pop(); }
@@ -363,8 +418,8 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                         let group_name_opt = app.groups.get(app.selected_group_index).map(|g| g.name.clone());
                         if let Some(group_name) = group_name_opt {
                             let pending = PendingAction::DeleteGroup { groupname: group_name.clone() };
-                            if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                            if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                             }
                         } else { close_modal(app); }
                     } else { close_modal(app); }
@@ -404,8 +459,8 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                     let user_name = app.users_all.get(*selected).map(|u| u.name.clone());
                     if let (Some(group_name), Some(user_name)) = (group_name, user_name) {
                         let pending = PendingAction::AddUserToGroup { username: user_name.clone(), groupname: group_name.clone() };
-                        if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                        if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                         }
                     } else { close_modal(app); }
                 }
@@ -427,12 +482,31 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                         let gname_opt = if let Some(gid) = *target_gid { app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone()) } else { Some(group_name.clone()) };
                         if let Some(group_name) = gname_opt {
                             let pending = PendingAction::RemoveUserFromGroup { username: username.clone(), groupname: group_name.clone() };
-                            if let Err(e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: Some(e.to_string()) });
+                            if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                             }
                         }
                     } else { close_modal(app); }
                 }
+                _ => {}
+            }
+        }
+        Some(ModalState::UserAddInput { name, create_home }) => {
+            match code {
+                KeyCode::Esc => close_modal(app),
+                KeyCode::Backspace => { name.pop(); }
+                KeyCode::Char(' ') => { *create_home = !*create_home; }
+                KeyCode::Enter => {
+                    if name.trim().is_empty() {
+                        app.modal = Some(ModalState::Info { message: "Username cannot be empty".to_string() });
+                    } else {
+                        let pending = PendingAction::CreateUser { username: name.trim().to_string(), create_home: *create_home };
+                        if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                        }
+                    }
+                }
+                KeyCode::Char(c) => { name.push(c); }
                 _ => {}
             }
         }
@@ -517,6 +591,31 @@ fn perform_pending_action(app: &mut AppState, pending: PendingAction, sudo_passw
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups = app.groups_all.clone();
             app.modal = Some(ModalState::Info { message: format!("Deleted group '{}'", groupname) });
+        }
+        PendingAction::CreateUser { username, create_home } => {
+            adapter.create_user(&username, create_home)?;
+            app.users_all = adapter.list_users().unwrap_or_default();
+            app.users_all.sort_by_key(|u| u.uid);
+            app.users = app.users_all.clone();
+            app.modal = Some(ModalState::Info { message: format!("Created user '{}'{}", username, if create_home { " with home" } else { "" }) });
+        }
+        PendingAction::DeleteUser { username, delete_home } => {
+            adapter.delete_user(&username, delete_home)?;
+            app.users_all = adapter.list_users().unwrap_or_default();
+            app.users_all.sort_by_key(|u| u.uid);
+            app.users = app.users_all.clone();
+            if app.selected_user_index >= app.users.len() { app.selected_user_index = app.users.len().saturating_sub(1); }
+            let suffix = if delete_home { " and home" } else { "" };
+            app.modal = Some(ModalState::Info { message: format!("Deleted user '{}'{}", username, suffix) });
+        }
+        PendingAction::SetPassword { username, password, must_change } => {
+            adapter.set_user_password(&username, &password)?;
+            if must_change { let _ = adapter.expire_user_password(&username); }
+            app.modal = Some(ModalState::Info { message: format!("Password set{}", if must_change { ", must change at next login" } else { "" }) });
+        }
+        PendingAction::ResetPassword { username } => {
+            adapter.expire_user_password(&username)?;
+            app.modal = Some(ModalState::Info { message: "Password reset (must change at next login)".to_string() });
         }
     }
     Ok(())

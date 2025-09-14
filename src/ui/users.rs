@@ -111,13 +111,40 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             f.render_widget(p, rect);
         }
         ModalState::ModifyMenu { selected } => {
-            let rect = crate::ui::components::centered_rect(34, 7, area);
-            let options = ["Add group", "Remove group", "Change details"];
+            let rect = crate::ui::components::centered_rect(36, 9, area);
+            let options = ["Add group", "Remove group", "Change details", "Password"];
             let mut text = String::new();
             for (idx, label) in options.iter().enumerate() {
                 if idx == selected { text.push_str(&format!("▶ {}\n", label)); } else { text.push_str(&format!("  {}\n", label)); }
             }
             let p = Paragraph::new(text).block(Block::default().title("Modify").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)));
+            f.render_widget(Clear, rect);
+            f.render_widget(p, rect);
+        }
+        ModalState::ModifyPasswordMenu { selected } => {
+            let rect = crate::ui::components::centered_rect(50, 8, area);
+            let options = ["Set/change password", "Reset (expire; must change next login)"];
+            let mut text = String::new();
+            for (idx, label) in options.iter().enumerate() {
+                if idx == selected { text.push_str(&format!("▶ {}\n", label)); } else { text.push_str(&format!("  {}\n", label)); }
+            }
+            let p = Paragraph::new(text).block(Block::default().title("Password").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)));
+            f.render_widget(Clear, rect);
+            f.render_widget(p, rect);
+        }
+        ModalState::ChangePassword { selected, password, confirm, must_change } => {
+            let rect = crate::ui::components::centered_rect(60, 10, area);
+            let pw_mask = "*".repeat(password.len());
+            let cf_mask = "*".repeat(confirm.len());
+            let mc = if must_change { "[x]" } else { "[ ]" };
+            let lines = vec![
+                format!("{} New password: {}", if selected == 0 { "▶" } else { " " }, pw_mask),
+                format!("{} Confirm:     {}", if selected == 1 { "▶" } else { " " }, cf_mask),
+                format!("{} {} Must change at next login (Space)", if selected == 2 { "▶" } else { " " }, mc),
+                format!("{} Submit", if selected == 3 { "▶" } else { " " }),
+            ];
+            let body = lines.join("\n");
+            let p = Paragraph::new(body).block(Block::default().title("Set password").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)));
             f.render_widget(Clear, rect);
             f.render_widget(p, rect);
         }
@@ -208,18 +235,27 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             f.render_widget(Clear, rect);
             f.render_widget(list, rect);
         }
-        ModalState::DeleteConfirm { selected, allowed } => {
+        ModalState::DeleteConfirm { selected, allowed, delete_home } => {
             let rect = crate::ui::components::centered_rect(50, 7, area);
             let (name, uid) = if let Some(u) = app.users.get(app.selected_user_index) { (u.name.clone(), u.uid) } else { (String::new(), 0) };
             let mut body = format!("Delete user '{name}' (uid {uid})?\n\n");
             if allowed {
                 let yes = if selected == 0 { "[Yes]" } else { " Yes " };
                 let no = if selected == 1 { "[No]" } else { " No  " };
-                body.push_str(&format!("  {}    {}", yes, no));
+                let checkbox = if delete_home { "[x]" } else { "[ ]" };
+                body.push_str(&format!("  {}    {}\n\n{} Also delete home (Space)", yes, no, checkbox));
             } else {
                 body.push_str("Deletion not allowed (only UID 1000-1999 allowed). Press Esc.");
             }
             let p = Paragraph::new(body).block(Block::default().title("Confirm delete").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)));
+            f.render_widget(Clear, rect);
+            f.render_widget(p, rect);
+        }
+        ModalState::UserAddInput { name, create_home } => {
+            let rect = crate::ui::components::centered_rect(60, 8, area);
+            let checkbox = if create_home { "[x]" } else { "[ ]" };
+            let body = format!("Create new user\nUsername: {}\n{} Create home directory (toggle with Space)", name, checkbox);
+            let p = Paragraph::new(body).block(Block::default().title("New user").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)));
             f.render_widget(Clear, rect);
             f.render_widget(p, rect);
         }

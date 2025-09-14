@@ -131,3 +131,39 @@ User management is inherently high-risk from a security perspective
 - Provide transparent operation for debugging
 
 - Handle partial failures gracefully in multi-user operations
+
+## Further Tests
+
+### High‑value additions
+
+- **Parsing edge cases (unit, in `src/sys/mod.rs`)**
+  - Empty lines, comments, missing fields, extra fields.
+  - Invalid numeric UIDs/GIDs → parsed as 0, no panics.
+  - `/etc/shells` parsing ignores comments/blank lines.
+  - `groups_for_user` returns primary group and supplementary memberships.
+  - `format_cli_error` formats empty vs non‑empty stderr correctly.
+
+- **Search behavior (unit, in `src/search.rs`)**
+  - Empty query resets lists and selection index to 0.
+  - Numeric queries match UID/GID string forms.
+  - Case‑insensitive matches on full name, home, shell, group members.
+  - Selection index clamping after filter (stays at 0 regardless of length).
+
+- **State machine/input handling (unit, in `src/app/update.rs`)**
+  - Tab/BackTab toggles `active_tab` and `users_focus`.
+  - Arrow keys/page moves clamp within bounds for users vs member‑of lists.
+  - `n` opens `UserAddInput` with `create_home = true`.
+  - Non‑privileged flows that only open/close modals (no system calls).
+  - Optional refactor: extract small pure helpers for index math to test easily.
+
+- **UI rendering sanity (integration/snapshot)**
+  - Use `ratatui::backend::TestBackend` to render a small `AppState` and assert key labels/titles/row highlights. Consider `insta` for snapshots.
+
+- **Command‑line parsing (unit)**
+  - If `clap` is used in `main.rs`, test flags/env via `Command::try_get_matches_from` (no TUI needed).
+
+- **Architecture for privileged ops (mockable)**
+  - Introduce a `trait System` that `SystemAdapter` implements; inject into `perform_pending_action` so tests can verify:
+    - Correct command path chosen (add/remove user to group, change shell/name).
+    - App state refreshes (`users_all`, `groups_all`), and info messages.
+  - Without this, keep privileged paths out of tests.

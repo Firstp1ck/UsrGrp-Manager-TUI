@@ -4,11 +4,11 @@ pub mod components;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Style};
-use ratatui::widgets::{Block, Borders, Paragraph, Clear};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame};
 
 use crate::app::{AppState, ActiveTab, ModalState};
-use crate::sys;
+ 
 
 pub fn render(f: &mut Frame, app: &mut AppState) {
     let root = Layout::default()
@@ -33,7 +33,7 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
         crate::app::InputMode::Modal => String::new(),
     };
     let p = Paragraph::new(format!(
-        "usrgrp-manager ({who})  {tabs}{prompt}  users:{}  groups:{}  — Tab: switch tab; Shift-Tab: member-of; /: search; Enter: apply; Esc: cancel; q: quit",
+        "usrgrp-manager ({who})  {tabs}{prompt}  users:{}  groups:{}  — n: new user; Tab: switch tab; Shift-Tab: member-of; /: search; Enter: apply; Esc: cancel; q: quit",
         app.users.len(), app.groups.len()
     ))
     .block(
@@ -75,7 +75,10 @@ fn render_modal(f: &mut Frame, area: Rect, app: &mut AppState) {
             | ModalState::ModifyDetailsMenu { .. }
             | ModalState::ModifyShell { .. }
             | ModalState::ModifyTextInput { .. }
-            | ModalState::DeleteConfirm { .. } => {
+            | ModalState::DeleteConfirm { .. }
+            | ModalState::UserAddInput { .. }
+            | ModalState::ModifyPasswordMenu { .. }
+            | ModalState::ChangePassword { .. } => {
                 users::render_user_modal(f, area, app, &state);
             }
             ModalState::GroupsActions { .. }

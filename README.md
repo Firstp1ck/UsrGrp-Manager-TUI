@@ -2,16 +2,16 @@ UsrGrp-Manager-TUI (Rust Users/Groups Manager TUI)
 ================
 
 ## Description
-Keyboard‑driven terminal app to view and manage users and groups. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes. Linux‑focused.
+Keyboard‑driven terminal app to view and manage users and groups. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes. Linux‑focused. Written in Rust.
 
 ## Status
-Alpha. Read‑only browsing is safe; write operations require privileges and are limited (no user deletion yet).
+Alpha. Read‑only browsing is safe; write operations require privileges and are still limited.
 
 Alpha means:
 - Interfaces and keybindings may change without notice.
-- Some actions are intentionally missing or guarded (e.g., user deletion not implemented).
+- Some actions are intentionally guarded (e.g., user deletion requires confirmation; optional home removal).
 - Error handling, edge cases, and performance are still being improved.
-- Expect to run with `sudo` for any write operation (`usermod`, `gpasswd`, `groupadd`, `groupdel`).
+- Expect to run with `sudo` for any write operation (`usermod`, `gpasswd`, `groupadd`, `groupdel`, `useradd`, `userdel`).
 
 ## Install / Build
 ---------------
@@ -33,6 +33,12 @@ Alpha means:
 - Open actions on selection: `Enter`
 - In popups: `↑/k`, `↓/j`, `PageUp`, `PageDown`, `Enter`, `Esc`
 
+- New user: `n` (toggle "Create home" with `Space`) 
+- Delete confirmation: `Space` toggles "Also delete home"
+- Password: Actions → Modify → Password
+  - Set/change: masked input with confirm; toggle "must change at next login" with `Space`; select Submit and press `Enter`
+  - Reset: expire password immediately (forces change at next login)
+
 ## What’s implemented
 ------------------
 
@@ -40,6 +46,11 @@ Alpha means:
   - Table of users (from `/etc/passwd`), selection, paging
   - Detail pane: UID, GID, name, home, shell
   - Member‑of pane: primary and supplementary groups
+  - Create user (`useradd`; optional `-m` to create home)
+  - Delete user (`userdel`; optional `-r` to remove home)
+  - Password management:
+    - Set/change (masked via `chpasswd`, optional "must change at next login")
+    - Reset (expire now via `chage -d 0`)
   - Actions → Modify:
     - Add user to groups (via `gpasswd -a`)
     - Remove user from groups (via `gpasswd -d`, excluding primary group)
@@ -62,14 +73,14 @@ Alpha means:
 --------------------
 
 - Linux/BSD only. macOS behavior may differ (Directory Services).
-- Write actions call system tools and require appropriate privileges (root or sudo): `usermod`, `gpasswd`, `groupadd`, `groupdel`.
-- User deletion is not implemented yet (guarded with a confirmation and an informational message).
+- Write actions call system tools and require appropriate privileges (root or sudo): `usermod`, `gpasswd`, `groupadd`, `groupdel`, `useradd`, `userdel`, `chpasswd`, `chage`.
+- User deletion is implemented with confirmation and optional home removal.
 
 ## TODO (next steps)
 -----------------
 
 - Lock/unlock, enable/disable login shell: show status in table; actions in detail view; confirm + dry‑run; apply via `usermod -L/-U` and `chsh` (or edit `/etc/passwd` when in file‑parse mode)
-- Password set/reset with strength checks: masked prompt; basic rules or zxcvbn; optional "must change at next login"; respect PAM; clear error messages
+- Password strength checks/validation: enforce basic rules or integrate zxcvbn; respect PAM policies; clearer error messages
 - Fuzzy find users/groups: incremental filtering while typing; highlight matches; toggle fuzzy vs substring; performance guard for large datasets
 - Filters (system vs human, inactive, expired, locked, no home, no password): quick filter menu; combinable chips; persisted per session; NSS‑aware where possible
 - Multi‑select bulk ops (add to groups, lock, shell change, expiry set): selection mode with count; preview + confirmation; batched execution with per‑item results and rollback on failure
@@ -82,6 +93,23 @@ Alpha means:
 
 - Build: `cargo build --release`
 - Run: `cargo run --release`
+
+## Tests
+-----
+
+- Run all tests: `cargo test`
+
+What’s covered today:
+- Unit tests for parsers in `src/sys/mod.rs` (fake `/etc/passwd` and `/etc/group` files).
+- Unit tests for filtering in `src/search.rs` (case‑insensitive user/group search, membership matching).
+
+Guidelines:
+- Keep small unit tests inline next to the code with `#[cfg(test)]` for private helpers and pure logic.
+- For broader or cross‑module tests, add a `src/lib.rs` exposing modules (e.g., `pub mod app; pub mod search; pub mod sys;`) and place integration tests in `tests/`.
+- Avoid invoking privileged commands (`useradd`, `gpasswd`, etc.) in tests. Prefer testing pure parts (parsing, filtering) or introduce a trait to mock `SystemAdapter` in higher‑level tests.
+
+Optional:
+- UI snapshot/sanity tests can be written using `ratatui`’s test backend (and, if desired, a snapshot tool like `insta`). These should render minimal views and assert on expected labels/highlights, not terminal specifics.
 
 ## Project Structure
 ```

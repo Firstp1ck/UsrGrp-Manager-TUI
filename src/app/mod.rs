@@ -66,7 +66,9 @@ pub enum ModalState {
     ModifyDetailsMenu { selected: usize },
     ModifyShell { selected: usize, offset: usize, shells: Vec<String> },
     ModifyTextInput { field: ModifyField, value: String },
-    DeleteConfirm { selected: usize, allowed: bool },
+    DeleteConfirm { selected: usize, allowed: bool, delete_home: bool },
+    ModifyPasswordMenu { selected: usize },
+    ChangePassword { selected: usize, password: String, confirm: String, must_change: bool },
     Info { message: String },
     SudoPrompt { next: PendingAction, password: String, error: Option<String> },
     GroupsActions { selected: usize, target_gid: Option<u32> },
@@ -75,6 +77,7 @@ pub enum ModalState {
     GroupModifyMenu { selected: usize, target_gid: Option<u32> },
     GroupModifyAddMembers { selected: usize, offset: usize, target_gid: Option<u32> },
     GroupModifyRemoveMembers { selected: usize, offset: usize, target_gid: Option<u32> },
+    UserAddInput { name: String, create_home: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +92,10 @@ pub enum PendingAction {
     ChangeUsername { old_username: String, new_username: String },
     CreateGroup { groupname: String },
     DeleteGroup { groupname: String },
+    CreateUser { username: String, create_home: bool },
+    DeleteUser { username: String, delete_home: bool },
+    SetPassword { username: String, password: String, must_change: bool },
+    ResetPassword { username: String },
 }
 
 pub struct AppState {

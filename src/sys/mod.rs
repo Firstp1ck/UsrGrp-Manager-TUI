@@ -72,10 +72,28 @@ impl SystemAdapter {
         if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("groupadd", &output)) }
     }
 
+    pub fn create_user(&self, username: &str, create_home: bool) -> Result<()> {
+        let mut args: Vec<&str> = Vec::new();
+        if create_home { args.push("-m"); }
+        args.push(username);
+        let output = self.run_privileged("useradd", &args)
+            .with_context(|| format!("failed to execute useradd {}", username))?;
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("useradd", &output)) }
+    }
+
     pub fn delete_group(&self, groupname: &str) -> Result<()> {
         let output = self.run_privileged("groupdel", &[groupname])
             .with_context(|| format!("failed to execute groupdel {}", groupname))?;
         if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("groupdel", &output)) }
+    }
+
+    pub fn delete_user(&self, username: &str, delete_home: bool) -> Result<()> {
+        let mut args: Vec<&str> = Vec::new();
+        if delete_home { args.push("-r"); }
+        args.push(username);
+        let output = self.run_privileged("userdel", &args)
+            .with_context(|| format!("failed to execute userdel {}", username))?;
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("userdel", &output)) }
     }
 
     pub fn list_shells(&self) -> Result<Vec<String>> {
@@ -106,6 +124,62 @@ impl SystemAdapter {
         let output = self.run_privileged("usermod", &["-l", new_username, old_username])
             .with_context(|| format!("failed to execute usermod -l {} {}", new_username, old_username))?;
         if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("usermod -l", &output)) }
+    }
+
+    pub fn set_user_password(&self, username: &str, password: &str) -> Result<()> {
+        use std::io::Write;
+        if get_current_uid() == 0 {
+            // Root: write to chpasswd stdin directly
+            let mut child = std::process::Command::new("chpasswd")
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .with_context(|| "failed to spawn chpasswd")?;
+            if let Some(mut stdin) = child.stdin.take() {
+                let line = format!("{}:{}\n", username, password);
+                let _ = stdin.write_all(line.as_bytes());
+            }
+            let output = child.wait_with_output()?;
+            if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("chpasswd", &output)) }
+        } else {
+            // Non-root: avoid mixing sudo password and chpasswd input on the same stdin.
+            // Use a bash -c pipeline so chpasswd reads from echo, while we send only the sudo password to sudo.
+            fn escape_for_double_quotes(s: &str) -> String {
+                let mut out = String::with_capacity(s.len());
+                for ch in s.chars() {
+                    match ch {
+                        '\\' => out.push_str("\\\\"),
+                        '"' => out.push_str("\\\""),
+                        '$' => out.push_str("\\$"),
+                        '`' => out.push_str("\\`"),
+                        _ => out.push(ch),
+                    }
+                }
+                out
+            }
+            let u = escape_for_double_quotes(username);
+            let p = escape_for_double_quotes(password);
+            let cmd = format!("echo \"{}:{}\" | chpasswd", u, p);
+            let mut child = std::process::Command::new("sudo")
+                .arg("-S").arg("-p").arg("")
+                .arg("bash").arg("-c").arg(cmd)
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .with_context(|| "failed to spawn sudo bash -c ... chpasswd")?;
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Some(pw) = &self.sudo_password { let _ = stdin.write_all(pw.as_bytes()); let _ = stdin.write_all(b"\n"); }
+                else { let _ = stdin.write_all(b"\n"); }
+            }
+            let output = child.wait_with_output()?;
+            if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("chpasswd", &output)) }
+        }
+    }
+
+    pub fn expire_user_password(&self, username: &str) -> Result<()> {
+        let output = self.run_privileged("chage", &["-d", "0", username])
+            .with_context(|| format!("failed to execute chage -d 0 {}", username))?;
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("chage -d 0", &output)) }
     }
 
     fn run_privileged(&self, cmd: &str, args: &[&str]) -> Result<std::process::Output> {
@@ -194,3 +268,59 @@ fn format_cli_error(cmd: &str, output: &std::process::Output) -> String {
 }
 
 
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+
+	fn tmp_path(tag: &str) -> PathBuf {
+		let mut p = std::env::temp_dir();
+		let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+		p.push(format!("ugm_rs_{tag}_{}_{}", std::process::id(), n));
+		p
+	}
+
+	#[test]
+	fn parse_passwd_basic() {
+		let path = tmp_path("passwd");
+		let data = "\
+root:x:0:0:root:/root:/bin/bash
+jdoe:x:1000:1000:John Doe,,,:/home/jdoe:/bin/zsh
+";
+		fs::write(&path, data).unwrap();
+
+		let users = parse_passwd(&path).unwrap();
+		fs::remove_file(&path).ok();
+
+		assert_eq!(users.len(), 2);
+		assert_eq!(users[0].name, "root");
+		assert_eq!(users[0].uid, 0);
+		assert_eq!(users[0].full_name.as_deref(), Some("root"));
+		assert_eq!(users[1].name, "jdoe");
+		assert_eq!(users[1].uid, 1000);
+		assert_eq!(users[1].full_name.as_deref(), Some("John Doe,,,"));
+		assert_eq!(users[1].home_dir, "/home/jdoe");
+		assert_eq!(users[1].shell, "/bin/zsh");
+	}
+
+	#[test]
+	fn parse_group_basic() {
+		let path = tmp_path("group");
+		let data = "\
+root:x:0:
+wheel:x:998:root,jdoe
+";
+		fs::write(&path, data).unwrap();
+
+		let groups = parse_group(&path).unwrap();
+		fs::remove_file(&path).ok();
+
+		assert_eq!(groups.len(), 2);
+		assert_eq!(groups[0].name, "root");
+		assert_eq!(groups[0].gid, 0);
+		assert!(groups[0].members.is_empty());
+		assert_eq!(groups[1].name, "wheel");
+		assert_eq!(groups[1].gid, 998);
+		assert_eq!(groups[1].members, vec!["root".to_string(), "jdoe".to_string()]);
+	}
+}
