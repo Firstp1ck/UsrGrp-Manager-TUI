@@ -1,4 +1,4 @@
-UsrGrp-Manager-TUI (Rust Users/Groups Manager TUI)
+UsrGrp-Manager-TUI (Users/Groups Manager TUI)
 ================
 
 <details>
@@ -17,7 +17,7 @@ UsrGrp-Manager-TUI (Rust Users/Groups Manager TUI)
 </details>
 
 <div align="center" style="background-color: #0f172a; border-left: 5px solid #60a5fa; padding: 1em; margin-bottom: 1em; color: #e2e8f0;">
-  <h2 style="color: #93c5fd;">Hello Sysadmins and TUI Enthusiasts!</h2>
+  <h2 style="color: #93c5fd;">Welcome Sysadmins and TUI Users!</h2>
   <p style="font-size: 1.1em; font-weight: bold;">Welcome to UsrGrp-Manager-TUI</p>
   <p>A keyboard-driven TUI to browse and manage users and groups on Linux.</p>
   <p style="color: #fbbf24;">
@@ -46,7 +46,9 @@ UsrGrp-Manager-TUI (Rust Users/Groups Manager TUI)
 
 ## Introduction
 
-Keyboard‑driven terminal app to view and manage users and groups. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes. Linux‑focused. Written in Rust.
+Keyboard‑driven terminal app to view and manage users and groups. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes. 
+
+Linux‑focused. Written in Rust.
 
 ### Screenshot
 ![TUI screenshot](example-images/v0.1.0-release.png)
@@ -64,14 +66,35 @@ Alpha means:
 
 ### Quick Start
 
+Using yay:
+```bash
+yay -S usrgrp-manager-git
+# or
+yay -S usrgrp-manager-bin
+```
+
+Using paru:
+```bash
+paru -S usrgrp-manager-git
+# or
+paru -S usrgrp-manager-bin
+```
+Using cargo:
 ```bash
 # Build and run (release)
 cargo build --release
-cargo run --release
+```
 
-# Optional: set logging level
+After installation:
+```bash
+usrgrp-manager
+```
+
+## Optional: set logging level
+```bash
 USRGRP_MANAGER_LOG=info   # or debug, trace
 ```
+
 
 ## Environment Setup
 
@@ -110,12 +133,14 @@ makepkg -si
 Using yay:
 ```bash
 yay -S usrgrp-manager-git
+# or
 yay -S usrgrp-manager-bin
 ```
 
 Using paru:
 ```bash
 paru -S usrgrp-manager-git
+# or
 paru -S usrgrp-manager-bin
 ```
 
@@ -195,7 +220,7 @@ src/
 
 ## Tests
 
-- Run all tests: `cargo test`
+- Run all tests: `cargo test` (Tests run while building the project automatically)
 
 What’s covered today:
 - Unit tests for parsers in `src/sys/mod.rs` (fake `/etc/passwd` and `/etc/group` files).
