@@ -1,9 +1,11 @@
-UsrGrp-Manager (Rust Users/Groups Manager TUI)
+UsrGrp-Manager-TUI (Rust Users/Groups Manager TUI)
 ================
 
-A terminal UI to browse and manage UNIX users and groups. 
+## Description
+Keyboard‑driven terminal app to view and manage users and groups. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes. Linux‑focused.
 
-Status: alpha. Read‑only browsing is safe; write operations require privileges and are limited (no user deletion yet).
+## Status
+Alpha. Read‑only browsing is safe; write operations require privileges and are limited (no user deletion yet).
 
 Alpha means:
 - Interfaces and keybindings may change without notice.
@@ -11,7 +13,7 @@ Alpha means:
 - Error handling, edge cases, and performance are still being improved.
 - Expect to run with `sudo` for any write operation (`usermod`, `gpasswd`, `groupadd`, `groupdel`).
 
-Install / Build
+## Install / Build
 ---------------
 
 - Build: `cargo build --release`
@@ -19,7 +21,7 @@ Install / Build
 - Logging: set `USRGRP_MANAGER_LOG=info|debug|trace` (default: `info`)
 - Feature flags: `file-parse` exists, but enumeration currently parses `/etc/passwd` and `/etc/group` by default.
 
-Usage & Keybindings
+## Usage & Keybindings
 -------------------
 
 - Quit: `q`
@@ -31,7 +33,7 @@ Usage & Keybindings
 - Open actions on selection: `Enter`
 - In popups: `↑/k`, `↓/j`, `PageUp`, `PageDown`, `Enter`, `Esc`
 
-What’s implemented
+## What’s implemented
 ------------------
 
 - Users tab
@@ -56,14 +58,14 @@ What’s implemented
 - Search
   - Simple substring filter for Users and Groups tabs
 
-Notes & requirements
+## Notes & requirements
 --------------------
 
 - Linux/BSD only. macOS behavior may differ (Directory Services).
 - Write actions call system tools and require appropriate privileges (root or sudo): `usermod`, `gpasswd`, `groupadd`, `groupdel`.
 - User deletion is not implemented yet (guarded with a confirmation and an informational message).
 
-TODO (next steps)
+## TODO (next steps)
 -----------------
 
 - Lock/unlock, enable/disable login shell: show status in table; actions in detail view; confirm + dry‑run; apply via `usermod -L/-U` and `chsh` (or edit `/etc/passwd` when in file‑parse mode)
@@ -75,7 +77,7 @@ TODO (next steps)
 - Set up CI and cross‑platform release builds
 - Optimize performance and memory usage
 
-Run locally
+## Run locally
 -----------
 
 - Build: `cargo build --release`
