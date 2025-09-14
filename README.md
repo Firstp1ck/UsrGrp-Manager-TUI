@@ -48,6 +48,8 @@ UsrGrp-Manager-TUI (Rust Users/Groups Manager TUI)
 
 Keyboard‑driven terminal app to view and manage users and groups. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes. Linux‑focused. Written in Rust.
 
+![TUI screenshot](example-images/v0.1.0-release.png)
+
 ### Status
 Alpha. Read‑only browsing is safe; write operations require privileges and are still limited.
 
