@@ -83,4 +83,19 @@ Alpha means:
 - Build: `cargo build --release`
 - Run: `cargo run --release`
 
-
+## Project Structure
+```
+src/
+  main.rs                    # Entry point
+  app/
+    mod.rs                   # AppState, core types
+    update.rs                # Event handling, business logic
+  ui/
+    mod.rs                   # Main render function, layout
+    users.rs                 # Users tab (table + details + modals)
+    groups.rs                # Groups tab (table + details + modals)
+    components.rs            # Shared UI helpers (status bar, etc.)
+  sys/
+    mod.rs                   # Current SystemAdapter
+  search.rs                  # Search functionality
+```

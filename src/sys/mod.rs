@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use users::{get_current_uid, get_user_by_uid};
 
 #[allow(dead_code)]
@@ -24,11 +24,17 @@ pub struct SystemGroup {
 }
 
 #[allow(dead_code)]
-pub struct SystemAdapter;
+pub struct SystemAdapter {
+    pub sudo_password: Option<String>,
+}
 
 #[allow(dead_code)]
 impl SystemAdapter {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self { Self { sudo_password: None } }
+
+    pub fn with_sudo_password(password: Option<String>) -> Self {
+        Self { sudo_password: password }
+    }
 
     pub fn list_users(&self) -> Result<Vec<SystemUser>> {
         parse_passwd("/etc/passwd")
@@ -49,35 +55,27 @@ impl SystemAdapter {
 
     pub fn add_user_to_group(&self, username: &str, groupname: &str) -> Result<()> {
         // Prefer gpasswd for membership changes
-        let status = Command::new("gpasswd")
-            .args(["-a", username, groupname])
-            .status()
+        let output = self.run_privileged("gpasswd", &["-a", username, groupname])
             .with_context(|| format!("failed to execute gpasswd -a {} {}", username, groupname))?;
-        if status.success() { Ok(()) } else { anyhow::bail!("gpasswd -a returned non-zero status: {}", status) }
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("gpasswd -a", &output)) }
     }
 
     pub fn remove_user_from_group(&self, username: &str, groupname: &str) -> Result<()> {
-        let status = Command::new("gpasswd")
-            .args(["-d", username, groupname])
-            .status()
+        let output = self.run_privileged("gpasswd", &["-d", username, groupname])
             .with_context(|| format!("failed to execute gpasswd -d {} {}", username, groupname))?;
-        if status.success() { Ok(()) } else { anyhow::bail!("gpasswd -d returned non-zero status: {}", status) }
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("gpasswd -d", &output)) }
     }
 
     pub fn create_group(&self, groupname: &str) -> Result<()> {
-        let status = Command::new("groupadd")
-            .arg(groupname)
-            .status()
+        let output = self.run_privileged("groupadd", &[groupname])
             .with_context(|| format!("failed to execute groupadd {}", groupname))?;
-        if status.success() { Ok(()) } else { anyhow::bail!("groupadd returned non-zero status: {}", status) }
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("groupadd", &output)) }
     }
 
     pub fn delete_group(&self, groupname: &str) -> Result<()> {
-        let status = Command::new("groupdel")
-            .arg(groupname)
-            .status()
+        let output = self.run_privileged("groupdel", &[groupname])
             .with_context(|| format!("failed to execute groupdel {}", groupname))?;
-        if status.success() { Ok(()) } else { anyhow::bail!("groupdel returned non-zero status: {}", status) }
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("groupdel", &output)) }
     }
 
     pub fn list_shells(&self) -> Result<Vec<String>> {
@@ -93,27 +91,53 @@ impl SystemAdapter {
     }
 
     pub fn change_user_shell(&self, username: &str, new_shell: &str) -> Result<()> {
-        let status = Command::new("usermod")
-            .args(["-s", new_shell, username])
-            .status()
+        let output = self.run_privileged("usermod", &["-s", new_shell, username])
             .with_context(|| format!("failed to execute usermod -s {} {}", new_shell, username))?;
-        if status.success() { Ok(()) } else { anyhow::bail!("usermod -s returned non-zero status: {}", status) }
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("usermod -s", &output)) }
     }
 
     pub fn change_user_fullname(&self, username: &str, new_fullname: &str) -> Result<()> {
-        let status = Command::new("usermod")
-            .args(["-c", new_fullname, username])
-            .status()
+        let output = self.run_privileged("usermod", &["-c", new_fullname, username])
             .with_context(|| format!("failed to execute usermod -c {} {}", new_fullname, username))?;
-        if status.success() { Ok(()) } else { anyhow::bail!("usermod -c returned non-zero status: {}", status) }
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("usermod -c", &output)) }
     }
 
     pub fn change_username(&self, old_username: &str, new_username: &str) -> Result<()> {
-        let status = Command::new("usermod")
-            .args(["-l", new_username, old_username])
-            .status()
+        let output = self.run_privileged("usermod", &["-l", new_username, old_username])
             .with_context(|| format!("failed to execute usermod -l {} {}", new_username, old_username))?;
-        if status.success() { Ok(()) } else { anyhow::bail!("usermod -l returned non-zero status: {}", status) }
+        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("usermod -l", &output)) }
+    }
+
+    fn run_privileged(&self, cmd: &str, args: &[&str]) -> Result<std::process::Output> {
+        if get_current_uid() == 0 {
+            return Command::new(cmd)
+                .args(args)
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(Into::into);
+        }
+
+        // Build sudo command
+        let mut c = Command::new("sudo");
+        c.arg("-S").arg("-p").arg("") // read password from stdin, silent prompt
+            .arg(cmd)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = c.spawn().with_context(|| format!("failed to spawn sudo for {}", cmd))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Some(pw) = &self.sudo_password {
+                use std::io::Write;
+                let _ = stdin.write_all(pw.as_bytes());
+                let _ = stdin.write_all(b"\n");
+            } else {
+                // send just a newline to avoid blocking if sudo expects input
+                use std::io::Write;
+                let _ = stdin.write_all(b"\n");
+            }
+        }
+        let output = child.wait_with_output()?;
+        Ok(output)
     }
 }
 
@@ -159,5 +183,14 @@ fn parse_group<P: AsRef<Path>>(path: P) -> Result<Vec<SystemGroup>> {
 
 // Note: NSS enumeration is not used at the moment; parsing /etc/passwd and
 // /etc/group is the default approach and can be forced via the `file-parse` feature.
+
+fn format_cli_error(cmd: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        format!("{} returned non-zero status: {}", cmd, output.status)
+    } else {
+        format!("{} failed: {}", cmd, stderr)
+    }
+}
 
 
