@@ -11,7 +11,6 @@ Alpha means:
 - Interfaces and keybindings may change without notice.
 - Some actions are intentionally guarded (e.g., user deletion requires confirmation; optional home removal).
 - Error handling, edge cases, and performance are still being improved.
-- Expect to run with `sudo` for any write operation (`usermod`, `gpasswd`, `groupadd`, `groupdel`, `useradd`, `userdel`).
 
 ## Install / Build
 ---------------
