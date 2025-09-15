@@ -51,10 +51,10 @@ Keyboard‑driven terminal app to view and manage users and groups. Browse accou
 Linux‑focused. Written in Rust.
 
 ### Screenshot
-![TUI screenshot](example-images/v0.1.0-release.png)
+![TUI screenshot](example-images/v0.2.0-release.png)
 
 ### Demo
-![TUI GIF](example-images/usrgrp-manager-v0.1.0-sample.gif)
+![TUI GIF](example-images/usrgrp-manager-v0.2.0-sample.gif)
 
 ### Status
 Alpha. Read‑only browsing is safe; write operations require privileges and are still limited.
