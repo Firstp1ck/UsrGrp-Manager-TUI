@@ -48,8 +48,6 @@ impl SystemAdapter {
         parse_group("/etc/group")
     }
 
-    
-
     pub fn add_user_to_group(&self, username: &str, groupname: &str) -> Result<()> {
         // Prefer gpasswd for membership changes
         let output = self
@@ -121,6 +119,12 @@ impl SystemAdapter {
     }
 
     pub fn delete_group(&self, groupname: &str) -> Result<()> {
+        // If the group is already gone, treat as success (idempotent delete)
+        if let Ok(groups) = self.list_groups()
+            && !groups.iter().any(|g| g.name == groupname)
+        {
+            return Ok(());
+        }
         let output = self.run_privileged("groupdel", &[groupname]).map_err(|e| {
             crate::error::simple_error(format!("failed to execute groupdel {}: {}", groupname, e))
         })?;
@@ -560,10 +564,22 @@ wheel:x:998:root,jdoe
         let username = "alice".to_string();
         let primary_gid = 100u32;
 
-        let groups = vec![
-            SystemGroup { gid: 100, name: "users".to_string(), members: vec!["bob".to_string()] },
-            SystemGroup { gid: 10, name: "wheel".to_string(), members: vec!["alice".to_string()] },
-            SystemGroup { gid: 50, name: "dev".to_string(), members: vec![] },
+        let groups = [
+            SystemGroup {
+                gid: 100,
+                name: "users".to_string(),
+                members: vec!["bob".to_string()],
+            },
+            SystemGroup {
+                gid: 10,
+                name: "wheel".to_string(),
+                members: vec!["alice".to_string()],
+            },
+            SystemGroup {
+                gid: 50,
+                name: "dev".to_string(),
+                members: vec![],
+            },
         ];
 
         let filtered: Vec<&SystemGroup> = groups
