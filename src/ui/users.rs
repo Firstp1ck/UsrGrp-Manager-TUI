@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Clear};
 use ratatui::Frame;
 
-use crate::app::{AppState, ModalState, ModifyField};
+use crate::app::{AppState, ModalState, ModifyField, UsersFocus};
 
 pub fn render_users_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     let body_height = area.height.saturating_sub(3) as usize;
@@ -18,9 +18,10 @@ pub fn render_users_table(f: &mut Frame, area: Rect, app: &mut AppState) {
         let style = if absolute_index == app.selected_user_index {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else { Style::default() };
+        let name_text = if absolute_index == app.selected_user_index { format!("[{}]", u.name) } else { u.name.clone() };
         Row::new(vec![
             Cell::from(u.uid.to_string()),
-            Cell::from(u.name.clone()),
+            Cell::from(name_text),
             Cell::from(u.primary_gid.to_string()),
             Cell::from(u.home_dir.clone()),
             Cell::from(u.shell.clone()),
@@ -33,9 +34,21 @@ pub fn render_users_table(f: &mut Frame, area: Rect, app: &mut AppState) {
         Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD),
     );
 
+    let users_title = {
+        let base = if app.users_focus == UsersFocus::UsersList { "[Users]" } else { "Users" };
+        if app.users_focus == UsersFocus::UsersList {
+            if let Some(u) = app.users.get(app.selected_user_index) {
+                format!("{} - {}", base, u.name)
+            } else {
+                base.to_string()
+            }
+        } else {
+            base.to_string()
+        }
+    };
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().title("Users").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
+        .block(Block::default().title(users_title).borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
         .row_highlight_style(Style::default().fg(app.theme.highlight_fg).bg(app.theme.highlight_bg).add_modifier(Modifier::REVERSED))
         .column_spacing(1);
 
@@ -82,15 +95,28 @@ pub fn render_user_groups(f: &mut Frame, area: Rect, app: &mut AppState) {
         let style = if absolute_index == app.selected_group_index {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else { Style::default() };
-        Row::new(vec![Cell::from(g.gid.to_string()), Cell::from(g.name.clone())]).style(style)
+        let name_text = if absolute_index == app.selected_group_index { format!("[{}]", g.name) } else { g.name.clone() };
+        Row::new(vec![Cell::from(g.gid.to_string()), Cell::from(name_text)]).style(style)
     });
 
     let widths = [Constraint::Length(8), Constraint::Percentage(100)];
     let header = Row::new(vec!["GID", "Name"]).style(Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD));
 
+    let groups_title = {
+        let base = if app.users_focus == UsersFocus::MemberOf { "[Member of]" } else { "Member of" };
+        if app.users_focus == UsersFocus::MemberOf {
+            if let Some(g) = groups.get(app.selected_group_index) {
+                format!("{} - {}", base, g.name)
+            } else {
+                base.to_string()
+            }
+        } else {
+            base.to_string()
+        }
+    };
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().title("Member of").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
+        .block(Block::default().title(groups_title).borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
         .column_spacing(1);
     f.render_widget(table, area);
 }
@@ -187,22 +213,24 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             f.render_widget(Clear, rect);
             f.render_widget(p, rect);
         }
-        ModalState::ModifyGroupsAdd { selected, offset } => {
+        ModalState::ModifyGroupsAdd { selected, offset: _, selected_multi } => {
             let width = (area.width.saturating_sub(10)).min(60).max(40);
             let height = (area.height.saturating_sub(6)).min(20).max(8);
             let rect = crate::ui::components::centered_rect(width, height, area);
             let visible_capacity = rect.height.saturating_sub(2) as usize;
-            let mut off = offset;
-            if selected < off { off = selected; }
-            if selected >= off.saturating_add(visible_capacity) { off = selected + 1 - visible_capacity; }
-            let start = off.min(app.groups_all.len());
-            let end = (start + visible_capacity).min(app.groups_all.len());
+            let total = app.groups_all.len();
+            let max_offset = total.saturating_sub(visible_capacity);
+            let mut off = selected.saturating_sub(visible_capacity / 2);
+            if off > max_offset { off = max_offset; }
+            let start = off.min(total);
+            let end = (start + visible_capacity).min(total);
             let slice = &app.groups_all[start..end];
             let mut items: Vec<ListItem> = Vec::with_capacity(slice.len());
             for (i, g) in slice.iter().enumerate() {
                 let abs_index = start + i;
-                let marker = if abs_index == selected { "▶ " } else { "  " };
-                items.push(ListItem::new(format!("{}{} ({})", marker, g.name, g.gid)));
+                let focus = if abs_index == selected { "▶ " } else { "  " };
+                let checked = if selected_multi.contains(&abs_index) { "[x] " } else { "[ ] " };
+                items.push(ListItem::new(format!("{}{}{} ({})", focus, checked, g.name, g.gid)));
             }
             let list = List::new(items)
                 .block(Block::default().title("Add to group").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
@@ -210,24 +238,26 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             f.render_widget(Clear, rect);
             f.render_widget(list, rect);
         }
-        ModalState::ModifyGroupsRemove { selected, offset } => {
+        ModalState::ModifyGroupsRemove { selected, offset: _, selected_multi } => {
             let (username, primary_gid) = if let Some(u) = app.users.get(app.selected_user_index) { (u.name.clone(), u.primary_gid) } else { (String::new(), 0) };
             let user_groups: Vec<crate::sys::SystemGroup> = app.groups_all.iter().filter(|g| g.gid == primary_gid || g.members.iter().any(|m| m == &username)).cloned().collect();
             let width = (area.width.saturating_sub(10)).min(60).max(40);
             let height = (area.height.saturating_sub(6)).min(20).max(8);
             let rect = crate::ui::components::centered_rect(width, height, area);
             let visible_capacity = rect.height.saturating_sub(2) as usize;
-            let mut off = offset;
-            if selected < off { off = selected; }
-            if selected >= off.saturating_add(visible_capacity) { off = selected + 1 - visible_capacity; }
-            let start = off.min(user_groups.len());
-            let end = (start + visible_capacity).min(user_groups.len());
+            let total = user_groups.len();
+            let max_offset = total.saturating_sub(visible_capacity);
+            let mut off = selected.saturating_sub(visible_capacity / 2);
+            if off > max_offset { off = max_offset; }
+            let start = off.min(total);
+            let end = (start + visible_capacity).min(total);
             let slice = &user_groups[start..end];
             let mut items: Vec<ListItem> = Vec::with_capacity(slice.len());
             for (i, g) in slice.iter().enumerate() {
                 let abs_index = start + i;
-                let marker = if abs_index == selected { "▶ " } else { "  " };
-                items.push(ListItem::new(format!("{}{} ({})", marker, g.name, g.gid)));
+                let focus = if abs_index == selected { "▶ " } else { "  " };
+                let checked = if selected_multi.contains(&abs_index) { "[x] " } else { "[ ] " };
+                items.push(ListItem::new(format!("{}{}{} ({})", focus, checked, g.name, g.gid)));
             }
             let list = List::new(items)
                 .block(Block::default().title("Remove from group").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))

@@ -3,16 +3,22 @@ name = "usrgrp-manager"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "TUI to view information about UNIX users and groups"
+description = "TUI to view and manage information about UNIX users and groups"
+
+[[bin]]
+name = "usrgrp-manager"
+path = "src/main.rs"
+
+[lib]
+name = "usrgrp_manager"
+path = "src/lib.rs"
 
 [dependencies]
 crossterm = "0.29.0"
 ratatui = { version = "0.29.0", default-features = false, features = ["crossterm"] }
-anyhow = "1.0"
-users = "0.11"
-clap = { version = "4.5", features = ["derive", "env"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.8"
 
 [features]
 default = []

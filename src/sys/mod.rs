@@ -1,8 +1,7 @@
-use anyhow::{Context, Result};
+use crate::error::Result;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use users::{get_current_uid, get_user_by_uid};
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -55,45 +54,51 @@ impl SystemAdapter {
 
     pub fn add_user_to_group(&self, username: &str, groupname: &str) -> Result<()> {
         // Prefer gpasswd for membership changes
-        let output = self.run_privileged("gpasswd", &["-a", username, groupname])
-            .with_context(|| format!("failed to execute gpasswd -a {} {}", username, groupname))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("gpasswd -a", &output)) }
+        let output = self
+            .run_privileged("gpasswd", &["-a", username, groupname])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute gpasswd -a {} {}: {}", username, groupname, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("gpasswd -a", &output))) }
     }
 
     pub fn remove_user_from_group(&self, username: &str, groupname: &str) -> Result<()> {
-        let output = self.run_privileged("gpasswd", &["-d", username, groupname])
-            .with_context(|| format!("failed to execute gpasswd -d {} {}", username, groupname))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("gpasswd -d", &output)) }
+        let output = self
+            .run_privileged("gpasswd", &["-d", username, groupname])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute gpasswd -d {} {}: {}", username, groupname, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("gpasswd -d", &output))) }
     }
 
     pub fn create_group(&self, groupname: &str) -> Result<()> {
-        let output = self.run_privileged("groupadd", &[groupname])
-            .with_context(|| format!("failed to execute groupadd {}", groupname))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("groupadd", &output)) }
+        let output = self
+            .run_privileged("groupadd", &[groupname])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute groupadd {}: {}", groupname, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("groupadd", &output))) }
     }
 
     pub fn create_user(&self, username: &str, create_home: bool) -> Result<()> {
         let mut args: Vec<&str> = Vec::new();
         if create_home { args.push("-m"); }
         args.push(username);
-        let output = self.run_privileged("useradd", &args)
-            .with_context(|| format!("failed to execute useradd {}", username))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("useradd", &output)) }
+        let output = self
+            .run_privileged("useradd", &args)
+            .map_err(|e| crate::error::simple_error(format!("failed to execute useradd {}: {}", username, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("useradd", &output))) }
     }
 
     pub fn delete_group(&self, groupname: &str) -> Result<()> {
-        let output = self.run_privileged("groupdel", &[groupname])
-            .with_context(|| format!("failed to execute groupdel {}", groupname))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("groupdel", &output)) }
+        let output = self
+            .run_privileged("groupdel", &[groupname])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute groupdel {}: {}", groupname, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("groupdel", &output))) }
     }
 
     pub fn delete_user(&self, username: &str, delete_home: bool) -> Result<()> {
         let mut args: Vec<&str> = Vec::new();
         if delete_home { args.push("-r"); }
         args.push(username);
-        let output = self.run_privileged("userdel", &args)
-            .with_context(|| format!("failed to execute userdel {}", username))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("userdel", &output)) }
+        let output = self
+            .run_privileged("userdel", &args)
+            .map_err(|e| crate::error::simple_error(format!("failed to execute userdel {}: {}", username, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("userdel", &output))) }
     }
 
     pub fn list_shells(&self) -> Result<Vec<String>> {
@@ -109,40 +114,48 @@ impl SystemAdapter {
     }
 
     pub fn change_user_shell(&self, username: &str, new_shell: &str) -> Result<()> {
-        let output = self.run_privileged("usermod", &["-s", new_shell, username])
-            .with_context(|| format!("failed to execute usermod -s {} {}", new_shell, username))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("usermod -s", &output)) }
+        let output = self
+            .run_privileged("usermod", &["-s", new_shell, username])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute usermod -s {} {}: {}", new_shell, username, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("usermod -s", &output))) }
     }
 
     pub fn change_user_fullname(&self, username: &str, new_fullname: &str) -> Result<()> {
-        let output = self.run_privileged("usermod", &["-c", new_fullname, username])
-            .with_context(|| format!("failed to execute usermod -c {} {}", new_fullname, username))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("usermod -c", &output)) }
+        let output = self
+            .run_privileged("usermod", &["-c", new_fullname, username])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute usermod -c {} {}: {}", new_fullname, username, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("usermod -c", &output))) }
     }
 
     pub fn change_username(&self, old_username: &str, new_username: &str) -> Result<()> {
-        let output = self.run_privileged("usermod", &["-l", new_username, old_username])
-            .with_context(|| format!("failed to execute usermod -l {} {}", new_username, old_username))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("usermod -l", &output)) }
+        let output = self
+            .run_privileged("usermod", &["-l", new_username, old_username])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute usermod -l {} {}: {}", new_username, old_username, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("usermod -l", &output))) }
     }
 
     pub fn set_user_password(&self, username: &str, password: &str) -> Result<()> {
         use std::io::Write;
-        if get_current_uid() == 0 {
+        if current_uid() == 0 {
             // Root: write to chpasswd stdin directly
             let mut child = std::process::Command::new("chpasswd")
                 .stdin(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .with_context(|| "failed to spawn chpasswd")?;
+                .map_err(|e| format!("failed to spawn chpasswd: {}", e))?;
             if let Some(mut stdin) = child.stdin.take() {
                 let line = format!("{}:{}\n", username, password);
                 let _ = stdin.write_all(line.as_bytes());
             }
             let output = child.wait_with_output()?;
-            if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("chpasswd", &output)) }
+            if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("chpasswd", &output))) }
         } else {
             // Non-root: avoid mixing sudo password and chpasswd input on the same stdin.
+            // If we don't yet have a sudo password, surface an explicit authentication error
+            // instead of attempting sudo with an empty line (which would count as a failed try).
+            if self.sudo_password.is_none() {
+                return Err(crate::error::simple_error("Authentication required"));
+            }
             // Use a bash -c pipeline so chpasswd reads from echo, while we send only the sudo password to sudo.
             fn escape_for_double_quotes(s: &str) -> String {
                 let mut out = String::with_capacity(s.len());
@@ -166,24 +179,24 @@ impl SystemAdapter {
                 .stdin(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .with_context(|| "failed to spawn sudo bash -c ... chpasswd")?;
+                .map_err(|e| format!("failed to spawn sudo bash -c ... chpasswd: {}", e))?;
             if let Some(mut stdin) = child.stdin.take() {
                 if let Some(pw) = &self.sudo_password { let _ = stdin.write_all(pw.as_bytes()); let _ = stdin.write_all(b"\n"); }
-                else { let _ = stdin.write_all(b"\n"); }
             }
             let output = child.wait_with_output()?;
-            if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("chpasswd", &output)) }
+            if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("chpasswd", &output))) }
         }
     }
 
     pub fn expire_user_password(&self, username: &str) -> Result<()> {
-        let output = self.run_privileged("chage", &["-d", "0", username])
-            .with_context(|| format!("failed to execute chage -d 0 {}", username))?;
-        if output.status.success() { Ok(()) } else { anyhow::bail!(format_cli_error("chage -d 0", &output)) }
+        let output = self
+            .run_privileged("chage", &["-d", "0", username])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute chage -d 0 {}: {}", username, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("chage -d 0", &output))) }
     }
 
     fn run_privileged(&self, cmd: &str, args: &[&str]) -> Result<std::process::Output> {
-        if get_current_uid() == 0 {
+        if current_uid() == 0 {
             return Command::new(cmd)
                 .args(args)
                 .stderr(Stdio::piped())
@@ -191,33 +204,41 @@ impl SystemAdapter {
                 .map_err(Into::into);
         }
 
-        // Build sudo command
-        let mut c = Command::new("sudo");
-        c.arg("-S").arg("-p").arg("") // read password from stdin, silent prompt
-            .arg(cmd)
-            .args(args)
+        // Without a sudo password, don't attempt sudo with a blank line.
+        // Return a clear error so the UI can prompt first.
+        if self.sudo_password.is_none() {
+            return Err(crate::error::simple_error("Authentication required"));
+        }
+
+        // Step 1: validate sudo credentials to populate timestamp without mixing with command IO
+        let mut validate = Command::new("sudo")
+            .arg("-S").arg("-p").arg("")
+            .arg("-v")
             .stdin(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = c.spawn().with_context(|| format!("failed to spawn sudo for {}", cmd))?;
-        if let Some(mut stdin) = child.stdin.take() {
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to spawn sudo -v: {}", e))?;
+        if let Some(mut stdin) = validate.stdin.take() {
             if let Some(pw) = &self.sudo_password {
                 use std::io::Write;
                 let _ = stdin.write_all(pw.as_bytes());
                 let _ = stdin.write_all(b"\n");
-            } else {
-                // send just a newline to avoid blocking if sudo expects input
-                use std::io::Write;
-                let _ = stdin.write_all(b"\n");
             }
         }
-        let output = child.wait_with_output()?;
+        let validate_out = validate.wait_with_output()?;
+        if !validate_out.status.success() {
+            return Err(crate::error::simple_error(format_cli_error("sudo -v", &validate_out)));
+        }
+
+        // Step 2: run the actual command without reading from stdin (use -n to avoid prompting)
+        let output = Command::new("sudo")
+            .arg("-n")
+            .arg(cmd)
+            .args(args)
+            .stderr(Stdio::piped())
+            .output()?;
         Ok(output)
     }
-}
-
-pub fn current_username() -> Option<String> {
-    let uid = get_current_uid();
-    get_user_by_uid(uid).map(|u| u.name().to_string_lossy().into_owned())
 }
 
 fn parse_passwd<P: AsRef<Path>>(path: P) -> Result<Vec<SystemUser>> {
@@ -267,6 +288,27 @@ fn format_cli_error(cmd: &str, output: &std::process::Output) -> String {
     }
 }
 
+fn current_uid() -> u32 {
+    // Linux: read from /proc; fallback to 0 if parsing fails
+    if let Ok(contents) = std::fs::read_to_string("/proc/self/status") {
+        for line in contents.lines() {
+            if let Some(rest) = line.strip_prefix("Uid:") {
+                if let Some(first) = rest.split_whitespace().next() {
+                    if let Ok(uid) = first.parse() { return uid; }
+                }
+            }
+        }
+    }
+    0
+}
+
+pub fn current_username() -> Option<String> {
+    let uid = current_uid();
+    parse_passwd("/etc/passwd").ok()?
+        .into_iter()
+        .find(|u| u.uid == uid)
+        .map(|u| u.name)
+}
 
 #[cfg(test)]
 mod tests {

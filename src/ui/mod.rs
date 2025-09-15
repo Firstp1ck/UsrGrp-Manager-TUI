@@ -13,7 +13,7 @@ use crate::app::{AppState, ActiveTab, ModalState};
 pub fn render(f: &mut Frame, app: &mut AppState) {
     let root = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5), Constraint::Length(1)].as_ref())
+        .constraints([Constraint::Length(5), Constraint::Min(5), Constraint::Length(1)].as_ref())
         .split(f.area());
     let body = Layout::default()
         .direction(Direction::Horizontal)
@@ -33,7 +33,7 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
         crate::app::InputMode::Modal => String::new(),
     };
     let p = Paragraph::new(format!(
-        "usrgrp-manager ({who})  {tabs}{prompt}  users:{}  groups:{}  — n: new user; Tab: switch tab; Shift-Tab: member-of; /: search; Enter: apply; Esc: cancel; q: quit",
+        "usrgrp-manager ({who})  {tabs}{prompt}\nusers:{}  groups:{}\nKeys: [n] New user | [Tab] Switch tab | [Shift+Tab] Member-of | [/] Search | [Enter] Apply | [Esc] Cancel | [Backspace] Back | [Backspace at start] Back (input windows) | [q] Quit",
         app.users.len(), app.groups.len()
     ))
     .block(

@@ -24,9 +24,14 @@ pub fn render_groups_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     let widths = [Constraint::Length(8), Constraint::Percentage(100)];
     let header = Row::new(vec!["GID", "GROUP"]).style(Style::default().fg(app.theme.title).add_modifier(Modifier::BOLD));
 
+    let groups_title = if let Some(g) = app.groups.get(app.selected_group_index) {
+        format!("Groups - {}", g.name)
+    } else {
+        "Groups".to_string()
+    };
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().title("Groups").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
+        .block(Block::default().title(groups_title).borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
         .row_highlight_style(Style::default().fg(app.theme.highlight_fg).bg(app.theme.highlight_bg).add_modifier(Modifier::REVERSED))
         .column_spacing(1);
 
@@ -105,20 +110,25 @@ pub fn render_group_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: 
             f.render_widget(Clear, rect);
             f.render_widget(p, rect);
         }
-        ModalState::GroupModifyAddMembers { selected, offset, .. } => {
+        ModalState::GroupModifyAddMembers { selected, offset: _, selected_multi, .. } => {
             let users = &app.users_all;
             let width = (area.width.saturating_sub(10)).min(60).max(40);
             let height = (area.height.saturating_sub(6)).min(20).max(8);
             let rect = crate::ui::components::centered_rect(width, height, area);
             let visible_capacity = rect.height.saturating_sub(2) as usize;
-            let start = offset.min(users.len());
-            let end = (start + visible_capacity).min(users.len());
+            let total = users.len();
+            let max_offset = total.saturating_sub(visible_capacity);
+            let mut off = selected.saturating_sub(visible_capacity / 2);
+            if off > max_offset { off = max_offset; }
+            let start = off.min(total);
+            let end = (start + visible_capacity).min(total);
             let slice = &users[start..end];
             let mut items: Vec<ListItem> = Vec::with_capacity(slice.len());
             for (i, u) in slice.iter().enumerate() {
                 let abs_index = start + i;
-                let marker = if abs_index == selected { "▶ " } else { "  " };
-                items.push(ListItem::new(format!("{}{} ({})", marker, u.name, u.uid)));
+                let focus = if abs_index == selected { "▶ " } else { "  " };
+                let checked = if selected_multi.contains(&abs_index) { "[x] " } else { "[ ] " };
+                items.push(ListItem::new(format!("{}{}{} ({})", focus, checked, u.name, u.uid)));
             }
             let list = List::new(items)
                 .block(Block::default().title("Add member to group").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
@@ -126,21 +136,26 @@ pub fn render_group_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: 
             f.render_widget(Clear, rect);
             f.render_widget(list, rect);
         }
-        ModalState::GroupModifyRemoveMembers { selected, offset, .. } => {
+        ModalState::GroupModifyRemoveMembers { selected, offset: _, selected_multi, .. } => {
             let name = app.groups.get(app.selected_group_index).map(|g| g.name.clone()).unwrap_or_default();
             let members = app.groups.get(app.selected_group_index).map(|g| g.members.clone()).unwrap_or_default();
             let width = (area.width.saturating_sub(10)).min(60).max(40);
             let height = (area.height.saturating_sub(6)).min(20).max(8);
             let rect = crate::ui::components::centered_rect(width, height, area);
             let visible_capacity = rect.height.saturating_sub(2) as usize;
-            let start = offset.min(members.len());
-            let end = (start + visible_capacity).min(members.len());
+            let total = members.len();
+            let max_offset = total.saturating_sub(visible_capacity);
+            let mut off = selected.saturating_sub(visible_capacity / 2);
+            if off > max_offset { off = max_offset; }
+            let start = off.min(total);
+            let end = (start + visible_capacity).min(total);
             let slice = &members[start..end];
             let mut items: Vec<ListItem> = Vec::with_capacity(slice.len());
             for (i, m) in slice.iter().enumerate() {
                 let abs_index = start + i;
-                let marker = if abs_index == selected { "▶ " } else { "  " };
-                items.push(ListItem::new(format!("{}{}", marker, m)));
+                let focus = if abs_index == selected { "▶ " } else { "  " };
+                let checked = if selected_multi.contains(&abs_index) { "[x] " } else { "[ ] " };
+                items.push(ListItem::new(format!("{}{}{}", focus, checked, m)));
             }
             let list = List::new(items)
                 .block(Block::default().title(format!("Remove member from '{}'", name)).borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))

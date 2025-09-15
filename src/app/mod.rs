@@ -61,8 +61,8 @@ impl Theme {
 pub enum ModalState {
     Actions { selected: usize },
     ModifyMenu { selected: usize },
-    ModifyGroupsAdd { selected: usize, offset: usize },
-    ModifyGroupsRemove { selected: usize, offset: usize },
+    ModifyGroupsAdd { selected: usize, offset: usize, selected_multi: Vec<usize> },
+    ModifyGroupsRemove { selected: usize, offset: usize, selected_multi: Vec<usize> },
     ModifyDetailsMenu { selected: usize },
     ModifyShell { selected: usize, offset: usize, shells: Vec<String> },
     ModifyTextInput { field: ModifyField, value: String },
@@ -75,8 +75,8 @@ pub enum ModalState {
     GroupAddInput { name: String },
     GroupDeleteConfirm { selected: usize },
     GroupModifyMenu { selected: usize, target_gid: Option<u32> },
-    GroupModifyAddMembers { selected: usize, offset: usize, target_gid: Option<u32> },
-    GroupModifyRemoveMembers { selected: usize, offset: usize, target_gid: Option<u32> },
+    GroupModifyAddMembers { selected: usize, offset: usize, target_gid: Option<u32>, selected_multi: Vec<usize> },
+    GroupModifyRemoveMembers { selected: usize, offset: usize, target_gid: Option<u32>, selected_multi: Vec<usize> },
     UserAddInput { name: String, create_home: bool },
 }
 
@@ -87,6 +87,10 @@ pub enum ModifyField { Username, Fullname }
 pub enum PendingAction {
     AddUserToGroup { username: String, groupname: String },
     RemoveUserFromGroup { username: String, groupname: String },
+    AddUserToGroups { username: String, groupnames: Vec<String> },
+    RemoveUserFromGroups { username: String, groupnames: Vec<String> },
+    AddMembersToGroup { groupname: String, usernames: Vec<String> },
+    RemoveMembersFromGroup { groupname: String, usernames: Vec<String> },
     ChangeShell { username: String, new_shell: String },
     ChangeFullname { username: String, new_fullname: String },
     ChangeUsername { old_username: String, new_username: String },
@@ -122,7 +126,8 @@ impl AppState {
         let adapter = crate::sys::SystemAdapter::new();
         let mut users_all = adapter.list_users().unwrap_or_default();
         users_all.sort_by_key(|u| u.uid);
-        let groups_all = adapter.list_groups().unwrap_or_default();
+        let mut groups_all = adapter.list_groups().unwrap_or_default();
+        groups_all.sort_by_key(|g| g.gid);
         Self {
             started_at: Instant::now(),
             users: users_all.clone(),

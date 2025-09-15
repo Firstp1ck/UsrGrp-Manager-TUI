@@ -1,5 +1,5 @@
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crate::error::Result;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::time::Duration;
@@ -80,29 +80,66 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             KeyCode::Up | KeyCode::Char('k') => match app.active_tab {
                                 ActiveTab::Users => {
                                     match app.users_focus {
-                                        UsersFocus::UsersList => { if app.selected_user_index > 0 { app.selected_user_index -= 1; } }
-                                        UsersFocus::MemberOf => {
-                                            if app.selected_group_index > 0 { app.selected_group_index -= 1; }
+                                        UsersFocus::UsersList => {
+                                            if app.selected_user_index > 0 {
+                                                app.selected_user_index -= 1;
+                                            } else if !app.users.is_empty() {
+                                                app.selected_user_index = app.users.len().saturating_sub(1);
+                                            }
                                         }
-                                    }
-                                }
-                                ActiveTab::Groups => { if app.selected_group_index > 0 { app.selected_group_index -= 1; } }
-                            },
-                            KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
-                                ActiveTab::Users => {
-                                    match app.users_focus {
-                                        UsersFocus::UsersList => { if app.selected_user_index + 1 < app.users.len() { app.selected_user_index += 1; } }
                                         UsersFocus::MemberOf => {
                                             let groups_len = if let Some(u) = app.users.get(app.selected_user_index) {
                                                 let name = u.name.clone();
                                                 let pgid = u.primary_gid;
                                                 app.groups.iter().filter(|g| g.gid == pgid || g.members.iter().any(|m| m == &name)).count()
                                             } else { 0 };
-                                            if app.selected_group_index + 1 < groups_len { app.selected_group_index += 1; }
+                                            if app.selected_group_index > 0 {
+                                                app.selected_group_index -= 1;
+                                            } else if groups_len > 0 {
+                                                app.selected_group_index = groups_len.saturating_sub(1);
+                                            }
                                         }
                                     }
                                 }
-                                ActiveTab::Groups => { if app.selected_group_index + 1 < app.groups.len() { app.selected_group_index += 1; } }
+                                ActiveTab::Groups => {
+                                    if app.selected_group_index > 0 {
+                                        app.selected_group_index -= 1;
+                                    } else if !app.groups.is_empty() {
+                                        app.selected_group_index = app.groups.len().saturating_sub(1);
+                                    }
+                                }
+                            },
+                            KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
+                                ActiveTab::Users => {
+                                    match app.users_focus {
+                                        UsersFocus::UsersList => {
+                                            if app.selected_user_index + 1 < app.users.len() {
+                                                app.selected_user_index += 1;
+                                            } else if !app.users.is_empty() {
+                                                app.selected_user_index = 0;
+                                            }
+                                        }
+                                        UsersFocus::MemberOf => {
+                                            let groups_len = if let Some(u) = app.users.get(app.selected_user_index) {
+                                                let name = u.name.clone();
+                                                let pgid = u.primary_gid;
+                                                app.groups.iter().filter(|g| g.gid == pgid || g.members.iter().any(|m| m == &name)).count()
+                                            } else { 0 };
+                                            if app.selected_group_index + 1 < groups_len {
+                                                app.selected_group_index += 1;
+                                            } else if groups_len > 0 {
+                                                app.selected_group_index = 0;
+                                            }
+                                        }
+                                    }
+                                }
+                                ActiveTab::Groups => {
+                                    if app.selected_group_index + 1 < app.groups.len() {
+                                        app.selected_group_index += 1;
+                                    } else if !app.groups.is_empty() {
+                                        app.selected_group_index = 0;
+                                    }
+                                }
                             },
                             KeyCode::Left | KeyCode::Char('h') => {
                                 let rpp = app.rows_per_page.max(1);
@@ -143,7 +180,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             _ => {}
                         },
                         InputMode::Modal => {
-                            handle_modal_key(&mut app, key.code);
+                            handle_modal_key(&mut app, key);
                         }
                         InputMode::SearchUsers | InputMode::SearchGroups => match key.code {
                             KeyCode::Enter => {
@@ -153,9 +190,16 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             KeyCode::Esc => {
                                 app.input_mode = InputMode::Normal;
                                 app.search_query.clear();
+                                apply_search(&mut app);
                             }
-                            KeyCode::Backspace => { app.search_query.pop(); }
-                            KeyCode::Char(c) => { app.search_query.push(c); }
+                            KeyCode::Backspace => {
+                                app.search_query.pop();
+                                apply_search(&mut app);
+                            }
+                            KeyCode::Char(c) => {
+                                app.search_query.push(c);
+                                apply_search(&mut app);
+                            }
                             _ => {}
                         },
                     }
@@ -169,13 +213,13 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
     Ok(())
 }
 
-fn handle_modal_key(app: &mut AppState, code: KeyCode) {
+fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
     match &mut app.modal {
         Some(ModalState::Actions { selected }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 2 { *selected += 1; } },
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 1; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 1 { *selected += 1; } else { *selected = 0; } },
                 KeyCode::Enter => {
                     match *selected {
                         0 => { app.modal = Some(ModalState::ModifyMenu { selected: 0 }); }
@@ -196,14 +240,15 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::ModifyMenu { selected }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 3 { *selected += 1; } },
+                KeyCode::Backspace => { app.modal = Some(ModalState::Actions { selected: 0 }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 3; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 3 { *selected += 1; } else { *selected = 0; } },
                 KeyCode::Enter => {
                     match *selected {
-                        0 => app.modal = Some(ModalState::ModifyGroupsAdd { selected: 0, offset: 0 }),
-                        1 => app.modal = Some(ModalState::ModifyGroupsRemove { selected: 0, offset: 0 }),
+                        0 => app.modal = Some(ModalState::ModifyGroupsAdd { selected: 0, offset: 0, selected_multi: Vec::new() }),
+                        1 => app.modal = Some(ModalState::ModifyGroupsRemove { selected: 0, offset: 0, selected_multi: Vec::new() }),
                         2 => app.modal = Some(ModalState::ModifyDetailsMenu { selected: 0 }),
                         3 => app.modal = Some(ModalState::ModifyPasswordMenu { selected: 0 }),
                         _ => {}
@@ -213,10 +258,11 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::ModifyPasswordMenu { selected }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 1 { *selected += 1; } },
+                KeyCode::Backspace => { app.modal = Some(ModalState::ModifyMenu { selected: 3 }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 1; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 1 { *selected += 1; } else { *selected = 0; } },
                 KeyCode::Enter => {
                     match *selected {
                         0 => app.modal = Some(ModalState::ChangePassword { selected: 0, password: String::new(), confirm: String::new(), must_change: false }),
@@ -235,11 +281,17 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::ChangePassword { selected, password, confirm, must_change }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
                 KeyCode::Up => { if *selected > 0 { *selected -= 1; } },
                 KeyCode::Down => { if *selected < 3 { *selected += 1; } },
-                KeyCode::Backspace => { match *selected { 0 => { password.pop(); }, 1 => { confirm.pop(); }, _ => {} } }
+                KeyCode::Backspace => {
+                    match *selected {
+                        0 => { if password.is_empty() { app.modal = Some(ModalState::ModifyPasswordMenu { selected: 0 }); } else { password.pop(); } }
+                        1 => { if confirm.is_empty() { app.modal = Some(ModalState::ModifyPasswordMenu { selected: 0 }); } else { confirm.pop(); } }
+                        _ => {}
+                    }
+                }
                 KeyCode::Char(' ') => { if *selected == 2 { *must_change = !*must_change; } }
                 KeyCode::Char(c) => { match *selected { 0 => password.push(c), 1 => confirm.push(c), _ => {} } }
                 KeyCode::Enter => {
@@ -257,45 +309,83 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                 _ => {}
             }
         }
-        Some(ModalState::ModifyGroupsAdd { selected, offset }) => {
+        Some(ModalState::ModifyGroupsAdd { selected, offset, selected_multi }) => {
             let total = app.groups_all.len();
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } if *selected < *offset { *offset = *selected; } }
-                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } }
+                KeyCode::Backspace => { app.modal = Some(ModalState::ModifyMenu { selected: 0 }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; if *selected < *offset { *offset = *selected; } } else if total > 0 { *selected = total.saturating_sub(1); *offset = *selected; } }
+                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } else if total > 0 { *selected = 0; *offset = 0; } }
                 KeyCode::PageUp => { let step = 10usize; if *selected >= step { *selected -= step; } else { *selected = 0; } if *selected < *offset { *offset = *selected; } }
                 KeyCode::PageDown => { let step = 10usize; *selected = (*selected + step).min(total.saturating_sub(1)); }
+                KeyCode::Char(' ') => {
+                    if let Some(pos) = selected_multi.iter().position(|&i| i == *selected) { selected_multi.remove(pos); } else { selected_multi.push(*selected); }
+                }
                 KeyCode::Enter => {
-                    let group_name = app.groups_all.get(*selected).map(|g| g.name.clone());
-                    if let (Some(user), Some(group_name)) = (app.users.get(app.selected_user_index), group_name) {
-                        let pending = PendingAction::AddUserToGroup { username: user.name.clone(), groupname: group_name.clone() };
-                        if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                    if let Some(user) = app.users.get(app.selected_user_index) {
+                        if !selected_multi.is_empty() {
+                            let mut names: Vec<String> = Vec::with_capacity(selected_multi.len());
+                            for idx in selected_multi.iter() { if let Some(g) = app.groups_all.get(*idx) { names.push(g.name.clone()); } }
+                            if !names.is_empty() {
+                                let pending = PendingAction::AddUserToGroups { username: user.name.clone(), groupnames: names };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            } else { close_modal(app); }
+                        } else {
+                            if let Some(group_name) = app.groups_all.get(*selected).map(|g| g.name.clone()) {
+                                let pending = PendingAction::AddUserToGroup { username: user.name.clone(), groupname: group_name.clone() };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            } else { close_modal(app); }
                         }
                     } else { close_modal(app); }
                 }
                 _ => {}
             }
         }
-        Some(ModalState::ModifyGroupsRemove { selected, offset }) => {
+        Some(ModalState::ModifyGroupsRemove { selected, offset, selected_multi }) => {
             let (username, primary_gid) = if let Some(u) = app.users.get(app.selected_user_index) { (u.name.clone(), u.primary_gid) } else { (String::new(), 0) };
             let user_groups: Vec<sys::SystemGroup> = app.groups_all.iter().filter(|g| g.gid == primary_gid || g.members.iter().any(|m| m == &username)).cloned().collect();
             let total = user_groups.len();
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } if *selected < *offset { *offset = *selected; } }
-                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } }
+                KeyCode::Backspace => { app.modal = Some(ModalState::ModifyMenu { selected: 1 }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; if *selected < *offset { *offset = *selected; } } else if total > 0 { *selected = total.saturating_sub(1); *offset = *selected; } }
+                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } else if total > 0 { *selected = 0; *offset = 0; } }
                 KeyCode::PageUp => { let step = 10usize; if *selected >= step { *selected -= step; } else { *selected = 0; } if *selected < *offset { *offset = *selected; } }
                 KeyCode::PageDown => { let step = 10usize; *selected = (*selected + step).min(total.saturating_sub(1)); }
+                KeyCode::Char(' ') => {
+                    if let Some(pos) = selected_multi.iter().position(|&i| i == *selected) { selected_multi.remove(pos); } else { selected_multi.push(*selected); }
+                }
                 KeyCode::Enter => {
-                    if let (Some(user), Some(group)) = (app.users.get(app.selected_user_index), user_groups.get(*selected)) {
-                        if group.gid == user.primary_gid {
-                            app.modal = Some(ModalState::Info { message: "Cannot remove user from primary group.".to_string() });
-                        } else {
-                            let pending = PendingAction::RemoveUserFromGroup { username: user.name.clone(), groupname: group.name.clone() };
-                            if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                    if let Some(user) = app.users.get(app.selected_user_index) {
+                        if !selected_multi.is_empty() {
+                            // Collect group names, skipping primary group
+                            let mut names: Vec<String> = Vec::new();
+                            for idx in selected_multi.iter() {
+                                if let Some(g) = user_groups.get(*idx) { if g.gid != user.primary_gid { names.push(g.name.clone()); } }
                             }
+                            if names.is_empty() {
+                                app.modal = Some(ModalState::Info { message: "No valid groups selected (cannot remove primary).".to_string() });
+                            } else {
+                                let pending = PendingAction::RemoveUserFromGroups { username: user.name.clone(), groupnames: names };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            }
+                        } else {
+                            if let Some(group) = user_groups.get(*selected) {
+                                if group.gid == user.primary_gid {
+                                    app.modal = Some(ModalState::Info { message: "Cannot remove user from primary group.".to_string() });
+                                } else {
+                                    let pending = PendingAction::RemoveUserFromGroup { username: user.name.clone(), groupname: group.name.clone() };
+                                    if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                        app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                    }
+                                }
+                            } else { close_modal(app); }
                         }
                     } else { close_modal(app); }
                 }
@@ -303,10 +393,11 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::ModifyDetailsMenu { selected }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 2 { *selected += 1; } },
+                KeyCode::Backspace => { app.modal = Some(ModalState::ModifyMenu { selected: 2 }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 2; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 2 { *selected += 1; } else { *selected = 0; } },
                 KeyCode::Enter => {
                     match *selected {
                         0 => app.modal = Some(ModalState::ModifyTextInput { field: ModifyField::Username, value: String::new() }),
@@ -324,10 +415,11 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
         }
         Some(ModalState::ModifyShell { selected, offset, shells }) => {
             let total = shells.len();
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } if *selected < *offset { *offset = *selected; } }
-                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } }
+                KeyCode::Backspace => { app.modal = Some(ModalState::ModifyDetailsMenu { selected: 2 }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; if *selected < *offset { *offset = *selected; } } else if total > 0 { *selected = total.saturating_sub(1); *offset = *selected; } }
+                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } else if total > 0 { *selected = 0; *offset = 0; } }
                 KeyCode::PageUp => { let step = 10usize; if *selected >= step { *selected -= step; } else { *selected = 0; } if *selected < *offset { *offset = *selected; } }
                 KeyCode::PageDown => { let step = 10usize; *selected = (*selected + step).min(total.saturating_sub(1)); }
                 KeyCode::Enter => {
@@ -342,7 +434,7 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::ModifyTextInput { field, value }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
                 KeyCode::Enter => {
                     if let Some(user) = app.users.get(app.selected_user_index) {
@@ -352,14 +444,15 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                         }
                     } else { close_modal(app); }
                 }
-                KeyCode::Backspace => { value.pop(); }
+                KeyCode::Backspace => { if value.is_empty() { app.modal = Some(ModalState::ModifyDetailsMenu { selected: 0 }); } else { value.pop(); } }
                 KeyCode::Char(c) => { value.push(c); }
                 _ => {}
             }
         }
         Some(ModalState::DeleteConfirm { selected, allowed, delete_home }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
+                KeyCode::Backspace => { app.modal = Some(ModalState::Actions { selected: 1 }); }
                 KeyCode::Char(' ') => { *delete_home = !*delete_home; }
                 KeyCode::Left | KeyCode::Right => { *selected = if *selected == 0 { 1 } else { 0 }; },
                 KeyCode::Enter => {
@@ -380,10 +473,11 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::GroupsActions { selected, target_gid }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 2 { *selected += 1; } },
+                KeyCode::Backspace => close_modal(app),
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 2; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 2 { *selected += 1; } else { *selected = 0; } },
                 KeyCode::Enter => {
                     match *selected {
                         0 => app.modal = Some(ModalState::GroupAddInput { name: String::new() }),
@@ -396,7 +490,7 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::GroupAddInput { name }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
                 KeyCode::Enter => {
                     let pending = PendingAction::CreateGroup { groupname: name.clone() };
@@ -404,14 +498,15 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
                         app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
                     }
                 }
-                KeyCode::Backspace => { name.pop(); }
+                KeyCode::Backspace => { if name.is_empty() { app.modal = Some(ModalState::GroupsActions { selected: 0, target_gid: None }); } else { name.pop(); } }
                 KeyCode::Char(c) => { name.push(c); }
                 _ => {}
             }
         }
         Some(ModalState::GroupDeleteConfirm { selected }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
+                KeyCode::Backspace => { app.modal = Some(ModalState::GroupsActions { selected: 1, target_gid: None }); }
                 KeyCode::Left | KeyCode::Right => { *selected = if *selected == 0 { 1 } else { 0 }; },
                 KeyCode::Enter => {
                     if *selected == 0 {
@@ -428,63 +523,95 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::GroupModifyMenu { selected, target_gid }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 1 { *selected += 1; } },
+                KeyCode::Backspace => { app.modal = Some(ModalState::GroupsActions { selected: 2, target_gid: *target_gid }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 1; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 1 { *selected += 1; } else { *selected = 0; } },
                 KeyCode::Enter => {
                     match *selected {
-                        0 => app.modal = Some(ModalState::GroupModifyAddMembers { selected: 0, offset: 0, target_gid: *target_gid }),
-                        1 => app.modal = Some(ModalState::GroupModifyRemoveMembers { selected: 0, offset: 0, target_gid: *target_gid }),
+                        0 => app.modal = Some(ModalState::GroupModifyAddMembers { selected: 0, offset: 0, target_gid: *target_gid, selected_multi: Vec::new() }),
+                        1 => app.modal = Some(ModalState::GroupModifyRemoveMembers { selected: 0, offset: 0, target_gid: *target_gid, selected_multi: Vec::new() }),
                         _ => {}
                     }
                 }
                 _ => {}
             }
         }
-        Some(ModalState::GroupModifyAddMembers { selected, offset, target_gid }) => {
+        Some(ModalState::GroupModifyAddMembers { selected, offset, target_gid, selected_multi }) => {
             let total = app.users_all.len();
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } if *selected < *offset { *offset = *selected; } }
-                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } }
+                KeyCode::Backspace => { app.modal = Some(ModalState::GroupModifyMenu { selected: 0, target_gid: *target_gid }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; if *selected < *offset { *offset = *selected; } } else if total > 0 { *selected = total.saturating_sub(1); *offset = *selected; } }
+                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } else if total > 0 { *selected = 0; *offset = 0; } }
                 KeyCode::PageUp => { let step = 10usize; if *selected >= step { *selected -= step; } else { *selected = 0; } if *selected < *offset { *offset = *selected; } }
                 KeyCode::PageDown => { let step = 10usize; *selected = (*selected + step).min(total.saturating_sub(1)); }
+                KeyCode::Char(' ') => {
+                    if let Some(pos) = selected_multi.iter().position(|&i| i == *selected) { selected_multi.remove(pos); } else { selected_multi.push(*selected); }
+                }
                 KeyCode::Enter => {
                     let group_name = if let Some(gid) = *target_gid {
                         app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone())
                     } else {
                         app.groups.get(app.selected_group_index).map(|g| g.name.clone())
                     };
-                    let user_name = app.users_all.get(*selected).map(|u| u.name.clone());
-                    if let (Some(group_name), Some(user_name)) = (group_name, user_name) {
-                        let pending = PendingAction::AddUserToGroup { username: user_name.clone(), groupname: group_name.clone() };
-                        if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                            app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                    if let Some(group_name) = group_name {
+                        if !selected_multi.is_empty() {
+                            let mut usernames: Vec<String> = Vec::with_capacity(selected_multi.len());
+                            for idx in selected_multi.iter() { if let Some(u) = app.users_all.get(*idx) { usernames.push(u.name.clone()); } }
+                            if !usernames.is_empty() {
+                                let pending = PendingAction::AddMembersToGroup { groupname: group_name.clone(), usernames };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            } else { close_modal(app); }
+                        } else {
+                            if let Some(user_name) = app.users_all.get(*selected).map(|u| u.name.clone()) {
+                                let pending = PendingAction::AddUserToGroup { username: user_name.clone(), groupname: group_name.clone() };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            } else { close_modal(app); }
                         }
                     } else { close_modal(app); }
                 }
                 _ => {}
             }
         }
-        Some(ModalState::GroupModifyRemoveMembers { selected, offset, target_gid }) => {
+        Some(ModalState::GroupModifyRemoveMembers { selected, offset, target_gid, selected_multi }) => {
             let group_name = if let Some(gid) = *target_gid { app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone()).unwrap_or_default() } else { app.groups.get(app.selected_group_index).map(|g| g.name.clone()).unwrap_or_default() };
             let members: Vec<String> = if let Some(gid) = *target_gid { app.groups.iter().find(|g| g.gid == gid).map(|g| g.members.clone()).unwrap_or_default() } else { app.groups.get(app.selected_group_index).map(|g| g.members.clone()).unwrap_or_default() };
             let total = members.len();
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } if *selected < *offset { *offset = *selected; } }
-                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } }
+                KeyCode::Backspace => { app.modal = Some(ModalState::GroupModifyMenu { selected: 1, target_gid: *target_gid }); }
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; if *selected < *offset { *offset = *selected; } } else if total > 0 { *selected = total.saturating_sub(1); *offset = *selected; } }
+                KeyCode::Down | KeyCode::Char('j') => { if *selected + 1 < total { *selected += 1; } else if total > 0 { *selected = 0; *offset = 0; } }
                 KeyCode::PageUp => { let step = 10usize; if *selected >= step { *selected -= step; } else { *selected = 0; } if *selected < *offset { *offset = *selected; } }
                 KeyCode::PageDown => { let step = 10usize; *selected = (*selected + step).min(total.saturating_sub(1)); }
+                KeyCode::Char(' ') => {
+                    if let Some(pos) = selected_multi.iter().position(|&i| i == *selected) { selected_multi.remove(pos); } else { selected_multi.push(*selected); }
+                }
                 KeyCode::Enter => {
-                    if let Some(username) = members.get(*selected) {
-                        let gname_opt = if let Some(gid) = *target_gid { app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone()) } else { Some(group_name.clone()) };
-                        if let Some(group_name) = gname_opt {
-                            let pending = PendingAction::RemoveUserFromGroup { username: username.clone(), groupname: group_name.clone() };
-                            if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
-                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
-                            }
+                    let gname_opt = if let Some(gid) = *target_gid { app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone()) } else { Some(group_name.clone()) };
+                    if let Some(group_name) = gname_opt {
+                        if !selected_multi.is_empty() {
+                            let mut usernames: Vec<String> = Vec::with_capacity(selected_multi.len());
+                            for idx in selected_multi.iter() { if let Some(u) = members.get(*idx) { usernames.push(u.clone()); } }
+                            if !usernames.is_empty() {
+                                let pending = PendingAction::RemoveMembersFromGroup { groupname: group_name.clone(), usernames };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            } else { close_modal(app); }
+                        } else {
+                            if let Some(username) = members.get(*selected) {
+                                let pending = PendingAction::RemoveUserFromGroup { username: username.clone(), groupname: group_name.clone() };
+                                if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                    app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                                }
+                            } else { close_modal(app); }
                         }
                     } else { close_modal(app); }
                 }
@@ -492,9 +619,9 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::UserAddInput { name, create_home }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Backspace => { name.pop(); }
+                KeyCode::Backspace => { if name.is_empty() { close_modal(app); } else { name.pop(); } }
                 KeyCode::Char(' ') => { *create_home = !*create_home; }
                 KeyCode::Enter => {
                     if name.trim().is_empty() {
@@ -511,9 +638,9 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::SudoPrompt { next, password, error: _ }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc => close_modal(app),
-                KeyCode::Backspace => { password.pop(); }
+                KeyCode::Backspace => { if password.is_empty() { close_modal(app); } else { password.pop(); } }
                 KeyCode::Enter => {
                     let pw = password.clone();
                     app.sudo_password = Some(pw.clone());
@@ -530,7 +657,7 @@ fn handle_modal_key(app: &mut AppState, code: KeyCode) {
             }
         }
         Some(ModalState::Info { .. }) => {
-            match code {
+            match key.code {
                 KeyCode::Esc | KeyCode::Enter => close_modal(app),
                 _ => {}
             }
@@ -550,12 +677,14 @@ fn perform_pending_action(app: &mut AppState, pending: PendingAction, sudo_passw
         PendingAction::AddUserToGroup { username, groupname } => {
             adapter.add_user_to_group(&username, &groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
             app.groups = app.groups_all.clone();
             app.modal = Some(ModalState::Info { message: format!("Added '{}' to '{}'", username, groupname) });
         }
         PendingAction::RemoveUserFromGroup { username, groupname } => {
             adapter.remove_user_from_group(&username, &groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
             app.groups = app.groups_all.clone();
             app.modal = Some(ModalState::Info { message: format!("Removed '{}' from '{}'", username, groupname) });
         }
@@ -583,12 +712,14 @@ fn perform_pending_action(app: &mut AppState, pending: PendingAction, sudo_passw
         PendingAction::CreateGroup { groupname } => {
             adapter.create_group(&groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
             app.groups = app.groups_all.clone();
             app.modal = Some(ModalState::Info { message: format!("Created group '{}'", groupname) });
         }
         PendingAction::DeleteGroup { groupname } => {
             adapter.delete_group(&groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
             app.groups = app.groups_all.clone();
             app.modal = Some(ModalState::Info { message: format!("Deleted group '{}'", groupname) });
         }
@@ -616,6 +747,42 @@ fn perform_pending_action(app: &mut AppState, pending: PendingAction, sudo_passw
         PendingAction::ResetPassword { username } => {
             adapter.expire_user_password(&username)?;
             app.modal = Some(ModalState::Info { message: "Password reset (must change at next login)".to_string() });
+        }
+        PendingAction::AddUserToGroups { username, groupnames } => {
+            for g in groupnames.iter() {
+                adapter.add_user_to_group(&username, g)?;
+            }
+            app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
+            app.groups = app.groups_all.clone();
+            app.modal = Some(ModalState::Info { message: format!("Added '{}' to selected groups", username) });
+        }
+        PendingAction::RemoveUserFromGroups { username, groupnames } => {
+            for g in groupnames.iter() {
+                adapter.remove_user_from_group(&username, g)?;
+            }
+            app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
+            app.groups = app.groups_all.clone();
+            app.modal = Some(ModalState::Info { message: format!("Removed '{}' from selected groups", username) });
+        }
+        PendingAction::AddMembersToGroup { groupname, usernames } => {
+            for u in usernames.iter() {
+                adapter.add_user_to_group(u, &groupname)?;
+            }
+            app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
+            app.groups = app.groups_all.clone();
+            app.modal = Some(ModalState::Info { message: format!("Added selected users to '{}'", groupname) });
+        }
+        PendingAction::RemoveMembersFromGroup { groupname, usernames } => {
+            for u in usernames.iter() {
+                adapter.remove_user_from_group(u, &groupname)?;
+            }
+            app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
+            app.groups = app.groups_all.clone();
+            app.modal = Some(ModalState::Info { message: format!("Removed selected users from '{}'", groupname) });
         }
     }
     Ok(())
