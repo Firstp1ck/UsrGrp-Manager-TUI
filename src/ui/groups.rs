@@ -1,3 +1,8 @@
+//! Groups screen rendering and modals.
+//!
+//! Contains the groups table, details panel, members list, and group-related
+//! modal dialogs for add/remove/rename actions.
+//!
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -5,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, R
 
 use crate::app::{AppState, ModalState};
 
+/// Render the groups table and manage selection/pagination state.
 pub fn render_groups_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     let body_height = area.height.saturating_sub(3) as usize;
     if body_height > 0 {
@@ -62,6 +68,7 @@ pub fn render_groups_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     f.render_widget(table, area);
 }
 
+/// Render the selected group's summary details.
 pub fn render_group_details(f: &mut Frame, area: Rect, app: &AppState) {
     let group = app.groups.get(app.selected_group_index);
     let (name, gid, members) = match group {
@@ -80,6 +87,7 @@ pub fn render_group_details(f: &mut Frame, area: Rect, app: &AppState) {
     f.render_widget(p, area);
 }
 
+/// Render the selected group's members list.
 pub fn render_group_members(f: &mut Frame, area: Rect, app: &mut AppState) {
     let members = app
         .groups
@@ -117,6 +125,7 @@ pub fn render_group_members(f: &mut Frame, area: Rect, app: &mut AppState) {
     f.render_widget(table, area);
 }
 
+/// Render group-related modal dialogs based on state.
 pub fn render_group_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &ModalState) {
     match state.clone() {
         ModalState::GroupsActions { selected, .. } => {

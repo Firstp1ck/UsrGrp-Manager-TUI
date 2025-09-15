@@ -1,3 +1,8 @@
+//! Application update loop and input handling.
+//!
+//! Contains the TUI render loop and all keyboard event handling, including
+//! modal workflows for user and group management.
+//!
 use crate::error::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Terminal;
@@ -11,6 +16,7 @@ use crate::search::apply_search;
 use crate::sys;
 use crate::ui;
 
+/// Drive the TUI: draw frames and react to keyboard input until quit.
 pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
     let mut app = AppState::new();
 
@@ -285,6 +291,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
     Ok(())
 }
 
+/// Handle all key events while a modal dialog is open.
 fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
     match &mut app.modal {
         Some(ModalState::Actions { selected }) => match key.code {
@@ -1589,11 +1596,13 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
     }
 }
 
+/// Close the currently open modal and return to normal mode.
 fn close_modal(app: &mut AppState) {
     app.modal = None;
     app.input_mode = InputMode::Normal;
 }
 
+/// Execute a queued privileged action and refresh state lists.
 fn perform_pending_action(
     app: &mut AppState,
     pending: PendingAction,

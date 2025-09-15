@@ -1,3 +1,8 @@
+//! UI rendering entry point and modal routing.
+//!
+//! Renders the high-level layout (header, body, status bar) and delegates to
+//! users/groups submodules and shared components.
+//!
 pub mod components;
 pub mod groups;
 pub mod users;
@@ -9,6 +14,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{ActiveTab, AppState, ModalState};
 
+/// Render the entire UI frame, including header, body, footer, and modals.
 pub fn render(f: &mut Frame, app: &mut AppState) {
     let root = Layout::default()
         .direction(Direction::Vertical)
@@ -74,6 +80,7 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
     }
 }
 
+/// Route modal rendering to the appropriate submodule.
 fn render_modal(f: &mut Frame, area: Rect, app: &mut AppState) {
     if let Some(state) = app.modal.clone() {
         match state.clone() {

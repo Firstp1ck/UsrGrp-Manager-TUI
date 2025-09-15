@@ -1,8 +1,15 @@
+//! System adapter for querying and modifying users and groups.
+//!
+//! Provides simple structs (`SystemUser`, `SystemGroup`) for system accounts
+//! and a `SystemAdapter` that can list, create, delete, and modify accounts
+//! via standard Linux utilities. Many operations may require sudo.
+//!
 use crate::error::Result;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Representation of a system user (/etc/passwd).
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct SystemUser {
@@ -14,6 +21,7 @@ pub struct SystemUser {
     pub shell: String,
 }
 
+/// Representation of a system group (/etc/group).
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct SystemGroup {
@@ -22,32 +30,38 @@ pub struct SystemGroup {
     pub members: Vec<String>,
 }
 
+/// Adapter that wraps privileged operations, optionally using a sudo password.
 #[allow(dead_code)]
 pub struct SystemAdapter {
     pub sudo_password: Option<String>,
 }
 
 impl SystemAdapter {
+    /// Construct an adapter without sudo credentials.
     pub fn new() -> Self {
         Self {
             sudo_password: None,
         }
     }
 
+    /// Construct an adapter with an optional sudo password.
     pub fn with_sudo_password(password: Option<String>) -> Self {
         Self {
             sudo_password: password,
         }
     }
 
+    /// Read users from `/etc/passwd`.
     pub fn list_users(&self) -> Result<Vec<SystemUser>> {
         parse_passwd("/etc/passwd")
     }
 
+    /// Read groups from `/etc/group`.
     pub fn list_groups(&self) -> Result<Vec<SystemGroup>> {
         parse_group("/etc/group")
     }
 
+    /// Add a user to a group using `gpasswd -a`.
     pub fn add_user_to_group(&self, username: &str, groupname: &str) -> Result<()> {
         // Prefer gpasswd for membership changes
         let output = self
@@ -68,6 +82,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Remove a user from a group using `gpasswd -d`.
     pub fn remove_user_from_group(&self, username: &str, groupname: &str) -> Result<()> {
         let output = self
             .run_privileged("gpasswd", &["-d", username, groupname])
@@ -87,6 +102,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Create a group via `groupadd`.
     pub fn create_group(&self, groupname: &str) -> Result<()> {
         let output = self.run_privileged("groupadd", &[groupname]).map_err(|e| {
             crate::error::simple_error(format!("failed to execute groupadd {}: {}", groupname, e))
@@ -100,6 +116,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Create a user via `useradd` (optionally with home `-m`).
     pub fn create_user(&self, username: &str, create_home: bool) -> Result<()> {
         let mut args: Vec<&str> = Vec::new();
         if create_home {
@@ -118,6 +135,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Delete a group via `groupdel` (idempotent if already absent).
     pub fn delete_group(&self, groupname: &str) -> Result<()> {
         // If the group is already gone, treat as success (idempotent delete)
         if let Ok(groups) = self.list_groups()
@@ -137,6 +155,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Rename a group via `groupmod -n`.
     pub fn rename_group(&self, old_name: &str, new_name: &str) -> Result<()> {
         let output = self
             .run_privileged("groupmod", &["-n", new_name, old_name])
@@ -156,6 +175,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Delete a user via `userdel` (optionally `-r` to remove home).
     pub fn delete_user(&self, username: &str, delete_home: bool) -> Result<()> {
         let mut args: Vec<&str> = Vec::new();
         if delete_home {
@@ -174,6 +194,7 @@ impl SystemAdapter {
         }
     }
 
+    /// List available shells from `/etc/shells`.
     pub fn list_shells(&self) -> Result<Vec<String>> {
         let contents = fs::read_to_string("/etc/shells")?;
         let shells = contents
@@ -190,6 +211,7 @@ impl SystemAdapter {
         Ok(shells)
     }
 
+    /// Change a user's shell via `usermod -s`.
     pub fn change_user_shell(&self, username: &str, new_shell: &str) -> Result<()> {
         let output = self
             .run_privileged("usermod", &["-s", new_shell, username])
@@ -209,6 +231,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Change a user's full name (GECOS) via `usermod -c`.
     pub fn change_user_fullname(&self, username: &str, new_fullname: &str) -> Result<()> {
         let output = self
             .run_privileged("usermod", &["-c", new_fullname, username])
@@ -228,6 +251,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Rename a user via `usermod -l`.
     pub fn change_username(&self, old_username: &str, new_username: &str) -> Result<()> {
         let output = self
             .run_privileged("usermod", &["-l", new_username, old_username])
@@ -247,6 +271,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Set a user's password via `chpasswd` (root) or `sudo` pipeline.
     pub fn set_user_password(&self, username: &str, password: &str) -> Result<()> {
         use std::io::Write;
         if current_uid() == 0 {
@@ -320,6 +345,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Expire a user's password via `chage -d 0`.
     pub fn expire_user_password(&self, username: &str) -> Result<()> {
         let output = self
             .run_privileged("chage", &["-d", "0", username])
@@ -339,6 +365,7 @@ impl SystemAdapter {
         }
     }
 
+    /// Run a command with privileges using `sudo` if necessary.
     fn run_privileged(&self, cmd: &str, args: &[&str]) -> Result<std::process::Output> {
         if current_uid() == 0 {
             return Command::new(cmd)
@@ -396,6 +423,7 @@ impl Default for SystemAdapter {
     }
 }
 
+/// Parse a passwd-format file into [`SystemUser`] entries.
 fn parse_passwd<P: AsRef<Path>>(path: P) -> Result<Vec<SystemUser>> {
     let contents = fs::read_to_string(path)?;
     let mut users = Vec::new();
@@ -429,6 +457,7 @@ fn parse_passwd<P: AsRef<Path>>(path: P) -> Result<Vec<SystemUser>> {
     Ok(users)
 }
 
+/// Parse a group-format file into [`SystemGroup`] entries.
 fn parse_group<P: AsRef<Path>>(path: P) -> Result<Vec<SystemGroup>> {
     let contents = fs::read_to_string(path)?;
     let mut groups = Vec::new();
@@ -459,6 +488,7 @@ fn parse_group<P: AsRef<Path>>(path: P) -> Result<Vec<SystemGroup>> {
 // Note: NSS enumeration is not used at the moment; parsing /etc/passwd and
 // /etc/group is the default approach and can be forced via the `file-parse` feature.
 
+/// Format a helpful CLI error message from a process output.
 fn format_cli_error(cmd: &str, output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if stderr.is_empty() {
@@ -468,6 +498,7 @@ fn format_cli_error(cmd: &str, output: &std::process::Output) -> String {
     }
 }
 
+/// Best-effort current UID detection (Linux-specific).
 fn current_uid() -> u32 {
     // Linux: read from /proc; fallback to 0 if parsing fails
     if let Ok(contents) = std::fs::read_to_string("/proc/self/status") {
@@ -483,6 +514,7 @@ fn current_uid() -> u32 {
     0
 }
 
+/// Resolve the current username using the UID and `/etc/passwd`.
 pub fn current_username() -> Option<String> {
     let uid = current_uid();
     parse_passwd("/etc/passwd")

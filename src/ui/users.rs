@@ -1,3 +1,8 @@
+//! Users screen rendering and modals.
+//!
+//! Contains the users table, details and member-of panels, and all user
+//! modification modal dialogs.
+//!
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -5,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, R
 
 use crate::app::{AppState, ModalState, ModifyField, UsersFocus};
 
+/// Render the users table and manage selection/pagination state.
 pub fn render_users_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     let body_height = area.height.saturating_sub(3) as usize;
     if body_height > 0 {
@@ -88,6 +94,7 @@ pub fn render_users_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     f.render_widget(table, area);
 }
 
+/// Render the details panel for the selected user.
 pub fn render_user_details(f: &mut Frame, area: Rect, app: &AppState) {
     let user = app.users.get(app.selected_user_index);
     let (username, fullname, uid, gid, home, shell) = match user {
@@ -123,6 +130,7 @@ pub fn render_user_details(f: &mut Frame, area: Rect, app: &AppState) {
     f.render_widget(p, area);
 }
 
+/// Render the list of groups the selected user belongs to.
 pub fn render_user_groups(f: &mut Frame, area: Rect, app: &mut AppState) {
     let groups = if let Some(u) = app.users.get(app.selected_user_index) {
         let name = u.name.clone();
@@ -204,6 +212,7 @@ pub fn render_user_groups(f: &mut Frame, area: Rect, app: &mut AppState) {
     f.render_widget(table, area);
 }
 
+/// Render user-related modal dialogs based on state.
 pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &ModalState) {
     match state.clone() {
         ModalState::Actions { selected } => {

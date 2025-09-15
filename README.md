@@ -271,4 +271,4 @@ USRGRP_MANAGER_LOG=debug cargo run --release
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+See [LICENSE](https://github.com/firstpick/usrgrp-manager/blob/main/LICENSE) for details.

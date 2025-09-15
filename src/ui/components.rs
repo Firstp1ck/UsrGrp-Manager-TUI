@@ -1,3 +1,7 @@
+//! Shared UI components (status bar, modal helpers).
+//!
+//! Contains small building blocks reused by users/groups screens.
+//!
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -5,6 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::{AppState, ModalState};
 
+/// Render the bottom status bar with mode and counts.
 pub fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
     let mode = match app.input_mode {
         crate::app::InputMode::Normal => "NORMAL",
@@ -26,6 +31,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
     f.render_widget(p, area);
 }
 
+/// Compute a rectangle centered within `area` with a maximum size.
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
@@ -37,6 +43,7 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
+/// Render a generic informational modal dialog.
 pub fn render_info_modal(f: &mut Frame, area: Rect, app: &AppState, state: &ModalState) {
     if let ModalState::Info { message } = state {
         // Compute a sensible max width and height; wrap long text
@@ -59,6 +66,7 @@ pub fn render_info_modal(f: &mut Frame, area: Rect, app: &AppState, state: &Moda
     }
 }
 
+/// Render the sudo password prompt modal.
 pub fn render_sudo_modal(f: &mut Frame, area: Rect, app: &AppState, state: &ModalState) {
     if let ModalState::SudoPrompt {
         password, error, ..

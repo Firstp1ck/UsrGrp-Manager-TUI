@@ -1,3 +1,8 @@
+//! Application state types and entry glue.
+//!
+//! Defines enums and structs that model the TUI state, as well as helpers
+//! to construct defaults and to run the application loop (re-exported as `run`).
+//!
 pub mod update;
 
 use ratatui::style::Color;
@@ -6,18 +11,21 @@ use std::time::Instant;
 
 use crate::sys;
 
+/// Top-level active tab in the UI.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ActiveTab {
     Users,
     Groups,
 }
 
+/// Which subsection is focused on the Users screen.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UsersFocus {
     UsersList,
     MemberOf,
 }
 
+/// Current input mode for key handling.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -26,6 +34,7 @@ pub enum InputMode {
     Modal,
 }
 
+/// Color palette for theming the TUI.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub text: Color,
@@ -41,6 +50,7 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Dark default theme.
     pub fn dark() -> Self {
         Self {
             text: Color::Gray,
@@ -57,6 +67,7 @@ impl Theme {
     }
 }
 
+/// Modal dialog states for user and group actions.
 #[derive(Clone, Debug)]
 pub enum ModalState {
     Actions {
@@ -149,12 +160,14 @@ pub enum ModalState {
     },
 }
 
+/// Field selectors for text input dialogs.
 #[derive(Clone, Debug)]
 pub enum ModifyField {
     Username,
     Fullname,
 }
 
+/// Actions that require privileged changes, executed via `sys::SystemAdapter`.
 #[derive(Clone, Debug)]
 pub enum PendingAction {
     AddUserToGroup {
@@ -244,6 +257,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Create a new `AppState` by reading users/groups from the system.
     pub fn new() -> Self {
         let adapter = crate::sys::SystemAdapter::new();
         let mut users_all = adapter.list_users().unwrap_or_default();
@@ -277,4 +291,5 @@ impl Default for AppState {
     }
 }
 
+/// Re-export the application event loop entry function.
 pub use update::run_app as run;

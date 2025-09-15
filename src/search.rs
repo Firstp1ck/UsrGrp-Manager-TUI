@@ -1,5 +1,15 @@
+//! Search utilities for filtering users and groups.
+//!
+//! Currently provides [`apply_search`] which filters the `AppState` in-place
+//! based on the current input mode and query string.
+//!
 use crate::app::{AppState, InputMode};
 
+/// Filter the visible users or groups of `app` according to the lowercase query.
+///
+/// - In `SearchUsers`, filters by username, full name, home directory, shell, UID, or GID.
+/// - In `SearchGroups`, filters by group name, GID, or any member name.
+/// - For empty queries, restores the full lists.
 pub fn apply_search(app: &mut AppState) {
     let q = app.search_query.to_lowercase();
     match app.input_mode {
