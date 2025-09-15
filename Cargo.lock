@@ -606,7 +606,7 @@ checksum = "1fc81956842c57dac11422a97c3b8195a1ff727f06e85c84ed2e8aa277c9a0fd"
 
 [[package]]
 name = "usrgrp-manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossterm 0.29.0",
  "ratatui",
