@@ -1,19 +1,25 @@
-pub mod users;
-pub mod groups;
 pub mod components;
+pub mod groups;
+pub mod users;
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::{Frame};
 
-use crate::app::{AppState, ActiveTab, ModalState};
- 
+use crate::app::{ActiveTab, AppState, ModalState};
 
 pub fn render(f: &mut Frame, app: &mut AppState) {
     let root = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(5), Constraint::Length(1)].as_ref())
+        .constraints(
+            [
+                Constraint::Length(5),
+                Constraint::Min(5),
+                Constraint::Length(1),
+            ]
+            .as_ref(),
+        )
         .split(f.area());
     let body = Layout::default()
         .direction(Direction::Horizontal)
@@ -25,7 +31,10 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
         .split(body[1]);
 
     let who = crate::sys::current_username().unwrap_or_else(|| "unknown".to_string());
-    let tabs = match app.active_tab { ActiveTab::Users => "[Users]  Groups", ActiveTab::Groups => "Users  [Groups]" };
+    let tabs = match app.active_tab {
+        ActiveTab::Users => "[Users]  Groups",
+        ActiveTab::Groups => "Users  [Groups]",
+    };
     let prompt = match app.input_mode {
         crate::app::InputMode::Normal => String::new(),
         crate::app::InputMode::SearchUsers => format!("  Search users: {}", app.search_query),
@@ -33,7 +42,7 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
         crate::app::InputMode::Modal => String::new(),
     };
     let p = Paragraph::new(format!(
-        "usrgrp-manager ({who})  {tabs}{prompt}\nusers:{}  groups:{}\nKeys: [n] New user | [Tab] Switch tab | [Shift+Tab] Member-of | [/] Search | [Enter] Apply | [Esc] Cancel | [Backspace] Back | [Backspace at start] Back (input windows) | [q] Quit",
+        "usrgrp-manager ({who})  {tabs}{prompt}\nusers:{}  groups:{}\nKeys: [n] New user | [Tab] Switch tab | [Shift+Tab] Member-of | [/] Search | [Space] Selection | [Enter] Apply | [Esc] Cancel | [Backspace] Back | [Backspace at start] Back (input windows) | [q] Quit",
         app.users.len(), app.groups.len()
     ))
     .block(

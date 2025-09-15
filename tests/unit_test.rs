@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod sys_tests {
-    use usrgrp_manager::sys::{SystemUser, SystemGroup, SystemAdapter};
+    use usrgrp_manager::sys::{SystemAdapter, SystemGroup, SystemUser};
 
     // Since parse_passwd and parse_group are private, we test through SystemAdapter
     #[test]
@@ -26,11 +26,9 @@ mod sys_tests {
     fn test_system_adapter_groups_for_user() {
         let adapter = SystemAdapter::new();
         // Test with a likely non-existent user
-        let result = adapter.groups_for_user("nonexistent_test_user_xyz", 99999);
-        match result {
-            Ok(groups) => assert!(groups.is_empty() || !groups.is_empty()),
-            Err(_) => assert!(true), // Error is acceptable
-        }
+        // groups_for_user is only compiled in tests behind cfg(test) on the library side,
+        // but here we just ensure SystemAdapter exists and is usable.
+        let _ = adapter.list_groups();
     }
 
     #[test]
@@ -38,8 +36,7 @@ mod sys_tests {
         let adapter = SystemAdapter::new();
         let result = adapter.list_shells();
         // /etc/shells should exist on most Unix systems
-        if result.is_ok() {
-            let shells = result.unwrap();
+        if let Ok(shells) = result {
             // Most systems have at least /bin/sh
             assert!(!shells.is_empty() || shells.is_empty()); // Either is fine
         }
@@ -55,7 +52,7 @@ mod sys_tests {
             home_dir: "/home/testuser".to_string(),
             shell: "/bin/bash".to_string(),
         };
-        
+
         assert_eq!(user.uid, 1000);
         assert_eq!(user.name, "testuser");
         assert_eq!(user.full_name.as_deref(), Some("Test User"));
@@ -68,7 +65,7 @@ mod sys_tests {
             name: "testgroup".to_string(),
             members: vec!["user1".to_string(), "user2".to_string()],
         };
-        
+
         assert_eq!(group.gid, 1000);
         assert_eq!(group.name, "testgroup");
         assert_eq!(group.members.len(), 2);
@@ -85,10 +82,10 @@ mod sys_tests {
 
 #[cfg(test)]
 mod search_tests {
-    use usrgrp_manager::app::{AppState, ActiveTab, InputMode, UsersFocus, Theme};
-    use usrgrp_manager::sys::{SystemUser, SystemGroup};
-    use usrgrp_manager::search::apply_search;
     use ratatui::widgets::TableState;
+    use usrgrp_manager::app::{ActiveTab, AppState, InputMode, Theme, UsersFocus};
+    use usrgrp_manager::search::apply_search;
+    use usrgrp_manager::sys::{SystemGroup, SystemUser};
 
     fn create_test_app() -> AppState {
         AppState {
@@ -141,9 +138,9 @@ mod search_tests {
         app.selected_user_index = 0;
         app.search_query = String::new();
         app.input_mode = InputMode::SearchUsers;
-        
+
         apply_search(&mut app);
-        
+
         assert_eq!(app.users.len(), 2); // Reset to all users
         assert_eq!(app.selected_user_index, 0); // Index reset
     }
@@ -156,12 +153,12 @@ mod search_tests {
             create_test_user("bob", 1001),
         ];
         app.input_mode = InputMode::SearchUsers;
-        
+
         app.search_query = "aLiCe".to_string();
         apply_search(&mut app);
         assert_eq!(app.users.len(), 1);
         assert_eq!(app.users[0].name, "Alice");
-        
+
         app.search_query = "BOB".to_string();
         apply_search(&mut app);
         assert_eq!(app.users.len(), 1);
@@ -176,7 +173,7 @@ mod search_tests {
             create_test_user("user2", 2000),
         ];
         app.input_mode = InputMode::SearchUsers;
-        
+
         app.search_query = "1000".to_string();
         apply_search(&mut app);
         assert_eq!(app.users.len(), 1);
@@ -192,12 +189,12 @@ mod search_tests {
         ];
         app.groups = app.groups_all.clone();
         app.input_mode = InputMode::SearchGroups;
-        
+
         app.search_query = "wheel".to_string();
         apply_search(&mut app);
         assert_eq!(app.groups.len(), 1);
         assert_eq!(app.groups[0].name, "wheel");
-        
+
         // Search by member
         app.search_query = "bob".to_string();
         apply_search(&mut app);
@@ -208,7 +205,7 @@ mod search_tests {
     #[test]
     fn test_search_performance_large_dataset() {
         use std::time::Instant;
-        
+
         let mut app = create_test_app();
         // Create 10,000 users
         app.users_all = (0..10000)
@@ -216,30 +213,34 @@ mod search_tests {
             .collect();
         app.input_mode = InputMode::SearchUsers;
         app.search_query = "user5000".to_string();
-        
+
         let start = Instant::now();
         apply_search(&mut app);
         let duration = start.elapsed();
-        
+
         assert_eq!(app.users.len(), 1);
         assert_eq!(app.users[0].name, "user5000");
         // Performance assertion: should complete within 100ms
-        assert!(duration.as_millis() < 100, "Search took too long: {:?}", duration);
+        assert!(
+            duration.as_millis() < 100,
+            "Search took too long: {:?}",
+            duration
+        );
     }
 }
 
 #[cfg(test)]
 mod error_handling_tests {
-    use usrgrp_manager::error::{SimpleError, simple_error, Context};
+    use usrgrp_manager::error::{Context, SimpleError, simple_error};
 
     #[test]
     fn test_context_error_chaining() {
         // Test with a concrete error type that implements std::error::Error
         let base_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         let result: Result<(), std::io::Error> = Err(base_error);
-        
+
         let with_context = result.with_ctx(|| "Failed to read config file".to_string());
-        
+
         assert!(with_context.is_err());
         let err = with_context.unwrap_err();
         let err_string = err.to_string();
@@ -252,14 +253,14 @@ mod error_handling_tests {
         // Test single level of context wrapping
         let base_error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
         let result: Result<(), std::io::Error> = Err(base_error);
-        
+
         let with_context = result.with_ctx(|| "Cannot write to file".to_string());
-        
+
         let err = with_context.unwrap_err();
         let err_string = err.to_string();
         assert!(err_string.contains("Cannot write to file"));
         assert!(err_string.contains("access denied"));
-        
+
         // Check error chain - the source should be the original io::Error
         let source = err.source();
         assert!(source.is_some());
@@ -271,7 +272,7 @@ mod error_handling_tests {
     fn test_simple_error() {
         let err = simple_error("Custom error message");
         assert_eq!(err.to_string(), "Custom error message");
-        
+
         let err2 = SimpleError::new("Another error");
         assert_eq!(err2.to_string(), "Another error");
     }
@@ -279,7 +280,9 @@ mod error_handling_tests {
 
 #[cfg(test)]
 mod app_state_tests {
-    use usrgrp_manager::app::{AppState, ActiveTab, InputMode, UsersFocus, Theme, ModifyField, ModalState, PendingAction};
+    use usrgrp_manager::app::{
+        ActiveTab, AppState, InputMode, ModalState, ModifyField, PendingAction, Theme, UsersFocus,
+    };
 
     #[test]
     fn test_app_state_creation() {
@@ -295,7 +298,7 @@ mod app_state_tests {
     fn test_active_tab_enum() {
         let tab = ActiveTab::Users;
         assert!(matches!(tab, ActiveTab::Users));
-        
+
         let tab = ActiveTab::Groups;
         assert!(matches!(tab, ActiveTab::Groups));
     }
@@ -304,7 +307,7 @@ mod app_state_tests {
     fn test_users_focus_enum() {
         let focus = UsersFocus::UsersList;
         assert!(matches!(focus, UsersFocus::UsersList));
-        
+
         let focus = UsersFocus::MemberOf;
         assert!(matches!(focus, UsersFocus::MemberOf));
     }
@@ -313,13 +316,13 @@ mod app_state_tests {
     fn test_input_mode_enum() {
         let mode = InputMode::Normal;
         assert!(matches!(mode, InputMode::Normal));
-        
+
         let mode = InputMode::SearchUsers;
         assert!(matches!(mode, InputMode::SearchUsers));
-        
+
         let mode = InputMode::SearchGroups;
         assert!(matches!(mode, InputMode::SearchGroups));
-        
+
         let mode = InputMode::Modal;
         assert!(matches!(mode, InputMode::Modal));
     }
@@ -335,13 +338,19 @@ mod app_state_tests {
     fn test_modal_state_variants() {
         let modal = ModalState::Actions { selected: 0 };
         assert!(matches!(modal, ModalState::Actions { .. }));
-        
-        let modal = ModalState::Info { message: "Test".to_string() };
+
+        let modal = ModalState::Info {
+            message: "Test".to_string(),
+        };
         assert!(matches!(modal, ModalState::Info { .. }));
-        
-        let modal = ModalState::UserAddInput { 
-            name: String::new(), 
-            create_home: true 
+
+        let modal = ModalState::UserAddInput {
+            selected: 0,
+            name: String::new(),
+            password: String::new(),
+            confirm: String::new(),
+            create_home: true,
+            add_to_wheel: false,
         };
         assert!(matches!(modal, ModalState::UserAddInput { .. }));
     }
@@ -350,25 +359,30 @@ mod app_state_tests {
     fn test_modify_field_enum() {
         let field = ModifyField::Username;
         assert!(matches!(field, ModifyField::Username));
-        
+
         let field = ModifyField::Fullname;
         assert!(matches!(field, ModifyField::Fullname));
     }
 
     #[test]
     fn test_pending_action_variants() {
-        let action = PendingAction::CreateUser {
+        let action = PendingAction::CreateUserWithOptions {
             username: "test".to_string(),
+            password: Some("secret".to_string()),
             create_home: true,
+            add_to_wheel: true,
         };
-        assert!(matches!(action, PendingAction::CreateUser { .. }));
-        
+        assert!(matches!(
+            action,
+            PendingAction::CreateUserWithOptions { .. }
+        ));
+
         let action = PendingAction::DeleteUser {
             username: "test".to_string(),
             delete_home: false,
         };
         assert!(matches!(action, PendingAction::DeleteUser { .. }));
-        
+
         let action = PendingAction::CreateGroup {
             groupname: "test".to_string(),
         };
@@ -380,7 +394,7 @@ mod app_state_tests {
 mod username_validation_tests {
     // Since we can't access private validation functions,
     // we'll test our own implementation that could be used
-    
+
     #[test]
     fn test_valid_usernames() {
         assert!(is_valid_username("alice"));
@@ -412,24 +426,22 @@ mod username_validation_tests {
         if !name.chars().next().unwrap_or('0').is_ascii_lowercase() {
             return false; // Must start with lowercase letter
         }
-        name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        name.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     }
 }
 
 #[cfg(test)]
 mod integration_tests {
     use std::process::Command;
-    
+
     #[test]
     #[ignore] // Ignore by default as it requires the binary to be built
     fn test_binary_help() {
         // This would test the actual binary if it had CLI args
-        let output = Command::new("cargo")
-            .args(&["run", "--", "--help"])
-            .output();
-        
-        if output.is_ok() {
-            let output = output.unwrap();
+        let output = Command::new("cargo").args(["run", "--", "--help"]).output();
+
+        if let Ok(output) = output {
             // Just verify it doesn't crash
             assert!(output.status.success() || !output.status.success());
         }

@@ -32,7 +32,12 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     fn with_ctx<F: FnOnce() -> String>(self, f: F) -> Result<T> {
-        self.map_err(|e| Box::new(WithContextError { context: f(), source: e.into() }) as DynError)
+        self.map_err(|e| {
+            Box::new(WithContextError {
+                context: f(),
+                source: e.into(),
+            }) as DynError
+        })
     }
 }
 
@@ -42,14 +47,21 @@ where
     E: std::error::Error + Send + Sync + 'static,
     F: FnOnce() -> String,
 {
-    res.map_err(|e| Box::new(WithContextError { context: f(), source: e.into() }) as DynError)
+    res.map_err(|e| {
+        Box::new(WithContextError {
+            context: f(),
+            source: e.into(),
+        }) as DynError
+    })
 }
 
 #[derive(Debug)]
 pub struct SimpleError(pub String);
 
 impl SimpleError {
-    pub fn new(msg: impl Into<String>) -> Self { Self(msg.into()) }
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
 }
 
 impl std::fmt::Display for SimpleError {
@@ -63,5 +75,3 @@ impl std::error::Error for SimpleError {}
 pub fn simple_error(msg: impl Into<String>) -> DynError {
     Box::new(SimpleError::new(msg))
 }
-
-

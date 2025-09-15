@@ -59,49 +59,169 @@ impl Theme {
 
 #[derive(Clone, Debug)]
 pub enum ModalState {
-    Actions { selected: usize },
-    ModifyMenu { selected: usize },
-    ModifyGroupsAdd { selected: usize, offset: usize, selected_multi: Vec<usize> },
-    ModifyGroupsRemove { selected: usize, offset: usize, selected_multi: Vec<usize> },
-    ModifyDetailsMenu { selected: usize },
-    ModifyShell { selected: usize, offset: usize, shells: Vec<String> },
-    ModifyTextInput { field: ModifyField, value: String },
-    DeleteConfirm { selected: usize, allowed: bool, delete_home: bool },
-    ModifyPasswordMenu { selected: usize },
-    ChangePassword { selected: usize, password: String, confirm: String, must_change: bool },
-    Info { message: String },
-    SudoPrompt { next: PendingAction, password: String, error: Option<String> },
-    GroupsActions { selected: usize, target_gid: Option<u32> },
-    GroupAddInput { name: String },
-    GroupDeleteConfirm { selected: usize },
-    GroupModifyMenu { selected: usize, target_gid: Option<u32> },
-    GroupModifyAddMembers { selected: usize, offset: usize, target_gid: Option<u32>, selected_multi: Vec<usize> },
-    GroupModifyRemoveMembers { selected: usize, offset: usize, target_gid: Option<u32>, selected_multi: Vec<usize> },
-    GroupRenameInput { name: String, target_gid: Option<u32> },
-    UserAddInput { name: String, create_home: bool },
+    Actions {
+        selected: usize,
+    },
+    ModifyMenu {
+        selected: usize,
+    },
+    ModifyGroupsAdd {
+        selected: usize,
+        offset: usize,
+        selected_multi: Vec<usize>,
+    },
+    ModifyGroupsRemove {
+        selected: usize,
+        offset: usize,
+        selected_multi: Vec<usize>,
+    },
+    ModifyDetailsMenu {
+        selected: usize,
+    },
+    ModifyShell {
+        selected: usize,
+        offset: usize,
+        shells: Vec<String>,
+    },
+    ModifyTextInput {
+        field: ModifyField,
+        value: String,
+    },
+    DeleteConfirm {
+        selected: usize,
+        allowed: bool,
+        delete_home: bool,
+    },
+    ModifyPasswordMenu {
+        selected: usize,
+    },
+    ChangePassword {
+        selected: usize,
+        password: String,
+        confirm: String,
+        must_change: bool,
+    },
+    Info {
+        message: String,
+    },
+    SudoPrompt {
+        next: PendingAction,
+        password: String,
+        error: Option<String>,
+    },
+    GroupsActions {
+        selected: usize,
+        target_gid: Option<u32>,
+    },
+    GroupAddInput {
+        name: String,
+    },
+    GroupDeleteConfirm {
+        selected: usize,
+    },
+    GroupModifyMenu {
+        selected: usize,
+        target_gid: Option<u32>,
+    },
+    GroupModifyAddMembers {
+        selected: usize,
+        offset: usize,
+        target_gid: Option<u32>,
+        selected_multi: Vec<usize>,
+    },
+    GroupModifyRemoveMembers {
+        selected: usize,
+        offset: usize,
+        target_gid: Option<u32>,
+        selected_multi: Vec<usize>,
+    },
+    GroupRenameInput {
+        name: String,
+        target_gid: Option<u32>,
+    },
+    UserAddInput {
+        selected: usize,
+        name: String,
+        password: String,
+        confirm: String,
+        create_home: bool,
+        add_to_wheel: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
-pub enum ModifyField { Username, Fullname }
+pub enum ModifyField {
+    Username,
+    Fullname,
+}
 
 #[derive(Clone, Debug)]
 pub enum PendingAction {
-    AddUserToGroup { username: String, groupname: String },
-    RemoveUserFromGroup { username: String, groupname: String },
-    AddUserToGroups { username: String, groupnames: Vec<String> },
-    RemoveUserFromGroups { username: String, groupnames: Vec<String> },
-    AddMembersToGroup { groupname: String, usernames: Vec<String> },
-    RemoveMembersFromGroup { groupname: String, usernames: Vec<String> },
-    ChangeShell { username: String, new_shell: String },
-    ChangeFullname { username: String, new_fullname: String },
-    ChangeUsername { old_username: String, new_username: String },
-    CreateGroup { groupname: String },
-    DeleteGroup { groupname: String },
-    RenameGroup { old_name: String, new_name: String },
-    CreateUser { username: String, create_home: bool },
-    DeleteUser { username: String, delete_home: bool },
-    SetPassword { username: String, password: String, must_change: bool },
-    ResetPassword { username: String },
+    AddUserToGroup {
+        username: String,
+        groupname: String,
+    },
+    RemoveUserFromGroup {
+        username: String,
+        groupname: String,
+    },
+    AddUserToGroups {
+        username: String,
+        groupnames: Vec<String>,
+    },
+    RemoveUserFromGroups {
+        username: String,
+        groupnames: Vec<String>,
+    },
+    AddMembersToGroup {
+        groupname: String,
+        usernames: Vec<String>,
+    },
+    RemoveMembersFromGroup {
+        groupname: String,
+        usernames: Vec<String>,
+    },
+    ChangeShell {
+        username: String,
+        new_shell: String,
+    },
+    ChangeFullname {
+        username: String,
+        new_fullname: String,
+    },
+    ChangeUsername {
+        old_username: String,
+        new_username: String,
+    },
+    CreateGroup {
+        groupname: String,
+    },
+    DeleteGroup {
+        groupname: String,
+    },
+    RenameGroup {
+        old_name: String,
+        new_name: String,
+    },
+
+    CreateUserWithOptions {
+        username: String,
+        password: Option<String>,
+        create_home: bool,
+        add_to_wheel: bool,
+    },
+    DeleteUser {
+        username: String,
+        delete_home: bool,
+    },
+    SetPassword {
+        username: String,
+        password: String,
+        must_change: bool,
+    },
+    ResetPassword {
+        username: String,
+    },
 }
 
 pub struct AppState {
@@ -148,6 +268,12 @@ impl AppState {
             users_focus: UsersFocus::UsersList,
             sudo_password: None,
         }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
