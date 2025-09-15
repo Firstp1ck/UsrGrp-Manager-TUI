@@ -150,7 +150,7 @@ usrgrp-manager
 ```
 
 ## Project Structure
-```
+```text
 src/
   main.rs                    # Entry point
   app/
