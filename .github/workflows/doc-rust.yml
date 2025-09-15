@@ -22,8 +22,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Build docs
-        env:
-          RUSTDOCFLAGS: --cfg docsrs
         run: |
           cargo doc --all-features --no-deps
           # Add a root index that redirects to the crate docs
