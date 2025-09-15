@@ -1,6 +1,5 @@
 .vscode/*
 dist/
 target/
-RELEASE.md
 PKGBUILD*
-docs/*
+wiki/*
