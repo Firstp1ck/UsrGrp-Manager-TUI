@@ -3,10 +3,12 @@ use std::fmt::{Display, Formatter};
 pub type DynError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type Result<T> = std::result::Result<T, DynError>;
 
+#[allow(dead_code)]
 pub trait Context<T> {
     fn with_ctx<F: FnOnce() -> String>(self, f: F) -> Result<T>;
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct WithContextError {
     pub context: String,
@@ -34,6 +36,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 pub fn with_context<T, E, F>(res: std::result::Result<T, E>, f: F) -> Result<T>
 where
     E: std::error::Error + Send + Sync + 'static,

@@ -92,6 +92,12 @@ pub fn render_group_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: 
             let rect = crate::ui::components::centered_rect(50, 7, area);
             let name = app.groups.get(app.selected_group_index).map(|g| g.name.clone()).unwrap_or_default();
             let mut body = format!("Delete group '{}' ?\n\n", name);
+            // Show a caution if this looks like a system group
+            if let Some(g) = app.groups.get(app.selected_group_index) {
+                if g.gid < 1000 {
+                    body.push_str(&format!("WARNING: '{}' appears to be a system group (GID {}).\nDeleting may break the system.\n\n", g.name, g.gid));
+                }
+            }
             let yes = if selected == 0 { "[Yes]" } else { " Yes " };
             let no = if selected == 1 { "[No]" } else { " No  " };
             body.push_str(&format!("  {}    {}", yes, no));
@@ -100,13 +106,21 @@ pub fn render_group_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: 
             f.render_widget(p, rect);
         }
         ModalState::GroupModifyMenu { selected, .. } => {
-            let rect = crate::ui::components::centered_rect(40, 8, area);
-            let options = ["Add member", "Remove member"];
+            let rect = crate::ui::components::centered_rect(40, 9, area);
+            let options = ["Add member", "Remove member", "Rename group"];
             let mut text = String::new();
             for (idx, label) in options.iter().enumerate() {
                 if idx == selected { text.push_str(&format!("▶ {}\n", label)); } else { text.push_str(&format!("  {}\n", label)); }
             }
             let p = Paragraph::new(text).block(Block::default().title("Modify group").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)));
+            f.render_widget(Clear, rect);
+            f.render_widget(p, rect);
+        }
+        ModalState::GroupRenameInput { name, target_gid } => {
+            let rect = crate::ui::components::centered_rect(48, 7, area);
+            let current = if let Some(gid) = target_gid { app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone()).unwrap_or_default() } else { app.groups.get(app.selected_group_index).map(|g| g.name.clone()).unwrap_or_default() };
+            let msg = format!("Current: {}\nNew name: {}", current, name);
+            let p = Paragraph::new(msg).block(Block::default().title("Rename group").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)));
             f.render_widget(Clear, rect);
             f.render_widget(p, rect);
         }

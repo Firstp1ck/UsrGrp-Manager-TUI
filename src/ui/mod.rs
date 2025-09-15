@@ -86,7 +86,8 @@ fn render_modal(f: &mut Frame, area: Rect, app: &mut AppState) {
             | ModalState::GroupDeleteConfirm { .. }
             | ModalState::GroupModifyMenu { .. }
             | ModalState::GroupModifyAddMembers { .. }
-            | ModalState::GroupModifyRemoveMembers { .. } => {
+            | ModalState::GroupModifyRemoveMembers { .. }
+            | ModalState::GroupRenameInput { .. } => {
                 groups::render_group_modal(f, area, app, &state);
             }
             ModalState::Info { .. } => {

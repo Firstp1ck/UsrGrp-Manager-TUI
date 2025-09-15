@@ -77,6 +77,7 @@ pub enum ModalState {
     GroupModifyMenu { selected: usize, target_gid: Option<u32> },
     GroupModifyAddMembers { selected: usize, offset: usize, target_gid: Option<u32>, selected_multi: Vec<usize> },
     GroupModifyRemoveMembers { selected: usize, offset: usize, target_gid: Option<u32>, selected_multi: Vec<usize> },
+    GroupRenameInput { name: String, target_gid: Option<u32> },
     UserAddInput { name: String, create_home: bool },
 }
 
@@ -96,6 +97,7 @@ pub enum PendingAction {
     ChangeUsername { old_username: String, new_username: String },
     CreateGroup { groupname: String },
     DeleteGroup { groupname: String },
+    RenameGroup { old_name: String, new_name: String },
     CreateUser { username: String, create_home: bool },
     DeleteUser { username: String, delete_home: bool },
     SetPassword { username: String, password: String, must_change: bool },

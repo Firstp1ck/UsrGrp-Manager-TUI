@@ -91,6 +91,13 @@ impl SystemAdapter {
         if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("groupdel", &output))) }
     }
 
+    pub fn rename_group(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let output = self
+            .run_privileged("groupmod", &["-n", new_name, old_name])
+            .map_err(|e| crate::error::simple_error(format!("failed to execute groupmod -n {} {}: {}", new_name, old_name, e)))?;
+        if output.status.success() { Ok(()) } else { Err(crate::error::simple_error(format_cli_error("groupmod -n", &output))) }
+    }
+
     pub fn delete_user(&self, username: &str, delete_home: bool) -> Result<()> {
         let mut args: Vec<&str> = Vec::new();
         if delete_home { args.push("-r"); }

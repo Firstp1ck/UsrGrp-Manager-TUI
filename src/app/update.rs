@@ -526,14 +526,61 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             match key.code {
                 KeyCode::Esc => close_modal(app),
                 KeyCode::Backspace => { app.modal = Some(ModalState::GroupsActions { selected: 2, target_gid: *target_gid }); }
-                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 1; } },
-                KeyCode::Down | KeyCode::Char('j') => { if *selected < 1 { *selected += 1; } else { *selected = 0; } },
+                KeyCode::Up | KeyCode::Char('k') => { if *selected > 0 { *selected -= 1; } else { *selected = 2; } },
+                KeyCode::Down | KeyCode::Char('j') => { if *selected < 2 { *selected += 1; } else { *selected = 0; } },
                 KeyCode::Enter => {
                     match *selected {
                         0 => app.modal = Some(ModalState::GroupModifyAddMembers { selected: 0, offset: 0, target_gid: *target_gid, selected_multi: Vec::new() }),
                         1 => app.modal = Some(ModalState::GroupModifyRemoveMembers { selected: 0, offset: 0, target_gid: *target_gid, selected_multi: Vec::new() }),
+                        2 => {
+                            let effective_gid = if let Some(gid) = *target_gid {
+                                gid
+                            } else {
+                                app.groups.get(app.selected_group_index).map(|g| g.gid).unwrap_or(0)
+                            };
+                            if effective_gid < 1000 {
+                                let gname = app.groups.iter().find(|g| g.gid == effective_gid).map(|g| g.name.clone()).unwrap_or_else(|| "<unknown>".to_string());
+                                app.modal = Some(ModalState::Info { message: format!("Renaming system groups is disabled ({}: GID {}).", gname, effective_gid) });
+                            } else {
+                                app.modal = Some(ModalState::GroupRenameInput { name: String::new(), target_gid: *target_gid });
+                            }
+                        }
                         _ => {}
                     }
+                }
+                _ => {}
+            }
+        }
+        Some(ModalState::GroupRenameInput { name, target_gid }) => {
+            match key.code {
+                KeyCode::Esc => close_modal(app),
+                KeyCode::Backspace => { if name.is_empty() { app.modal = Some(ModalState::GroupModifyMenu { selected: 2, target_gid: *target_gid }); } else { name.pop(); } }
+                KeyCode::Char(c) => { name.push(c); }
+                KeyCode::Enter => {
+                    let (old_opt, gid_opt) = if let Some(gid) = *target_gid {
+                        (app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone()), Some(gid))
+                    } else {
+                        let opt = app.groups.get(app.selected_group_index);
+                        (opt.map(|g| g.name.clone()), opt.map(|g| g.gid))
+                    };
+                    if let Some(gid) = gid_opt {
+                        if gid < 1000 {
+                            let gname = app.groups.iter().find(|g| g.gid == gid).map(|g| g.name.clone()).unwrap_or_else(|| "<unknown>".to_string());
+                            app.modal = Some(ModalState::Info { message: format!("Renaming system groups is disabled ({}: GID {}).", gname, gid) });
+                            return;
+                        }
+                    }
+
+                    if let Some(old) = old_opt {
+                        if name.trim().is_empty() {
+                            app.modal = Some(ModalState::Info { message: "Group name cannot be empty".to_string() });
+                        } else {
+                            let pending = PendingAction::RenameGroup { old_name: old, new_name: name.trim().to_string() };
+                            if let Err(_e) = perform_pending_action(app, pending.clone(), app.sudo_password.clone()) {
+                                app.modal = Some(ModalState::SudoPrompt { next: pending, password: String::new(), error: None });
+                            }
+                        }
+                    } else { close_modal(app); }
                 }
                 _ => {}
             }
@@ -722,6 +769,13 @@ fn perform_pending_action(app: &mut AppState, pending: PendingAction, sudo_passw
             app.groups_all.sort_by_key(|g| g.gid);
             app.groups = app.groups_all.clone();
             app.modal = Some(ModalState::Info { message: format!("Deleted group '{}'", groupname) });
+        }
+        PendingAction::RenameGroup { old_name, new_name } => {
+            adapter.rename_group(&old_name, &new_name)?;
+            app.groups_all = adapter.list_groups().unwrap_or_default();
+            app.groups_all.sort_by_key(|g| g.gid);
+            app.groups = app.groups_all.clone();
+            app.modal = Some(ModalState::Info { message: format!("Renamed group to '{}'", new_name) });
         }
         PendingAction::CreateUser { username, create_home } => {
             adapter.create_user(&username, create_home)?;
