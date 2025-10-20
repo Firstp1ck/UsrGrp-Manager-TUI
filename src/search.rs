@@ -234,6 +234,7 @@ mod tests {
             input_mode: InputMode::Normal,
             search_query: String::new(),
             theme: Theme::dark(),
+            keymap: crate::app::keymap::Keymap::default(),
             modal: None,
             users_focus: UsersFocus::UsersList,
             sudo_password: None,

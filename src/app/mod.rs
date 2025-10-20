@@ -4,6 +4,8 @@
 //! to construct defaults and to run the application loop (re-exported as `run`).
 //!
 pub mod update;
+pub mod keymap;
+pub mod filterconf;
 
 use ratatui::style::Color;
 use ratatui::widgets::TableState;
@@ -416,6 +418,7 @@ pub struct AppState {
     pub input_mode: InputMode,
     pub search_query: String,
     pub theme: Theme,
+    pub keymap: keymap::Keymap,
     pub modal: Option<ModalState>,
     pub users_focus: UsersFocus,
     pub sudo_password: Option<String>,
@@ -432,7 +435,7 @@ impl AppState {
         users_all.sort_by_key(|u| u.uid);
         let mut groups_all = adapter.list_groups().unwrap_or_default();
         groups_all.sort_by_key(|g| g.gid);
-        Self {
+        let mut app = Self {
             started_at: Instant::now(),
             users: users_all.clone(),
             users_all,
@@ -446,13 +449,20 @@ impl AppState {
             input_mode: InputMode::Normal,
             search_query: String::new(),
             theme: Theme::load_or_init("theme.conf"),
+            keymap: keymap::Keymap::load_or_init("keybinds.conf"),
             modal: None,
             users_focus: UsersFocus::UsersList,
             sudo_password: None,
             users_filter: None,
             groups_filter: None,
             users_filter_chips: UsersFilterChips::default(),
-        }
+        };
+
+        // Load and apply filter configuration from filter.conf (creates default if missing/empty)
+        let filters_cfg = filterconf::FiltersConfig::load_or_init("filter.conf");
+        filters_cfg.apply_to(&mut app);
+
+        app
     }
 }
 

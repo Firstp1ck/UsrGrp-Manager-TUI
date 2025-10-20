@@ -84,6 +84,7 @@ mod sys_tests {
 mod search_tests {
     use ratatui::widgets::TableState;
     use usrgrp_manager::app::{ActiveTab, AppState, InputMode, Theme, UsersFocus};
+    use usrgrp_manager::app::keymap::Keymap;
     use usrgrp_manager::search::{apply_filters_and_search, clear_shadow_provider, set_shadow_provider};
     use usrgrp_manager::sys::{SystemGroup, SystemUser};
 
@@ -102,6 +103,7 @@ mod search_tests {
             input_mode: InputMode::Normal,
             search_query: String::new(),
             theme: Theme::dark(),
+            keymap: Keymap::default(),
             modal: None,
             users_focus: UsersFocus::UsersList,
             sudo_password: None,

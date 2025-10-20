@@ -134,8 +134,8 @@ pub fn render_filter_modal(f: &mut Frame, area: Rect, app: &AppState, state: &Mo
                 let rect = centered_rect(width, height, area);
                 let opts: [&str; 8] = [
                     "Show all",
-                    "Only show User IDs (>=1000)",
-                    "Only show System IDs (<1000)",
+                    "Human users only (uid >= 1000)",
+                    "System users only (uid < 1000)",
                     "Inactive shell (nologin/false)",
                     "No home directory",
                     "Locked account",
@@ -145,9 +145,11 @@ pub fn render_filter_modal(f: &mut Frame, area: Rect, app: &AppState, state: &Mo
                 let mut text = String::new();
                 for (idx, label) in opts.iter().enumerate() {
                     let marker = if idx == *selected { "▶" } else { " " };
-                    // For chip options (idx >= 3) show checkbox from state
-                    let checkbox = if idx >= 3 {
+                    // For chip options (idx >= 1) show checkbox from state
+                    let checkbox = if idx >= 1 {
                         let checked = match idx {
+                            1 => app.users_filter_chips.human_only,
+                            2 => app.users_filter_chips.system_only,
                             3 => app.users_filter_chips.inactive,
                             4 => app.users_filter_chips.no_home,
                             5 => app.users_filter_chips.locked,

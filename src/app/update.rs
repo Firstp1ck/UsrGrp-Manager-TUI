@@ -11,9 +11,11 @@ use std::time::Duration;
 
 use crate::app::{
     ActiveTab, AppState, GroupsFilter, InputMode, ModalState, ModifyField, PendingAction,
-    UsersFilter, UsersFocus,
+    UsersFocus,
 };
 use crate::search::apply_filters_and_search;
+use crate::app::filterconf::FiltersConfig;
+use crate::app::keymap::KeyAction;
 use crate::sys;
 use crate::ui;
 
@@ -31,21 +33,21 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
             && key.kind == KeyEventKind::Press
         {
             match app.input_mode {
-                InputMode::Normal => match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Esc => { /* ignore */ }
-                    KeyCode::Char('f') => {
+                InputMode::Normal => match app.keymap.resolve(&key) {
+                    Some(KeyAction::Quit) => break,
+                    Some(KeyAction::Ignore) => { /* ignore */ }
+                    Some(KeyAction::OpenFilterMenu) => {
                         app.modal = Some(ModalState::FilterMenu { selected: 0 });
                         app.input_mode = InputMode::Modal;
                     }
-                    KeyCode::Char('/') => {
+                    Some(KeyAction::StartSearch) => {
                         app.search_query.clear();
                         app.input_mode = match app.active_tab {
                             ActiveTab::Users => InputMode::SearchUsers,
                             ActiveTab::Groups => InputMode::SearchGroups,
                         };
                     }
-                    KeyCode::Char('n') => {
+                    Some(KeyAction::NewUser) => {
                         // Open create user modal; default to create home
                         app.modal = Some(ModalState::UserAddInput {
                             selected: 0,
@@ -57,13 +59,13 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                         });
                         app.input_mode = InputMode::Modal;
                     }
-                    KeyCode::Tab => {
+                    Some(KeyAction::SwitchTab) => {
                         app.active_tab = match app.active_tab {
                             ActiveTab::Users => ActiveTab::Groups,
                             ActiveTab::Groups => ActiveTab::Users,
                         };
                     }
-                    KeyCode::BackTab => {
+                    Some(KeyAction::ToggleUsersFocus) => {
                         if let ActiveTab::Users = app.active_tab {
                             app.users_focus = match app.users_focus {
                                 UsersFocus::UsersList => UsersFocus::MemberOf,
@@ -71,7 +73,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             };
                         }
                     }
-                    KeyCode::Enter => match app.active_tab {
+                    Some(KeyAction::EnterAction) => match app.active_tab {
                         ActiveTab::Users => {
                             if !app.users.is_empty() {
                                 if let UsersFocus::MemberOf = app.users_focus {
@@ -120,7 +122,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             }
                         }
                     },
-                    KeyCode::Up | KeyCode::Char('k') => match app.active_tab {
+                    Some(KeyAction::MoveUp) => match app.active_tab {
                         ActiveTab::Users => match app.users_focus {
                             UsersFocus::UsersList => {
                                 if app.selected_user_index > 0 {
@@ -159,7 +161,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             }
                         }
                     },
-                    KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
+                    Some(KeyAction::MoveDown) => match app.active_tab {
                         ActiveTab::Users => match app.users_focus {
                             UsersFocus::UsersList => {
                                 if app.selected_user_index + 1 < app.users.len() {
@@ -198,7 +200,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             }
                         }
                     },
-                    KeyCode::Left | KeyCode::Char('h') => {
+                    Some(KeyAction::MoveLeftPage) | Some(KeyAction::PageUp) => {
                         let rpp = app.rows_per_page.max(1);
                         match app.active_tab {
                             ActiveTab::Users => match app.users_focus {
@@ -226,7 +228,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             }
                         }
                     }
-                    KeyCode::Right | KeyCode::Char('l') => {
+                    Some(KeyAction::MoveRightPage) | Some(KeyAction::PageDown) => {
                         let rpp = app.rows_per_page.max(1);
                         match app.active_tab {
                             ActiveTab::Users => match app.users_focus {
@@ -262,7 +264,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             }
                         }
                     }
-                    _ => {}
+                    None => {}
                 },
                 InputMode::Modal => {
                     handle_modal_key(&mut app, key);
@@ -313,6 +315,14 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             KeyCode::Char(' ') => {
                 if let ActiveTab::Users = app.active_tab {
                     match *selected {
+                        1 => {
+                            app.users_filter_chips.human_only = !app.users_filter_chips.human_only;
+                            if app.users_filter_chips.human_only { app.users_filter_chips.system_only = false; }
+                        }
+                        2 => {
+                            app.users_filter_chips.system_only = !app.users_filter_chips.system_only;
+                            if app.users_filter_chips.system_only { app.users_filter_chips.human_only = false; }
+                        }
                         3 => app.users_filter_chips.inactive = !app.users_filter_chips.inactive,
                         4 => app.users_filter_chips.no_home = !app.users_filter_chips.no_home,
                         5 => app.users_filter_chips.locked = !app.users_filter_chips.locked,
@@ -320,16 +330,15 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                         7 => app.users_filter_chips.expired = !app.users_filter_chips.expired,
                         _ => {}
                     }
+                    let _ = FiltersConfig::save_from_app(app, "filter.conf");
                 }
             }
             KeyCode::Enter => {
                 match app.active_tab {
-                    ActiveTab::Users => match *selected {
-                        0 => app.users_filter = None,
-                        1 => app.users_filter = Some(UsersFilter::OnlyUserIds),
-                        2 => app.users_filter = Some(UsersFilter::OnlySystemIds),
-                        _ => {}
-                    },
+                    ActiveTab::Users => {
+                        // Index 0 is Show all -> clear top-level users_filter
+                        if *selected == 0 { app.users_filter = None; }
+                    }
                     ActiveTab::Groups => match *selected {
                         0 => app.groups_filter = None,
                         1 => app.groups_filter = Some(GroupsFilter::OnlyUserGids),
@@ -339,6 +348,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 }
                 close_modal(app);
                 apply_filters_and_search(app);
+                let _ = FiltersConfig::save_from_app(app, "filter.conf");
             }
             _ => {}
         },
@@ -1888,15 +1898,15 @@ mod tests {
     }
 
     #[test]
-    fn filter_menu_sets_users_filter_and_closes() {
+    fn filter_menu_show_all_clears_users_filter_and_closes() {
         let mut app = AppState::default();
         app.active_tab = ActiveTab::Users;
         app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::FilterMenu { selected: 1 });
+        app.modal = Some(ModalState::FilterMenu { selected: 0 });
 
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
-        assert!(matches!(app.users_filter, Some(UsersFilter::OnlyUserIds)));
+        assert!(app.users_filter.is_none());
         assert!(app.modal.is_none());
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
