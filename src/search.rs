@@ -1,6 +1,6 @@
 //! Search utilities for filtering users and groups.
 //!
-//! Currently provides [`apply_search`] which filters the `AppState` in-place
+//! Currently provides [`apply_filters_and_search`] which filters the `AppState` in-place
 //! based on the current input mode and query string.
 //!
 use crate::app::{AppState, GroupsFilter, InputMode, UsersFilter};
