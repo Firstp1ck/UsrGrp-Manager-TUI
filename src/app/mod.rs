@@ -12,6 +12,7 @@ use ratatui::widgets::TableState;
 use std::time::Instant;
 
 use crate::sys;
+use std::path::{PathBuf};
 
 /// Top-level active tab in the UI.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -448,8 +449,8 @@ impl AppState {
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
             search_query: String::new(),
-            theme: Theme::load_or_init("theme.conf"),
-            keymap: keymap::Keymap::load_or_init("keybinds.conf"),
+            theme: Theme::load_or_init(&config_file_path("theme.conf")),
+            keymap: keymap::Keymap::load_or_init(&config_file_path("keybinds.conf")),
             modal: None,
             users_focus: UsersFocus::UsersList,
             sudo_password: None,
@@ -459,11 +460,47 @@ impl AppState {
         };
 
         // Load and apply filter configuration from filter.conf (creates default if missing/empty)
-        let filters_cfg = filterconf::FiltersConfig::load_or_init("filter.conf");
+        let filters_cfg = filterconf::FiltersConfig::load_or_init(&config_file_path("filter.conf"));
         filters_cfg.apply_to(&mut app);
 
         app
     }
+}
+
+/// Resolve a configuration file path according to priority:
+/// 1) $XDG_CONFIG_HOME/UsrGrpManager/<name>
+/// 2) ~/.config/UsrGrpManager/<name>
+/// 3) ~/UsrGrpManager/<name>
+pub fn config_file_path(name: &str) -> String {
+    // 1) XDG_CONFIG_HOME
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.trim().is_empty() {
+            let mut p = PathBuf::from(xdg);
+            p.push("UsrGrpManager");
+            let _ = std::fs::create_dir_all(&p);
+            p.push(name);
+            return p.to_string_lossy().to_string();
+        }
+    }
+    // 2) ~/.config/UsrGrpManager
+    if let Some(home) = dirs_next::home_dir() {
+        let mut p = home.clone();
+        p.push(".config");
+        p.push("UsrGrpManager");
+        let _ = std::fs::create_dir_all(&p);
+        p.push(name);
+        return p.to_string_lossy().to_string();
+    }
+    // 3) Fallback: ~/UsrGrpManager
+    if let Some(home) = dirs_next::home_dir() {
+        let mut p = home.clone();
+        p.push("UsrGrpManager");
+        let _ = std::fs::create_dir_all(&p);
+        p.push(name);
+        return p.to_string_lossy().to_string();
+    }
+    // Last resort: current directory
+    name.to_string()
 }
 
 impl Default for AppState {
