@@ -330,7 +330,9 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                         7 => app.users_filter_chips.expired = !app.users_filter_chips.expired,
                         _ => {}
                     }
-                    let _ = FiltersConfig::save_from_app(app, &crate::app::config_file_path("filter.conf"));
+                    let path = crate::app::config_file_read_path("filter.conf")
+                        .unwrap_or_else(|| crate::app::config_file_write_path("filter.conf"));
+                    let _ = FiltersConfig::save_from_app(app, &path);
                 }
             }
             KeyCode::Enter => {
@@ -348,7 +350,9 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 }
                 close_modal(app);
                 apply_filters_and_search(app);
-                let _ = FiltersConfig::save_from_app(app, &crate::app::config_file_path("filter.conf"));
+                let path = crate::app::config_file_read_path("filter.conf")
+                    .unwrap_or_else(|| crate::app::config_file_write_path("filter.conf"));
+                let _ = FiltersConfig::save_from_app(app, &path);
             }
             _ => {}
         },

@@ -43,12 +43,16 @@ impl FiltersConfig {
 
     pub fn load_or_init(path: &str) -> Self {
         let p = std::path::Path::new(path);
-        if !p.exists() || std::fs::read_to_string(p).map(|s| s.trim().is_empty()).unwrap_or(true) {
-            let cfg = Self::default_all_false();
-            let _ = cfg.write_file(path);
-            return cfg;
+        if p.exists() {
+            return Self::from_file(path).unwrap_or_else(Self::default_all_false);
         }
-        Self::from_file(path).unwrap_or_else(Self::default_all_false)
+        // try read path resolution in case caller passed a write path but an existing file is elsewhere
+        if let Some(existing) = crate::app::config_file_read_path("filter.conf") {
+            return Self::from_file(&existing).unwrap_or_else(Self::default_all_false);
+        }
+        let cfg = Self::default_all_false();
+        let _ = cfg.write_file(path);
+        cfg
     }
 
     pub fn from_file(path: &str) -> Option<Self> {

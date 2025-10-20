@@ -449,8 +449,12 @@ impl AppState {
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
             search_query: String::new(),
-            theme: Theme::load_or_init(&config_file_path("theme.conf")),
-            keymap: keymap::Keymap::load_or_init(&config_file_path("keybinds.conf")),
+            theme: Theme::load_or_init(
+                &config_file_read_path("theme.conf").unwrap_or_else(|| config_file_write_path("theme.conf")),
+            ),
+            keymap: keymap::Keymap::load_or_init(
+                &config_file_read_path("keybinds.conf").unwrap_or_else(|| config_file_write_path("keybinds.conf")),
+            ),
             modal: None,
             users_focus: UsersFocus::UsersList,
             sudo_password: None,
@@ -460,46 +464,62 @@ impl AppState {
         };
 
         // Load and apply filter configuration from filter.conf (creates default if missing/empty)
-        let filters_cfg = filterconf::FiltersConfig::load_or_init(&config_file_path("filter.conf"));
+        let filters_cfg = filterconf::FiltersConfig::load_or_init(
+            &config_file_read_path("filter.conf").unwrap_or_else(|| config_file_write_path("filter.conf")),
+        );
         filters_cfg.apply_to(&mut app);
+
+        // Apply the loaded filters to seed the initial views
+        crate::search::apply_filters_and_search(&mut app);
 
         app
     }
 }
 
-/// Resolve a configuration file path according to priority:
-/// 1) $XDG_CONFIG_HOME/UsrGrpManager/<name>
-/// 2) ~/.config/UsrGrpManager/<name>
-/// 3) ~/UsrGrpManager/<name>
-pub fn config_file_path(name: &str) -> String {
-    // 1) XDG_CONFIG_HOME
+/// Candidate roots in priority order for config files.
+fn config_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.trim().is_empty() {
             let mut p = PathBuf::from(xdg);
             p.push("UsrGrpManager");
-            let _ = std::fs::create_dir_all(&p);
-            p.push(name);
-            return p.to_string_lossy().to_string();
+            roots.push(p);
         }
     }
-    // 2) ~/.config/UsrGrpManager
     if let Some(home) = dirs_next::home_dir() {
         let mut p = home.clone();
         p.push(".config");
         p.push("UsrGrpManager");
-        let _ = std::fs::create_dir_all(&p);
-        p.push(name);
-        return p.to_string_lossy().to_string();
+        roots.push(p);
     }
-    // 3) Fallback: ~/UsrGrpManager
     if let Some(home) = dirs_next::home_dir() {
         let mut p = home.clone();
         p.push("UsrGrpManager");
-        let _ = std::fs::create_dir_all(&p);
+        roots.push(p);
+    }
+    roots
+}
+
+/// Resolve existing config file path (read) according to priority order.
+pub fn config_file_read_path(name: &str) -> Option<String> {
+    for root in config_roots() {
+        let mut p = root.clone();
+        p.push(name);
+        if p.exists() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+/// Resolve a path for writing a config file; ensures the directory exists.
+pub fn config_file_write_path(name: &str) -> String {
+    for root in config_roots() {
+        let _ = std::fs::create_dir_all(&root);
+        let mut p = root.clone();
         p.push(name);
         return p.to_string_lossy().to_string();
     }
-    // Last resort: current directory
     name.to_string()
 }
 
