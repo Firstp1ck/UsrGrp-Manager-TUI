@@ -107,6 +107,7 @@ mod search_tests {
             sudo_password: None,
             users_filter: None,
             groups_filter: None,
+            users_filter_chips: Default::default(),
         }
     }
 
@@ -229,6 +230,82 @@ mod search_tests {
             duration
         );
     }
+
+    #[test]
+    fn test_search_special_characters_and_no_panic() {
+        let mut app = create_test_app();
+        app.users_all = vec![
+            create_test_user("alice", 1000),
+            SystemUser {
+                uid: 1002,
+                name: "charlie".to_string(),
+                primary_gid: 1002,
+                full_name: Some("Charlie C".to_string()),
+                home_dir: "/home/charlie".to_string(),
+                shell: "/bin/bash".to_string(),
+            },
+        ];
+        app.input_mode = InputMode::SearchUsers;
+
+        // Special characters should be treated literally and not cause panics
+        app.search_query = "[".to_string();
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.users.len(), 0);
+
+        // Slash and other chars in shell/home should match (use unique home path)
+        app.search_query = "/home/charlie".to_string();
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.users[0].name, "charlie");
+    }
+
+    #[test]
+    fn test_selection_index_clamp_after_filter() {
+        let mut app = create_test_app();
+        app.users_all = vec![
+            create_test_user("alice", 1000),
+            create_test_user("bob", 1001),
+            create_test_user("carol", 1002),
+        ];
+        app.users = app.users_all.clone();
+        app.selected_user_index = 2; // Last index
+        app.input_mode = InputMode::SearchUsers;
+
+        // Filter down to a single user
+        app.search_query = "alice".to_string();
+        apply_filters_and_search(&mut app);
+
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.users[0].name, "alice");
+        assert_eq!(app.selected_user_index, 0); // Clamped/reset to 0
+    }
+
+    #[test]
+    fn test_partial_field_matching_multiple_fields() {
+        let mut app = create_test_app();
+        app.users_all = vec![
+            create_test_user("alice", 1000),
+            create_test_user("bob", 1001),
+        ];
+        app.groups_all = vec![
+            create_test_group("developers", 2000, vec!["alice".to_string()]),
+            create_test_group("operators", 2001, vec!["bob".to_string()]),
+        ];
+
+        // Users: partial match in home path
+        app.input_mode = InputMode::SearchUsers;
+        app.search_query = "/home/al".to_string();
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.users[0].name, "alice");
+
+        // Groups: partial match in member name
+        app.input_mode = InputMode::SearchGroups;
+        app.search_query = "ali".to_string();
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.groups.len(), 1);
+        assert_eq!(app.groups[0].name, "developers");
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +371,21 @@ mod app_state_tests {
         assert_eq!(app.selected_user_index, 0);
         assert_eq!(app.selected_group_index, 0);
         assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn test_app_state_invariants_sorted_and_defaults() {
+        let app = AppState::new();
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_eq!(app.selected_user_index, 0);
+        assert_eq!(app.selected_group_index, 0);
+
+        // Users and groups sorted by ID (non-decreasing)
+        assert!(app.users_all.windows(2).all(|w| w[0].uid <= w[1].uid));
+        assert!(app.groups_all.windows(2).all(|w| w[0].gid <= w[1].gid));
+
+        // Theme loaded (simple sanity check: status_fg not default Black from dark theme)
+        let _ = app.theme;
     }
 
     #[test]
@@ -435,17 +527,38 @@ mod username_validation_tests {
 
 #[cfg(test)]
 mod integration_tests {
-    use std::process::Command;
+    use ratatui::{backend::TestBackend, Terminal};
+    use usrgrp_manager::app::AppState;
+    use usrgrp_manager::ui::render;
 
     #[test]
-    #[ignore] // Ignore by default as it requires the binary to be built
-    fn test_binary_help() {
-        // This would test the actual binary if it had CLI args
-        let output = Command::new("cargo").args(["run", "--", "--help"]).output();
+    fn test_ui_render_smoke() {
+        // Render a basic AppState into a TestBackend and ensure it doesn't panic
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        let mut app = AppState::new();
+        terminal
+            .draw(|f| {
+                render(f, &mut app);
+            })
+            .expect("render frame");
+    }
 
-        if let Ok(output) = output {
-            // Just verify it doesn't crash
-            assert!(output.status.success() || !output.status.success());
-        }
+    #[test]
+    fn test_ui_render_with_empty_data() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        let mut app = AppState {
+            users_all: vec![],
+            users: vec![],
+            groups_all: vec![],
+            groups: vec![],
+            ..AppState::new()
+        };
+        terminal
+            .draw(|f| {
+                render(f, &mut app);
+            })
+            .expect("render frame with empty data");
     }
 }

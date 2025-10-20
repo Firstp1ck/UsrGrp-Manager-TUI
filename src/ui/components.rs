@@ -17,11 +17,35 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
         crate::app::InputMode::SearchGroups => "SEARCH(groups)",
         crate::app::InputMode::Modal => "MODAL",
     };
+    let mut chips = Vec::new();
+    if app.users_filter_chips.human_only {
+        chips.push("human");
+    }
+    if app.users_filter_chips.system_only {
+        chips.push("system");
+    }
+    if app.users_filter_chips.inactive {
+        chips.push("inactive");
+    }
+    if app.users_filter_chips.no_home {
+        chips.push("no_home");
+    }
+    if app.users_filter_chips.locked {
+        chips.push("locked");
+    }
+    if app.users_filter_chips.no_password {
+        chips.push("no_password");
+    }
+    if app.users_filter_chips.expired {
+        chips.push("expired");
+    }
+    let chips_str = if chips.is_empty() { String::new() } else { format!("  filters:[{}]", chips.join(",")) };
     let msg = format!(
-        "mode: {mode}  users:{}  groups:{}  rows/page:{}",
+        "mode: {mode}  users:{}  groups:{}  rows/page:{}{}",
         app.users.len(),
         app.groups.len(),
-        app.rows_per_page
+        app.rows_per_page,
+        chips_str
     );
     let p = Paragraph::new(msg).style(
         Style::default()
@@ -103,42 +127,75 @@ pub fn render_sudo_modal(f: &mut Frame, area: Rect, app: &AppState, state: &Moda
 /// Render filter selection modal depending on active tab.
 pub fn render_filter_modal(f: &mut Frame, area: Rect, app: &AppState, state: &ModalState) {
     if let ModalState::FilterMenu { selected } = state {
-        let width = 56u16.min(area.width.saturating_sub(4)).max(40);
-        let height = 9u16;
-        let rect = centered_rect(width, height, area);
-        let (title, options): (&str, [&str; 3]) = match app.active_tab {
-            crate::app::ActiveTab::Users => (
-                "Filter users",
-                [
+        match app.active_tab {
+            crate::app::ActiveTab::Users => {
+                let width = 64u16.min(area.width.saturating_sub(4)).max(44);
+                let height = 14u16.min(area.height.saturating_sub(4)).max(10);
+                let rect = centered_rect(width, height, area);
+                let opts: [&str; 8] = [
                     "Show all",
                     "Only show User IDs (>=1000)",
                     "Only show System IDs (<1000)",
-                ],
-            ),
-            crate::app::ActiveTab::Groups => (
-                "Filter groups",
-                [
+                    "Inactive shell (nologin/false)",
+                    "No home directory",
+                    "Locked account",
+                    "No password set",
+                    "Password expired",
+                ];
+                let mut text = String::new();
+                for (idx, label) in opts.iter().enumerate() {
+                    let marker = if idx == *selected { "▶" } else { " " };
+                    // For chip options (idx >= 3) show checkbox from state
+                    let checkbox = if idx >= 3 {
+                        let checked = match idx {
+                            3 => app.users_filter_chips.inactive,
+                            4 => app.users_filter_chips.no_home,
+                            5 => app.users_filter_chips.locked,
+                            6 => app.users_filter_chips.no_password,
+                            7 => app.users_filter_chips.expired,
+                            _ => false,
+                        };
+                        if checked { "[x] " } else { "[ ] " }
+                    } else {
+                        ""
+                    };
+                    text.push_str(&format!("{} {}{}\n", marker, checkbox, label));
+                }
+                let p = Paragraph::new(text).block(
+                    Block::default()
+                        .title("Filter users")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(app.theme.border)),
+                );
+                f.render_widget(Clear, rect);
+                f.render_widget(p, rect);
+            }
+            crate::app::ActiveTab::Groups => {
+                let width = 56u16.min(area.width.saturating_sub(4)).max(40);
+                let height = 9u16;
+                let rect = centered_rect(width, height, area);
+                let options: [&str; 3] = [
                     "Show all",
                     "Only show User GIDs (>=1000)",
                     "Only show System GIDs (<1000)",
-                ],
-            ),
-        };
-        let mut text = String::new();
-        for (idx, label) in options.iter().enumerate() {
-            if idx == *selected {
-                text.push_str(&format!("▶ {}\n", label));
-            } else {
-                text.push_str(&format!("  {}\n", label));
+                ];
+                let mut text = String::new();
+                for (idx, label) in options.iter().enumerate() {
+                    if idx == *selected {
+                        text.push_str(&format!("▶ {}\n", label));
+                    } else {
+                        text.push_str(&format!("  {}\n", label));
+                    }
+                }
+                let p = Paragraph::new(text).block(
+                    Block::default()
+                        .title("Filter groups")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(app.theme.border)),
+                );
+                f.render_widget(Clear, rect);
+                f.render_widget(p, rect);
             }
         }
-        let p = Paragraph::new(text).block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        );
-        f.render_widget(Clear, rect);
-        f.render_widget(p, rect);
     }
 }

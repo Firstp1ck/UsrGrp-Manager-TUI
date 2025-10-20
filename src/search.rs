@@ -21,6 +21,40 @@ pub fn apply_filters_and_search(app: &mut AppState) {
             UsersFilter::OnlySystemIds => users_view.retain(|u| u.uid < 1000),
         }
     }
+
+    // Apply chip filters (combinable)
+    {
+        let chips = &app.users_filter_chips;
+        if chips.human_only {
+            users_view.retain(|u| u.uid >= 1000);
+        }
+        if chips.system_only {
+            users_view.retain(|u| u.uid < 1000);
+        }
+        if chips.inactive {
+            users_view.retain(|u| {
+                let sh = u.shell.to_ascii_lowercase();
+                sh.contains("nologin") || sh.ends_with("/false")
+            });
+        }
+        if chips.no_home {
+            users_view.retain(|u| !std::path::Path::new(&u.home_dir).exists());
+        }
+    // System-backed filters via /etc/shadow (best-effort; ignored if unreadable)
+        if chips.locked || chips.no_password || chips.expired {
+            if let Some(shadow) = read_shadow_status().ok() {
+                if chips.locked {
+                    users_view.retain(|u| shadow.get(&u.name).map(|s| s.locked).unwrap_or(false));
+                }
+                if chips.no_password {
+                    users_view.retain(|u| shadow.get(&u.name).map(|s| s.no_password).unwrap_or(false));
+                }
+                if chips.expired {
+                    users_view.retain(|u| shadow.get(&u.name).map(|s| s.expired).unwrap_or(false));
+                }
+            }
+        }
+    }
     if matches!(app.input_mode, InputMode::SearchUsers) && !q.is_empty() {
         users_view = users_view
             .into_iter()
@@ -62,6 +96,61 @@ pub fn apply_filters_and_search(app: &mut AppState) {
     }
     app.groups = groups_view;
     app.selected_group_index = 0.min(app.groups.len().saturating_sub(1));
+}
+
+// Lightweight shadow status used for filters
+struct ShadowStatus {
+    locked: bool,
+    no_password: bool,
+    expired: bool,
+}
+
+fn read_shadow_status() -> std::io::Result<std::collections::HashMap<String, ShadowStatus>> {
+    use std::collections::HashMap;
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Quick permission check: if not root and cannot read, bail fast
+    if fs::metadata("/etc/shadow").map(|m| m.mode() & 0o004 == 0).unwrap_or(true) {
+        // Likely unreadable, return an error to signal caller to skip filters
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "shadow unreadable"));
+    }
+
+    let contents = fs::read_to_string("/etc/shadow")?;
+    let today_days: i64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| (d.as_secs() / 86_400) as i64)
+        .unwrap_or(0);
+    let mut map: HashMap<String, ShadowStatus> = HashMap::new();
+    for line in contents.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() < 2 { continue; }
+        let name = parts[0].to_string();
+        let pw = parts[1];
+        let lastchg: i64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let max: i64 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(-1);
+        let expire_abs: i64 = parts.get(7).and_then(|s| s.parse().ok()).unwrap_or(-1);
+
+        let locked = pw.starts_with('!') || pw == "*" || pw == "!!";
+        let no_password = pw.is_empty();
+        let expired_by_max = max >= 0 && lastchg > 0 && (lastchg + max) <= today_days;
+        let expired_by_abs = expire_abs >= 0 && expire_abs <= today_days;
+        let expired = expired_by_max || expired_by_abs;
+
+        map.insert(
+            name,
+            ShadowStatus {
+                locked,
+                no_password,
+                expired,
+            },
+        );
+    }
+    Ok(map)
 }
 
 #[cfg(test)]
@@ -120,6 +209,7 @@ mod tests {
             sudo_password: None,
             users_filter: None,
             groups_filter: None,
+            users_filter_chips: Default::default(),
         }
     }
 

@@ -591,6 +591,108 @@ wheel:x:998:root,jdoe
     }
 
     #[test]
+    fn format_cli_error_empty_and_nonempty_stderr() {
+        use std::process::Output;
+        use std::os::unix::process::ExitStatusExt;
+        let out_with_err = Output { status: std::process::ExitStatus::from_raw(1), stdout: vec![], stderr: b"permission denied".to_vec() };
+        let msg = super::format_cli_error("usermod -l", &out_with_err);
+        assert!(msg.contains("usermod -l failed: permission denied"));
+
+        // Simulate empty stderr; message should include status
+        let out_empty = Output { status: std::process::ExitStatus::from_raw(1), stdout: vec![], stderr: vec![] };
+        let msg2 = super::format_cli_error("groupadd", &out_empty);
+        assert!(msg2.contains("groupadd returned non-zero status"));
+    }
+
+    #[test]
+    fn parse_passwd_invalid_numbers_and_unicode() {
+        let path = tmp_path("passwd_invalid");
+        let data = "\
+root:x:not-a-num:0:root:/root:/bin/bash
+unic:x:1001:abc:ユニコード:/home/unic:/bin/zsh
+badline:too:few:fields\n\
+";
+        fs::write(&path, data).unwrap();
+
+        let users = super::parse_passwd(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        // First line: uid invalid -> 0; gid valid 0
+        assert_eq!(users[0].name, "root");
+        assert_eq!(users[0].uid, 0);
+        assert_eq!(users[0].primary_gid, 0);
+        assert_eq!(users[0].full_name.as_deref(), Some("root"));
+
+        // Second line: gid invalid -> 0; full_name unicode preserved
+        assert_eq!(users[1].name, "unic");
+        assert_eq!(users[1].uid, 1001);
+        assert_eq!(users[1].primary_gid, 0);
+        assert_eq!(users[1].full_name.as_deref(), Some("ユニコード"));
+    }
+
+    #[test]
+    fn parse_group_invalid_gid_and_extra_fields() {
+        let path = tmp_path("group_invalid");
+        let data = "\
+nogid:x:not-a-num:alice,bob,carol
+extra:x:123:one,two:ignored:still_ignored
+empty:x:456:\n\
+";
+        fs::write(&path, data).unwrap();
+
+        let groups = super::parse_group(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        assert_eq!(groups.len(), 3);
+
+        // invalid gid -> 0, members parsed
+        assert_eq!(groups[0].name, "nogid");
+        assert_eq!(groups[0].gid, 0);
+        assert_eq!(groups[0].members, vec!["alice", "bob", "carol"]);
+
+        // extra fields ignored; members parsed
+        assert_eq!(groups[1].name, "extra");
+        assert_eq!(groups[1].gid, 123);
+        assert_eq!(groups[1].members, vec!["one", "two"]);
+
+        // empty members -> empty vec
+        assert_eq!(groups[2].name, "empty");
+        assert_eq!(groups[2].gid, 456);
+        assert!(groups[2].members.is_empty());
+    }
+
+    #[test]
+    fn parse_passwd_ignores_comments_and_empty_lines() {
+        let path = tmp_path("passwd_comments");
+        let data = "\
+# This is a comment line\n\nroot:x:0:0:root:/root:/bin/bash\n\n# another comment\nuser1:x:1000:1000:User One:/home/user1:/bin/zsh\n\n";
+        fs::write(&path, data).unwrap();
+
+        let users = super::parse_passwd(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].name, "root");
+        assert_eq!(users[1].name, "user1");
+    }
+
+    #[test]
+    fn parse_group_ignores_comments_and_empty_lines() {
+        let path = tmp_path("group_comments");
+        let data = "\
+# comment\n\nroot:x:0:\n\n# another\nusers:x:1000:alice,bob\n\n";
+        fs::write(&path, data).unwrap();
+
+        let groups = super::parse_group(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].name, "root");
+        assert_eq!(groups[1].name, "users");
+        assert_eq!(groups[1].members, vec!["alice", "bob"]);
+    }
+
+    #[test]
     fn filter_groups_like_tui() {
         // Emulate TUI logic: groups where gid == primary_gid OR members contains username
         let username = "alice".to_string();

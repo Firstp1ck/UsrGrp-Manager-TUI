@@ -315,6 +315,17 @@ pub enum UsersFilter {
     OnlySystemIds, // uid < 1000
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct UsersFilterChips {
+    pub human_only: bool,   // uid >= 1000
+    pub system_only: bool,  // uid < 1000
+    pub inactive: bool,     // shell is nologin/false
+    pub no_home: bool,      // home directory does not exist
+    pub locked: bool,       // requires system info (not yet implemented)
+    pub no_password: bool,  // requires system info (not yet implemented)
+    pub expired: bool,      // requires system info (not yet implemented)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupsFilter {
     OnlyUserGids,   // gid >= 1000
@@ -410,6 +421,7 @@ pub struct AppState {
     pub sudo_password: Option<String>,
     pub users_filter: Option<UsersFilter>,
     pub groups_filter: Option<GroupsFilter>,
+    pub users_filter_chips: UsersFilterChips,
 }
 
 impl AppState {
@@ -439,6 +451,7 @@ impl AppState {
             sudo_password: None,
             users_filter: None,
             groups_filter: None,
+            users_filter_chips: UsersFilterChips::default(),
         }
     }
 }

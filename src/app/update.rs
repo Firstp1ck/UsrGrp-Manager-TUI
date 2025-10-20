@@ -303,17 +303,23 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             KeyCode::Esc => close_modal(app),
             KeyCode::Backspace => close_modal(app),
             KeyCode::Up | KeyCode::Char('k') => {
-                if *selected > 0 {
-                    *selected -= 1;
-                } else {
-                    *selected = 2;
-                }
+                let max = if matches!(app.active_tab, ActiveTab::Users) { 7 } else { 2 };
+                if *selected > 0 { *selected -= 1; } else { *selected = max; }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if *selected < 2 {
-                    *selected += 1;
-                } else {
-                    *selected = 0;
+                let max = if matches!(app.active_tab, ActiveTab::Users) { 7 } else { 2 };
+                if *selected < max { *selected += 1; } else { *selected = 0; }
+            }
+            KeyCode::Char(' ') => {
+                if let ActiveTab::Users = app.active_tab {
+                    match *selected {
+                        3 => app.users_filter_chips.inactive = !app.users_filter_chips.inactive,
+                        4 => app.users_filter_chips.no_home = !app.users_filter_chips.no_home,
+                        5 => app.users_filter_chips.locked = !app.users_filter_chips.locked,
+                        6 => app.users_filter_chips.no_password = !app.users_filter_chips.no_password,
+                        7 => app.users_filter_chips.expired = !app.users_filter_chips.expired,
+                        _ => {}
+                    }
                 }
             }
             KeyCode::Enter => {
@@ -1870,4 +1876,90 @@ fn perform_pending_action(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn filter_menu_sets_users_filter_and_closes() {
+        let mut app = AppState::default();
+        app.active_tab = ActiveTab::Users;
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::FilterMenu { selected: 1 });
+
+        handle_modal_key(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(app.users_filter, Some(UsersFilter::OnlyUserIds)));
+        assert!(app.modal.is_none());
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn actions_delete_opens_delete_confirm_with_allowed_flag() {
+        let mut app = AppState::default();
+        // Provide a deletable user (UID in 1000-1999)
+        app.users = vec![crate::sys::SystemUser {
+            uid: 1500,
+            name: "testuser".to_string(),
+            primary_gid: 1500,
+            full_name: None,
+            home_dir: "/home/testuser".to_string(),
+            shell: "/bin/bash".to_string(),
+        }];
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::Actions { selected: 1 });
+
+        handle_modal_key(&mut app, key(KeyCode::Enter));
+
+        match &app.modal {
+            Some(ModalState::DeleteConfirm { allowed, .. }) => assert!(*allowed),
+            other => panic!("unexpected modal state: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn change_password_mismatch_shows_info() {
+        let mut app = AppState::default();
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::ChangePassword {
+            selected: 3, // Submit
+            password: "secret".to_string(),
+            confirm: "different".to_string(),
+            must_change: false,
+        });
+
+        handle_modal_key(&mut app, key(KeyCode::Enter));
+
+        match &app.modal {
+            Some(ModalState::Info { message }) => {
+                assert!(message.contains("Passwords do not match"))
+            }
+            other => panic!("expected Info modal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sudo_prompt_backspace_closes_when_empty() {
+        let mut app = AppState::default();
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::SudoPrompt {
+            next: PendingAction::ResetPassword {
+                username: "user".to_string(),
+            },
+            password: String::new(),
+            error: None,
+        });
+
+        handle_modal_key(&mut app, key(KeyCode::Backspace));
+
+        assert!(app.modal.is_none());
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
 }
