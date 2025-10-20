@@ -84,7 +84,7 @@ mod sys_tests {
 mod search_tests {
     use ratatui::widgets::TableState;
     use usrgrp_manager::app::{ActiveTab, AppState, InputMode, Theme, UsersFocus};
-    use usrgrp_manager::search::apply_filters_and_search;
+    use usrgrp_manager::search::{apply_filters_and_search, clear_shadow_provider, set_shadow_provider};
     use usrgrp_manager::sys::{SystemGroup, SystemUser};
 
     fn create_test_app() -> AppState {
@@ -305,6 +305,112 @@ mod search_tests {
         apply_filters_and_search(&mut app);
         assert_eq!(app.groups.len(), 1);
         assert_eq!(app.groups[0].name, "developers");
+    }
+
+    #[test]
+    fn shadow_filters_skip_when_unreadable() {
+        // Provide two users; toggling locked/no_password/expired should not change results if provider errors
+        let mut app = create_test_app();
+        app.users_all = vec![create_test_user("alice", 1000), create_test_user("bob", 1001)];
+        app.users = app.users_all.clone();
+        app.users_filter_chips.locked = true;
+        app.users_filter_chips.no_password = true;
+        app.users_filter_chips.expired = true;
+
+        set_shadow_provider(|| Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "deny")));
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.users.len(), 2);
+        clear_shadow_provider();
+    }
+
+    #[test]
+    fn shadow_filters_include_exclude_as_expected() {
+        // alice locked, bob expired, carol no_password
+        let mut app = create_test_app();
+        app.users_all = vec![
+            create_test_user("alice", 1000),
+            create_test_user("bob", 1001),
+            create_test_user("carol", 1002),
+        ];
+        app.users = app.users_all.clone();
+
+        set_shadow_provider(|| {
+            use std::collections::HashMap;
+            let mut m: HashMap<String, usrgrp_manager::search::ShadowStatus> = HashMap::new();
+            m.insert("alice".to_string(), usrgrp_manager::search::make_shadow_status(true, false, false));
+            m.insert("bob".to_string(), usrgrp_manager::search::make_shadow_status(false, false, true));
+            m.insert("carol".to_string(), usrgrp_manager::search::make_shadow_status(false, true, false));
+            Ok(m)
+        });
+
+        // Since constructing internal ShadowStatus isn't possible from here, we instead validate skip behavior again
+        app.users_filter_chips.locked = true;
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.users[0].name, "alice");
+
+        // Now test expired
+        app.users = app.users_all.clone();
+        app.users_filter_chips = Default::default();
+        app.users_filter_chips.expired = true;
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.users[0].name, "bob");
+
+        // Now test no_password
+        app.users = app.users_all.clone();
+        app.users_filter_chips = Default::default();
+        app.users_filter_chips.no_password = true;
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.users[0].name, "carol");
+
+        clear_shadow_provider();
+    }
+
+    #[test]
+    fn no_home_filter_includes_only_nonexistent_paths() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let mut app = create_test_app();
+
+        // Create a real temp dir for alice
+        let mut existing = std::env::temp_dir();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        existing.push(format!("ugm_home_exist_{}_{}", std::process::id(), nonce));
+        std::fs::create_dir_all(&existing).expect("create temp home");
+
+        // Construct users with mixed home existence
+        let alice = SystemUser {
+            uid: 1000,
+            name: "alice".to_string(),
+            primary_gid: 1000,
+            full_name: None,
+            home_dir: existing.to_string_lossy().to_string(),
+            shell: "/bin/bash".to_string(),
+        };
+        let mut bogus = std::env::temp_dir();
+        bogus.push(format!("ugm_home_missing_{}_{}_bogus", std::process::id(), nonce));
+        let bob = SystemUser {
+            uid: 1001,
+            name: "bob".to_string(),
+            primary_gid: 1001,
+            full_name: None,
+            home_dir: bogus.to_string_lossy().to_string(),
+            shell: "/bin/bash".to_string(),
+        };
+
+        app.users_all = vec![alice, bob];
+        app.users = app.users_all.clone();
+        app.users_filter_chips.no_home = true;
+
+        apply_filters_and_search(&mut app);
+
+        // Expect only bob (non-existent home) remains
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.users[0].name, "bob");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(existing);
     }
 }
 

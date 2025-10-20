@@ -67,9 +67,10 @@ On macOS, the information reported will not be accurate. The tool relies on the 
 - Search: `fuzzy-matcher` (optional), simple substring by default
 
 ### Testing Strategy
-- Parser tests using fixture files; property tests for edge cases
-- Integration tests driving the update loop with synthetic input events
-- Snapshot tests for UI components using known tables
+- [x] Parser tests using fixture files
+- [x] Integration tests driving the update loop with synthetic input events
+- [ ] Property tests for edge cases
+- [ ] Snapshot tests for UI components using known tables
 
 ### Platform Notes
 - Linux/BSD: primary targets. `users` uses libc calls and should honor NSS.
@@ -91,10 +92,12 @@ See the milestone roadmap in [docs/roadmap.md](docs/roadmap.md) for v0.3, v0.4, 
 
 ### UX & Navigation
 
-- Core CRUD: Create/modify/delete users and groups; lock/unlock; login shell toggle; password set/reset with strength checks
-- Search & Filtering: Fuzzy find users/groups; filters (system vs human, inactive, expired, locked, no home, no password)
-- Layout & Interactions: Split view (list + detail), breadcrumbs, status bar hints, non‑blocking jobs panel
-- Accessibility & Theming: High‑contrast theme, mouse support, resizable panes, configurable keymaps, persistent settings file
+- [ ] Core CRUD: Create/modify/delete users and groups; lock/unlock; login shell toggle; password set/reset with strength checks
+- Search & Filtering:
+  - [ ] Fuzzy find users/groups
+  - [x] Filters (system vs human, inactive, expired, locked, no home, no password)
+- [ ] Layout & Interactions: Split view (list + detail), breadcrumbs, status bar hints, non‑blocking jobs panel
+- [ ] Accessibility & Theming: High‑contrast theme, mouse support, resizable panes, configurable keymaps, persistent settings file
 
 ### Security & Compliance
 
@@ -144,13 +147,11 @@ User management is inherently high-risk from a security perspective
 
 ## Testing Overview
 
-See [docs/testing.md](docs/testing.md) for the complete testing plan, including unit/integration/snapshot tests and safety checks.
-
 Targets:
 
-- Datasets up to 10,000 users/groups
-- Incremental search latency under 50 ms on large datasets
-- Clear separation of privileged vs non‑privileged flows
+- [x] Datasets up to 10,000 users/groups (unit test coverage for search performance)
+- [x] Incremental search latency under 50 ms on large datasets (assertions in unit tests)
+- [x] Clear separation of privileged vs non‑privileged flows (update-loop tests for SudoPrompt)
 
 ## Platform Support
 

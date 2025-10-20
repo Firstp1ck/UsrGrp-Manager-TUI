@@ -4,6 +4,7 @@
 //! based on the current input mode and query string.
 //!
 use crate::app::{AppState, GroupsFilter, InputMode, UsersFilter};
+use std::collections::HashMap;
 
 /// Filter the visible users or groups of `app` according to the lowercase query.
 ///
@@ -42,7 +43,7 @@ pub fn apply_filters_and_search(app: &mut AppState) {
         }
     // System-backed filters via /etc/shadow (best-effort; ignored if unreadable)
         if chips.locked || chips.no_password || chips.expired {
-            if let Some(shadow) = read_shadow_status().ok() {
+            if let Some(shadow) = get_shadow_status().ok() {
                 if chips.locked {
                     users_view.retain(|u| shadow.get(&u.name).map(|s| s.locked).unwrap_or(false));
                 }
@@ -99,14 +100,14 @@ pub fn apply_filters_and_search(app: &mut AppState) {
 }
 
 // Lightweight shadow status used for filters
-struct ShadowStatus {
-    locked: bool,
-    no_password: bool,
-    expired: bool,
+#[derive(Clone, Debug)]
+pub struct ShadowStatus {
+    pub locked: bool,
+    pub no_password: bool,
+    pub expired: bool,
 }
 
-fn read_shadow_status() -> std::io::Result<std::collections::HashMap<String, ShadowStatus>> {
-    use std::collections::HashMap;
+fn read_shadow_status() -> std::io::Result<HashMap<String, ShadowStatus>> {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -151,6 +152,35 @@ fn read_shadow_status() -> std::io::Result<std::collections::HashMap<String, Sha
         );
     }
     Ok(map)
+}
+
+fn get_shadow_status() -> std::io::Result<HashMap<String, ShadowStatus>> {
+    if let Some(res) = SHADOW_PROVIDER.with(|p| p.borrow().as_ref().map(|f| f())) {
+        return res;
+    }
+    read_shadow_status()
+}
+
+thread_local! {
+    static SHADOW_PROVIDER: std::cell::RefCell<Option<Box<dyn Fn() -> std::io::Result<HashMap<String, ShadowStatus>>>>> = std::cell::RefCell::new(None);
+}
+
+#[allow(dead_code)]
+pub fn set_shadow_provider<F>(f: F)
+where
+    F: Fn() -> std::io::Result<HashMap<String, ShadowStatus>> + 'static,
+{
+    SHADOW_PROVIDER.with(|p| *p.borrow_mut() = Some(Box::new(f)));
+}
+
+#[allow(dead_code)]
+pub fn clear_shadow_provider() {
+    SHADOW_PROVIDER.with(|p| *p.borrow_mut() = None);
+}
+
+#[allow(dead_code)]
+pub fn make_shadow_status(locked: bool, no_password: bool, expired: bool) -> ShadowStatus {
+    ShadowStatus { locked, no_password, expired }
 }
 
 #[cfg(test)]

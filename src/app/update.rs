@@ -1962,4 +1962,189 @@ mod tests {
         assert!(app.modal.is_none());
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
+
+    #[test]
+    fn modify_groups_remove_primary_group_shows_info() {
+        // Create a user 'alice' with primary_gid 100 and groups including that primary group
+        let mut app = AppState::default();
+        app.users = vec![crate::sys::SystemUser {
+            uid: 1000,
+            name: "alice".to_string(),
+            primary_gid: 100,
+            full_name: None,
+            home_dir: "/home/alice".to_string(),
+            shell: "/bin/bash".to_string(),
+        }];
+        app.groups_all = vec![
+            crate::sys::SystemGroup { gid: 100, name: "users".to_string(), members: vec![] },
+            crate::sys::SystemGroup { gid: 10, name: "wheel".to_string(), members: vec!["alice".to_string()] },
+        ];
+        app.selected_user_index = 0;
+
+        // Open ModifyGroupsRemove and select the primary group entry (index 0 in the filtered list)
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::ModifyGroupsRemove {
+            selected: 0,
+            offset: 0,
+            selected_multi: Vec::new(),
+        });
+
+        handle_modal_key(&mut app, key(KeyCode::Enter));
+
+        match &app.modal {
+            Some(ModalState::Info { message }) => {
+                assert!(message.contains("Cannot remove user from primary group"))
+            }
+            other => panic!("expected Info modal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn actions_delete_blocked_for_non_user_uid_range() {
+        let mut app = AppState::default();
+        // Root-like user (UID < 1000) should be blocked
+        app.users = vec![crate::sys::SystemUser {
+            uid: 0,
+            name: "root".to_string(),
+            primary_gid: 0,
+            full_name: None,
+            home_dir: "/root".to_string(),
+            shell: "/bin/bash".to_string(),
+        }];
+        app.selected_user_index = 0;
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::Actions { selected: 1 }); // Delete
+
+        handle_modal_key(&mut app, key(KeyCode::Enter));
+
+        match &app.modal {
+            Some(ModalState::Info { message }) => {
+                assert!(message.contains("Deletion not allowed. Only UID 1000-1999 allowed"));
+                assert!(message.contains("root"));
+            }
+            other => panic!("expected Info modal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn groups_rename_blocked_for_system_gid() {
+        let mut app = AppState::default();
+        app.groups = vec![
+            crate::sys::SystemGroup { gid: 10, name: "wheel".to_string(), members: vec![] },
+            crate::sys::SystemGroup { gid: 1000, name: "users".to_string(), members: vec![] },
+        ];
+        app.selected_group_index = 0; // system group
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::GroupModifyMenu { selected: 2, target_gid: None }); // Rename
+
+        handle_modal_key(&mut app, key(KeyCode::Enter));
+
+        match &app.modal {
+            Some(ModalState::Info { message }) => {
+                assert!(message.contains("Renaming system groups is disabled"));
+                assert!(message.contains("wheel"));
+                assert!(message.contains("10"));
+            }
+            other => panic!("expected Info modal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn privileged_action_opens_sudo_prompt_without_credentials() {
+        // Set up a normal user entry
+        let mut app = AppState::default();
+        app.users = vec![crate::sys::SystemUser {
+            uid: 1000,
+            name: "userx".to_string(),
+            primary_gid: 1000,
+            full_name: None,
+            home_dir: "/home/userx".to_string(),
+            shell: "/bin/bash".to_string(),
+        }];
+        app.selected_user_index = 0;
+
+        // Open ModifyPasswordMenu and choose Reset (selection 1) which requires privileges
+        app.input_mode = InputMode::Modal;
+        app.modal = Some(ModalState::ModifyPasswordMenu { selected: 1 });
+
+        handle_modal_key(&mut app, key(KeyCode::Enter));
+
+        match &app.modal {
+            Some(ModalState::SudoPrompt { next, password, error }) => {
+                // Should queue the reset action and prompt for sudo
+                match next {
+                    PendingAction::ResetPassword { username } => {
+                        assert_eq!(username, "userx");
+                    }
+                    other => panic!("unexpected pending: {:?}", other),
+                }
+                assert!(password.is_empty());
+                assert!(error.is_none());
+            }
+            other => panic!("expected SudoPrompt, got {:?}", other),
+        }
+    }
+
+    // Test-only helper: simulate effects of a subset of PendingAction without system calls
+    fn simulate_pending_action(app: &mut AppState, pending: PendingAction) {
+        match pending {
+            PendingAction::DeleteUser { username, delete_home: _ } => {
+                app.users_all.retain(|u| u.name != username);
+                app.users_all.sort_by_key(|u| u.uid);
+                apply_filters_and_search(app);
+                if app.selected_user_index >= app.users.len() {
+                    app.selected_user_index = app.users.len().saturating_sub(1);
+                }
+            }
+            PendingAction::DeleteGroup { groupname } => {
+                app.groups_all.retain(|g| g.name != groupname);
+                app.groups_all.sort_by_key(|g| g.gid);
+                apply_filters_and_search(app);
+                if app.selected_group_index >= app.groups.len() {
+                    app.selected_group_index = app.groups.len().saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn selected_user_index_clamps_after_delete() {
+        let mut app = AppState::default();
+        app.users_all = vec![
+            crate::sys::SystemUser { uid: 1000, name: "a".into(), primary_gid: 1000, full_name: None, home_dir: "/home/a".into(), shell: "/bin/bash".into() },
+            crate::sys::SystemUser { uid: 1001, name: "b".into(), primary_gid: 1001, full_name: None, home_dir: "/home/b".into(), shell: "/bin/bash".into() },
+        ];
+        app.users = app.users_all.clone();
+        app.selected_user_index = 1; // last item
+
+        simulate_pending_action(
+            &mut app,
+            PendingAction::DeleteUser { username: "b".into(), delete_home: false },
+        );
+
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(app.selected_user_index, 0);
+        assert_eq!(app.users[0].name, "a");
+    }
+
+    #[test]
+    fn selected_group_index_clamps_after_delete() {
+        let mut app = AppState::default();
+        app.groups_all = vec![
+            crate::sys::SystemGroup { gid: 1000, name: "g1".into(), members: vec![] },
+            crate::sys::SystemGroup { gid: 1001, name: "g2".into(), members: vec![] },
+        ];
+        app.groups = app.groups_all.clone();
+        app.selected_group_index = 1; // last item
+
+        simulate_pending_action(
+            &mut app,
+            PendingAction::DeleteGroup { groupname: "g2".into() },
+        );
+
+        assert_eq!(app.groups.len(), 1);
+        assert_eq!(app.selected_group_index, 0);
+        assert_eq!(app.groups[0].name, "g1");
+    }
 }
