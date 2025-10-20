@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
         crate::app::InputMode::Modal => String::new(),
     };
     let p = Paragraph::new(format!(
-        "usrgrp-manager ({who})  {tabs}{prompt}\nusers:{}  groups:{}\nKeys: [n] New user | [Tab] Switch tab | [Shift+Tab] Member-of | [/] Search | [Space] Selection | [Enter] Apply | [Esc] Cancel | [Backspace] Back | [Backspace at start] Back (input windows) | [q] Quit",
+        "usrgrp-manager ({who})  {tabs}{prompt}\nusers:{}  groups:{}\nKeys: [n] New user | [f] Filter | [Tab] Switch tab | [Shift+Tab] Member-of | [/] Search | [Space] Selection | [Enter] Apply | [Esc] Cancel | [Backspace] Back | [Backspace at start] Back (input windows) | [q] Quit",
         app.users.len(), app.groups.len()
     ))
     .block(
@@ -111,6 +111,9 @@ fn render_modal(f: &mut Frame, area: Rect, app: &mut AppState) {
             }
             ModalState::SudoPrompt { .. } => {
                 components::render_sudo_modal(f, area, app, &state);
+            }
+            ModalState::FilterMenu { .. } => {
+                components::render_filter_modal(f, area, app, &state);
             }
         }
     }

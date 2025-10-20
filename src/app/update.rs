@@ -10,9 +10,10 @@ use ratatui::backend::CrosstermBackend;
 use std::time::Duration;
 
 use crate::app::{
-    ActiveTab, AppState, InputMode, ModalState, ModifyField, PendingAction, UsersFocus,
+    ActiveTab, AppState, GroupsFilter, InputMode, ModalState, ModifyField, PendingAction,
+    UsersFilter, UsersFocus,
 };
-use crate::search::apply_search;
+use crate::search::apply_filters_and_search;
 use crate::sys;
 use crate::ui;
 
@@ -33,6 +34,10 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                 InputMode::Normal => match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Esc => { /* ignore */ }
+                    KeyCode::Char('f') => {
+                        app.modal = Some(ModalState::FilterMenu { selected: 0 });
+                        app.input_mode = InputMode::Modal;
+                    }
                     KeyCode::Char('/') => {
                         app.search_query.clear();
                         app.input_mode = match app.active_tab {
@@ -264,21 +269,21 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                 }
                 InputMode::SearchUsers | InputMode::SearchGroups => match key.code {
                     KeyCode::Enter => {
-                        apply_search(&mut app);
+                        apply_filters_and_search(&mut app);
                         app.input_mode = InputMode::Normal;
                     }
                     KeyCode::Esc => {
                         app.input_mode = InputMode::Normal;
                         app.search_query.clear();
-                        apply_search(&mut app);
+                        apply_filters_and_search(&mut app);
                     }
                     KeyCode::Backspace => {
                         app.search_query.pop();
-                        apply_search(&mut app);
+                        apply_filters_and_search(&mut app);
                     }
                     KeyCode::Char(c) => {
                         app.search_query.push(c);
-                        apply_search(&mut app);
+                        apply_filters_and_search(&mut app);
                     }
                     _ => {}
                 },
@@ -294,6 +299,43 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
 /// Handle all key events while a modal dialog is open.
 fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
     match &mut app.modal {
+        Some(ModalState::FilterMenu { selected }) => match key.code {
+            KeyCode::Esc => close_modal(app),
+            KeyCode::Backspace => close_modal(app),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if *selected > 0 {
+                    *selected -= 1;
+                } else {
+                    *selected = 2;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if *selected < 2 {
+                    *selected += 1;
+                } else {
+                    *selected = 0;
+                }
+            }
+            KeyCode::Enter => {
+                match app.active_tab {
+                    ActiveTab::Users => match *selected {
+                        0 => app.users_filter = None,
+                        1 => app.users_filter = Some(UsersFilter::OnlyUserIds),
+                        2 => app.users_filter = Some(UsersFilter::OnlySystemIds),
+                        _ => {}
+                    },
+                    ActiveTab::Groups => match *selected {
+                        0 => app.groups_filter = None,
+                        1 => app.groups_filter = Some(GroupsFilter::OnlyUserGids),
+                        2 => app.groups_filter = Some(GroupsFilter::OnlySystemGids),
+                        _ => {}
+                    },
+                }
+                close_modal(app);
+                apply_filters_and_search(app);
+            }
+            _ => {}
+        },
         Some(ModalState::Actions { selected }) => match key.code {
             KeyCode::Esc => close_modal(app),
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1617,7 +1659,7 @@ fn perform_pending_action(
             adapter.add_user_to_group(&username, &groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Added '{}' to '{}'", username, groupname),
             });
@@ -1629,7 +1671,7 @@ fn perform_pending_action(
             adapter.remove_user_from_group(&username, &groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Removed '{}' from '{}'", username, groupname),
             });
@@ -1641,7 +1683,7 @@ fn perform_pending_action(
             adapter.change_user_shell(&username, &new_shell)?;
             app.users_all = adapter.list_users().unwrap_or_default();
             app.users_all.sort_by_key(|u| u.uid);
-            app.users = app.users_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Changed shell to '{}'", new_shell),
             });
@@ -1653,7 +1695,7 @@ fn perform_pending_action(
             adapter.change_user_fullname(&username, &new_fullname)?;
             app.users_all = adapter.list_users().unwrap_or_default();
             app.users_all.sort_by_key(|u| u.uid);
-            app.users = app.users_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: "Changed successfully".to_string(),
             });
@@ -1665,7 +1707,7 @@ fn perform_pending_action(
             adapter.change_username(&old_username, &new_username)?;
             app.users_all = adapter.list_users().unwrap_or_default();
             app.users_all.sort_by_key(|u| u.uid);
-            app.users = app.users_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: "Changed successfully".to_string(),
             });
@@ -1674,7 +1716,7 @@ fn perform_pending_action(
             adapter.create_group(&groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Created group '{}'", groupname),
             });
@@ -1683,7 +1725,7 @@ fn perform_pending_action(
             adapter.delete_group(&groupname)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Deleted group '{}'", groupname),
             });
@@ -1692,7 +1734,7 @@ fn perform_pending_action(
             adapter.rename_group(&old_name, &new_name)?;
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Renamed group to '{}'", new_name),
             });
@@ -1714,7 +1756,7 @@ fn perform_pending_action(
             }
             app.users_all = adapter.list_users().unwrap_or_default();
             app.users_all.sort_by_key(|u| u.uid);
-            app.users = app.users_all.clone();
+            apply_filters_and_search(app);
             let mut msg = format!(
                 "Created user '{}'{}",
                 username,
@@ -1735,7 +1777,7 @@ fn perform_pending_action(
             adapter.delete_user(&username, delete_home)?;
             app.users_all = adapter.list_users().unwrap_or_default();
             app.users_all.sort_by_key(|u| u.uid);
-            app.users = app.users_all.clone();
+            apply_filters_and_search(app);
             if app.selected_user_index >= app.users.len() {
                 app.selected_user_index = app.users.len().saturating_sub(1);
             }
@@ -1779,7 +1821,7 @@ fn perform_pending_action(
             }
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Added '{}' to selected groups", username),
             });
@@ -1793,7 +1835,7 @@ fn perform_pending_action(
             }
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Removed '{}' from selected groups", username),
             });
@@ -1807,7 +1849,7 @@ fn perform_pending_action(
             }
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Added selected users to '{}'", groupname),
             });
@@ -1821,7 +1863,7 @@ fn perform_pending_action(
             }
             app.groups_all = adapter.list_groups().unwrap_or_default();
             app.groups_all.sort_by_key(|g| g.gid);
-            app.groups = app.groups_all.clone();
+            apply_filters_and_search(app);
             app.modal = Some(ModalState::Info {
                 message: format!("Removed selected users from '{}'", groupname),
             });

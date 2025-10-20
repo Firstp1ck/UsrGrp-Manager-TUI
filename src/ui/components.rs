@@ -99,3 +99,46 @@ pub fn render_sudo_modal(f: &mut Frame, area: Rect, app: &AppState, state: &Moda
         f.render_widget(p, rect);
     }
 }
+
+/// Render filter selection modal depending on active tab.
+pub fn render_filter_modal(f: &mut Frame, area: Rect, app: &AppState, state: &ModalState) {
+    if let ModalState::FilterMenu { selected } = state {
+        let width = 56u16.min(area.width.saturating_sub(4)).max(40);
+        let height = 9u16;
+        let rect = centered_rect(width, height, area);
+        let (title, options): (&str, [&str; 3]) = match app.active_tab {
+            crate::app::ActiveTab::Users => (
+                "Filter users",
+                [
+                    "Show all",
+                    "Only show User IDs (>=1000)",
+                    "Only show System IDs (<1000)",
+                ],
+            ),
+            crate::app::ActiveTab::Groups => (
+                "Filter groups",
+                [
+                    "Show all",
+                    "Only show User GIDs (>=1000)",
+                    "Only show System GIDs (<1000)",
+                ],
+            ),
+        };
+        let mut text = String::new();
+        for (idx, label) in options.iter().enumerate() {
+            if idx == *selected {
+                text.push_str(&format!("▶ {}\n", label));
+            } else {
+                text.push_str(&format!("  {}\n", label));
+            }
+        }
+        let p = Paragraph::new(text).block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border)),
+        );
+        f.render_widget(Clear, rect);
+        f.render_widget(p, rect);
+    }
+}

@@ -84,7 +84,7 @@ mod sys_tests {
 mod search_tests {
     use ratatui::widgets::TableState;
     use usrgrp_manager::app::{ActiveTab, AppState, InputMode, Theme, UsersFocus};
-    use usrgrp_manager::search::apply_search;
+    use usrgrp_manager::search::apply_filters_and_search;
     use usrgrp_manager::sys::{SystemGroup, SystemUser};
 
     fn create_test_app() -> AppState {
@@ -105,6 +105,8 @@ mod search_tests {
             modal: None,
             users_focus: UsersFocus::UsersList,
             sudo_password: None,
+            users_filter: None,
+            groups_filter: None,
         }
     }
 
@@ -139,7 +141,7 @@ mod search_tests {
         app.search_query = String::new();
         app.input_mode = InputMode::SearchUsers;
 
-        apply_search(&mut app);
+        apply_filters_and_search(&mut app);
 
         assert_eq!(app.users.len(), 2); // Reset to all users
         assert_eq!(app.selected_user_index, 0); // Index reset
@@ -155,12 +157,12 @@ mod search_tests {
         app.input_mode = InputMode::SearchUsers;
 
         app.search_query = "aLiCe".to_string();
-        apply_search(&mut app);
+        apply_filters_and_search(&mut app);
         assert_eq!(app.users.len(), 1);
         assert_eq!(app.users[0].name, "Alice");
 
         app.search_query = "BOB".to_string();
-        apply_search(&mut app);
+        apply_filters_and_search(&mut app);
         assert_eq!(app.users.len(), 1);
         assert_eq!(app.users[0].name, "bob");
     }
@@ -175,7 +177,7 @@ mod search_tests {
         app.input_mode = InputMode::SearchUsers;
 
         app.search_query = "1000".to_string();
-        apply_search(&mut app);
+        apply_filters_and_search(&mut app);
         assert_eq!(app.users.len(), 1);
         assert_eq!(app.users[0].uid, 1000);
     }
@@ -191,13 +193,13 @@ mod search_tests {
         app.input_mode = InputMode::SearchGroups;
 
         app.search_query = "wheel".to_string();
-        apply_search(&mut app);
+        apply_filters_and_search(&mut app);
         assert_eq!(app.groups.len(), 1);
         assert_eq!(app.groups[0].name, "wheel");
 
         // Search by member
         app.search_query = "bob".to_string();
-        apply_search(&mut app);
+        apply_filters_and_search(&mut app);
         assert_eq!(app.groups.len(), 1);
         assert_eq!(app.groups[0].name, "users");
     }
@@ -215,7 +217,7 @@ mod search_tests {
         app.search_query = "user5000".to_string();
 
         let start = Instant::now();
-        apply_search(&mut app);
+        apply_filters_and_search(&mut app);
         let duration = start.elapsed();
 
         assert_eq!(app.users.len(), 1);

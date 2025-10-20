@@ -3,59 +3,65 @@
 //! Currently provides [`apply_search`] which filters the `AppState` in-place
 //! based on the current input mode and query string.
 //!
-use crate::app::{AppState, InputMode};
+use crate::app::{AppState, GroupsFilter, InputMode, UsersFilter};
 
 /// Filter the visible users or groups of `app` according to the lowercase query.
 ///
 /// - In `SearchUsers`, filters by username, full name, home directory, shell, UID, or GID.
 /// - In `SearchGroups`, filters by group name, GID, or any member name.
 /// - For empty queries, restores the full lists.
-pub fn apply_search(app: &mut AppState) {
+pub fn apply_filters_and_search(app: &mut AppState) {
     let q = app.search_query.to_lowercase();
-    match app.input_mode {
-        InputMode::SearchUsers => {
-            if q.is_empty() {
-                app.users = app.users_all.clone();
-            } else {
-                app.users = app
-                    .users_all
-                    .iter()
-                    .filter(|u| {
-                        u.name.to_lowercase().contains(&q)
-                            || u.full_name
-                                .as_deref()
-                                .unwrap_or("")
-                                .to_lowercase()
-                                .contains(&q)
-                            || u.home_dir.to_lowercase().contains(&q)
-                            || u.shell.to_lowercase().contains(&q)
-                            || u.uid.to_string().contains(&q)
-                            || u.primary_gid.to_string().contains(&q)
-                    })
-                    .cloned()
-                    .collect();
-            }
-            app.selected_user_index = 0.min(app.users.len().saturating_sub(1));
+
+    // Users view
+    let mut users_view = app.users_all.clone();
+    if let Some(f) = app.users_filter {
+        match f {
+            UsersFilter::OnlyUserIds => users_view.retain(|u| u.uid >= 1000),
+            UsersFilter::OnlySystemIds => users_view.retain(|u| u.uid < 1000),
         }
-        InputMode::SearchGroups => {
-            if q.is_empty() {
-                app.groups = app.groups_all.clone();
-            } else {
-                app.groups = app
-                    .groups_all
-                    .iter()
-                    .filter(|g| {
-                        g.name.to_lowercase().contains(&q)
-                            || g.gid.to_string().contains(&q)
-                            || g.members.iter().any(|m| m.to_lowercase().contains(&q))
-                    })
-                    .cloned()
-                    .collect();
-            }
-            app.selected_group_index = 0.min(app.groups.len().saturating_sub(1));
-        }
-        InputMode::Normal | InputMode::Modal => {}
     }
+    if matches!(app.input_mode, InputMode::SearchUsers) && !q.is_empty() {
+        users_view = users_view
+            .into_iter()
+            .filter(|u| {
+                u.name.to_lowercase().contains(&q)
+                    || u
+                        .full_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&q)
+                    || u.home_dir.to_lowercase().contains(&q)
+                    || u.shell.to_lowercase().contains(&q)
+                    || u.uid.to_string().contains(&q)
+                    || u.primary_gid.to_string().contains(&q)
+            })
+            .collect();
+    }
+    app.users = users_view;
+    app.selected_user_index = 0.min(app.users.len().saturating_sub(1));
+
+    // Groups view
+    let mut groups_view = app.groups_all.clone();
+    if let Some(f) = app.groups_filter {
+        match f {
+            GroupsFilter::OnlyUserGids => groups_view.retain(|g| g.gid >= 1000),
+            GroupsFilter::OnlySystemGids => groups_view.retain(|g| g.gid < 1000),
+        }
+    }
+    if matches!(app.input_mode, InputMode::SearchGroups) && !q.is_empty() {
+        groups_view = groups_view
+            .into_iter()
+            .filter(|g| {
+                g.name.to_lowercase().contains(&q)
+                    || g.gid.to_string().contains(&q)
+                    || g.members.iter().any(|m| m.to_lowercase().contains(&q))
+            })
+            .collect();
+    }
+    app.groups = groups_view;
+    app.selected_group_index = 0.min(app.groups.len().saturating_sub(1));
 }
 
 #[cfg(test)]
@@ -112,6 +118,8 @@ mod tests {
             modal: None,
             users_focus: UsersFocus::UsersList,
             sudo_password: None,
+            users_filter: None,
+            groups_filter: None,
         }
     }
 
@@ -138,7 +146,8 @@ mod tests {
         let mut app = mk_app(users, vec![]);
         app.input_mode = InputMode::SearchUsers;
         app.search_query = "bOb".to_string();
-        apply_search(&mut app);
+        app.input_mode = InputMode::SearchUsers;
+        apply_filters_and_search(&mut app);
 
         assert_eq!(app.users.len(), 1);
         assert_eq!(app.users[0].name, "bob");
@@ -157,12 +166,14 @@ mod tests {
         let mut app = mk_app(users, groups);
         app.input_mode = InputMode::SearchGroups;
         app.search_query = "wh".to_string();
-        apply_search(&mut app);
+        app.input_mode = InputMode::SearchGroups;
+        apply_filters_and_search(&mut app);
         assert_eq!(app.groups.len(), 1);
         assert_eq!(app.groups[0].name, "wheel");
 
         app.search_query = "bob".to_string();
-        apply_search(&mut app);
+        app.input_mode = InputMode::SearchGroups;
+        apply_filters_and_search(&mut app);
         assert_eq!(app.groups.len(), 1);
         assert_eq!(app.groups[0].name, "wheel");
     }
