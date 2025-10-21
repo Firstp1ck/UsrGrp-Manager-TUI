@@ -3,3 +3,4 @@ dist/
 target/
 PKGBUILD*
 wiki/*
+RELEASE*.md

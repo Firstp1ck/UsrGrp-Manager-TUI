@@ -30,6 +30,7 @@ UsrGrp-Manager-TUI (Users/Groups Manager TUI)
   - [Status](#status)
   - [Quick Start](#quick-start)
 - [Environment Setup](#environment-setup)
+- [Configuration](#configuration)
 - [Prerequisites](#prerequisites)
 - [Installation Details](#installation-details)
 - [Project Structure](#project-structure)
@@ -51,10 +52,10 @@ Keyboard‑driven terminal app to view and manage users and groups. Browse accou
 Linux‑focused. Written in Rust.
 
 ### Screenshot
-![TUI screenshot](example-images/v0.2.0-release.png)
+![TUI screenshot](example-images/Release_v0.3.0.png)
 
 ### Demo
-![TUI GIF](example-images/usrgrp-manager-v0.2.0-sample.gif)
+![TUI GIF](example-example-images/usrgrp-manager-v0.2.0-sample.gif)
 
 ### Status
 Alpha. Read‑only browsing is safe; write operations require privileges and are still limited.
@@ -90,9 +91,16 @@ After installation:
 usrgrp-manager
 ```
 
-## Optional: set logging level
+## Configuration
+
+- Logging level:
 ```bash
 USRGRP_MANAGER_LOG=info   # or debug, trace
+```
+
+- Sudo group name (for sudo membership checks):
+```bash
+export UGM_SUDO_GROUP=sudo   # defaults to 'wheel' if unset
 ```
 
 
@@ -116,6 +124,11 @@ USRGRP_MANAGER_LOG=info   # or debug, trace
 - Run: `cargo run --release`
 - Logging: set `USRGRP_MANAGER_LOG=info|debug|trace` (default: `info`)
 - Feature flags: `file-parse` exists, but enumeration currently parses `/etc/passwd` and `/etc/group` by default.
+
+### Upgrade Notes (v0.3.0)
+
+- `Ctrl+Tab` pane toggling was removed; use `Shift+Tab`.
+- Use `Shift+K` to toggle the keybindings side panel.
 
 ### Install from AUR
 
@@ -170,14 +183,21 @@ src/
 
 - Quit: `q`
 - Switch tab: `Tab` (Users ↔ Groups)
-- Users tab focus: `Shift+Tab` toggles Users list ↔ Member‑of list
+ - Users tab focus: `Shift+Tab` toggles Users list ↔ Member‑of list
 - Move: `↑/k`, `↓/j`
 - Page: `←/h` (previous page), `→/l` (next page)
 - Search: `/` to start, type query, `Enter` to apply, `Esc` to cancel
+- Filter dialog example:
+
+![Filter users](example-images/Release_v0.3.0_filters.png)
 - Open actions on selection: `Enter`
 - In popups: `↑/k`, `↓/j`, `PageUp`, `PageDown`, `Enter`, `Esc`
 
+- Toggle keybindings panel: `Shift+K`
+- Help: `?`
+
 - New user: `n` (toggle "Create home" with `Space`)
+- Pane toggle change: `Ctrl+Tab` was removed; use `Shift+Tab` instead
 - Delete confirmation: `Space` toggles "Also delete home"
 - Password: Actions → Modify → Password
   - Set/change: masked input with confirm; toggle "must change at next login" with `Space`; select Submit and press `Enter`
@@ -187,7 +207,14 @@ src/
 
 - Users tab
   - Table of users (from `/etc/passwd`), selection, paging
-  - Detail pane: UID, GID, name, home, shell
+  - Detail pane (expanded):
+    - Identity: UID, primary GID, and primary group name
+    - Home: path, existence, and octal permissions (e.g., 755)
+    - Shell: validity (in `/etc/shells`) and interactivity (`nologin`/`false` detection)
+    - Password status: locked, no_password, expired; last change and expiry (days since epoch)
+    - Sudo membership: whether the user is in the configured sudo group
+    - SSH: count of entries in `~/.ssh/authorized_keys` (best‑effort)
+    - Processes: current number of processes owned by the user (best‑effort)
   - Member‑of pane: primary and supplementary groups
   - Create user (`useradd`; optional `-m` to create home)
   - Delete user (`userdel`; optional `-r` to remove home)
@@ -201,13 +228,33 @@ src/
     - Change full name (GECOS, `usermod -c`)
     - Change login shell (pick from `/etc/shells`, `usermod -s`)
 
+  - Examples:
+
+![Actions menu](example-images/Release_v0.3.0_User_actions.png)
+
+![Modify user](example-images/Release_v0.3.0_User_mod.png)
+
+![Modify details](example-images/Release_v0.3.0_User_mod_details.png)
+
+![Remove user from groups](example-images/Release_v0.3.0_Remove_UserFromGroups.png)
+
 - Groups tab
   - Table of groups (from `/etc/group`), selection, paging
-  - Detail pane and members list
+  - Detail pane (expanded):
+    - Classification: GID and whether it's a system or user group
+    - Membership: counts of primary vs secondary members; preview of top‑N names
+    - Orphan detection: flags listed secondary members not present in users
+    - Distributions: shell interactivity, UID class (system <1000 vs user ≥1000), account status
+    - Privilege: indicates if this is the sudo‑capable group
+    - Change proxy: `/etc/group` mtime (days since epoch) as a rough change indicator
   - Actions:
     - Create group (`groupadd`)
     - Delete group (`groupdel`)
     - Modify members (add/remove users)
+
+  - Example:
+
+![Modify groups](example-images/Release_v0.3.0_Modify_Groups.png)
 
 - Search
   - Simple substring filter for Users and Groups tabs
@@ -217,6 +264,9 @@ src/
 - Linux/BSD only. macOS behavior may differ (Directory Services).
 - Write actions call system tools and require appropriate privileges (root or sudo): `usermod`, `gpasswd`, `groupadd`, `groupdel`, `useradd`, `userdel`, `chpasswd`, `chage`.
 - User deletion is implemented with confirmation and optional home removal.
+
+- Some account fields (password status, last change/expiry) rely on best‑effort reads of `/etc/shadow`; these may be unavailable without sufficient privileges.
+- SSH key counting and process counts are best‑effort and can vary across environments.
 
 ## Tests
 
