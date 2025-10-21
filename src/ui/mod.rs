@@ -27,13 +27,27 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
             .as_ref(),
         )
         .split(f.area());
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
-        .split(root[1]);
+    let body = if app.show_keybinds {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                [
+                    Constraint::Percentage(41), // main table
+                    Constraint::Percentage(34), // details/members
+                    Constraint::Percentage(25), // keybinds panel
+                ]
+                .as_ref(),
+            )
+            .split(root[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .split(root[1])
+    };
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(5)].as_ref())
+        .constraints([Constraint::Length(16), Constraint::Min(5)].as_ref())
         .split(body[1]);
 
     let who = crate::sys::current_username().unwrap_or_else(|| "unknown".to_string());
@@ -47,9 +61,11 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
         crate::app::InputMode::SearchGroups => format!("  Search groups: {}", app.search_query),
         crate::app::InputMode::Modal => String::new(),
     };
+    // Inline key hints removed; dedicated keybinds panel is shown on the right now.
     let p = Paragraph::new(format!(
-        "usrgrp-manager ({who})  {tabs}{prompt}\nusers:{}  groups:{}\nKeys: [n] New user | [f] Filter | [Tab] Switch tab | [Shift+Tab] Member-of | [/] Search | [Space] Selection | [Enter] Apply | [Esc] Cancel | [Backspace] Back | [Backspace at start] Back (input windows) | [q] Quit",
-        app.users.len(), app.groups.len()
+        "usrgrp-manager ({who})  {tabs}{prompt}\nusers:{}  groups:{}",
+        app.users.len(),
+        app.groups.len()
     ))
     .block(
         Block::default()
@@ -57,7 +73,7 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.theme.border)),
     )
-    .style(Style::default().fg(app.theme.header_fg).bg(app.theme.header_bg));
+    .style(Style::default().fg(app.theme.header_fg));
     f.render_widget(p, root[0]);
 
     match app.active_tab {
@@ -71,6 +87,11 @@ pub fn render(f: &mut Frame, app: &mut AppState) {
             groups::render_group_details(f, right[0], app);
             groups::render_group_members(f, right[1], app);
         }
+    }
+
+    // Keybindings panel on the far right (if enabled)
+    if app.show_keybinds {
+        components::render_keybinds_panel(f, body[2], app);
     }
 
     components::render_status_bar(f, root[2], app);
@@ -106,8 +127,14 @@ fn render_modal(f: &mut Frame, area: Rect, app: &mut AppState) {
             | ModalState::GroupRenameInput { .. } => {
                 groups::render_group_modal(f, area, app, &state);
             }
+            ModalState::ConfirmRemoveUserFromGroup { .. } => {
+                users::render_user_modal(f, area, app, &state);
+            }
             ModalState::Info { .. } => {
                 components::render_info_modal(f, area, app, &state);
+            }
+            ModalState::Help { scroll } => {
+                components::render_help_modal(f, area, app, scroll);
             }
             ModalState::SudoPrompt { .. } => {
                 components::render_sudo_modal(f, area, app, &state);

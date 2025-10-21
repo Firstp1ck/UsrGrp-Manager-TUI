@@ -116,8 +116,139 @@ pub fn render_user_details(f: &mut Frame, area: Rect, app: &AppState) {
         ),
     };
 
+    let primary_group_name = app
+        .groups_all
+        .iter()
+        .find(|g| g.gid == gid)
+        .map(|g| g.name.clone())
+        .unwrap_or_else(|| "-".to_string());
+
+    // Home directory existence and permissions (octal)
+    let (home_exists, home_perms): (bool, String) = match std::fs::metadata(&home) {
+        Ok(meta) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = meta.permissions().mode() & 0o777;
+                (true, format!("{:03o}", mode))
+            }
+            #[cfg(not(unix))]
+            {
+                (true, "-".to_string())
+            }
+        }
+        Err(_) => (false, "-".to_string()),
+    };
+
+    // Shell validity and interactivity with cached /etc/shells
+    let (shell_valid, shell_interactive) = {
+        use std::sync::OnceLock;
+        static SHELLS: OnceLock<Vec<String>> = OnceLock::new();
+        let shells = SHELLS.get_or_init(|| {
+            if let Ok(contents) = std::fs::read_to_string("/etc/shells") {
+                contents
+                    .lines()
+                    .filter_map(|raw| {
+                        let line = raw.trim();
+                        if line.is_empty() || line.starts_with('#') {
+                            None
+                        } else {
+                            Some(line.to_string())
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        });
+        let valid = shells.iter().any(|s| s == &shell);
+        let interactive = !(shell.ends_with("/nologin") || shell.ends_with("/false"));
+        (valid, interactive)
+    };
+
+    // Password/account status from /etc/shadow (best effort)
+    let (locked, no_password, expired, last_change, expire_abs) =
+        if let Some(sh) = crate::search::user_shadow_status(&username) {
+            (
+                sh.locked,
+                sh.no_password,
+                sh.expired,
+                sh.last_change_days,
+                sh.expire_abs_days,
+            )
+        } else {
+            (false, false, false, None, None)
+        };
+
+    // Best-effort date representation: keep days since epoch as string
+    fn fmt_days(d: Option<i64>) -> String {
+        d.map(|x| x.to_string()).unwrap_or_else(|| "-".to_string())
+    }
+
+    // SSH authorized_keys count
+    let ssh_keys_count = {
+        let mut p = std::path::PathBuf::from(&home);
+        p.push(".ssh");
+        p.push("authorized_keys");
+        match std::fs::read_to_string(p) {
+            Ok(contents) => contents
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    !t.is_empty() && !t.starts_with('#')
+                })
+                .count(),
+            Err(_) => 0,
+        }
+    };
+
+    // Process count owned by the user (best-effort via /proc)
+    let process_count = {
+        let mut count = 0usize;
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for e in entries.flatten() {
+                if let Ok(name) = e.file_name().into_string()
+                    && name.chars().all(|c| c.is_ascii_digit())
+                {
+                    let mut status = e.path();
+                    status.push("status");
+                    if let Ok(s) = std::fs::read_to_string(status) {
+                        for line in s.lines() {
+                            if let Some(rest) = line.strip_prefix("Uid:") {
+                                let first = rest.split_whitespace().next().unwrap_or("");
+                                if first == uid.to_string() {
+                                    count += 1;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        count
+    };
+
+    // Sudo membership (configurable group name via sudo_group_name())
+    let sudo_group = crate::app::sudo_group_name();
+    let in_wheel = app
+        .groups_all
+        .iter()
+        .find(|g| g.name == sudo_group)
+        .map(|g| g.members.iter().any(|m| m == &username))
+        .unwrap_or(false);
+
     let text = format!(
-        "Username: {username}\nFullname: {fullname}\nUID: {uid}\nGID: {gid}\nHome directory: {home}\nShell: {shell}"
+        "Username: {username}\nFullname: {fullname}\nUID: {uid}\nPrimary group: {gid} ({primary_group_name})\nHome directory: {home} (exists: {home_exists}, perms: {home_perms})\nShell: {shell} (valid: {shell_valid}, interactive: {shell_interactive})\nPassword: locked={locked}, no_password={no_password}, expired={expired}\nLast change (days since epoch): {}\nExpiry (days since epoch): {}\nSudo: {}\nSSH keys: {}\nProcesses: {}",
+        fmt_days(last_change),
+        fmt_days(expire_abs),
+        if in_wheel {
+            "member of sudo group"
+        } else {
+            "no"
+        },
+        ssh_keys_count,
+        process_count,
     );
     let p = Paragraph::new(text)
         .style(Style::default().fg(app.theme.text))
@@ -219,7 +350,13 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             let width = 30u16;
             let height = 7u16;
             let rect = crate::ui::components::centered_rect(width, height, area);
-            let options = ["Modify", "Delete"];
+            let options = if let Some(crate::app::ActionsContext::GroupMemberRemoval { .. }) =
+                &app.actions_context
+            {
+                ["Modify", "Remove from group"]
+            } else {
+                ["Modify", "Delete"]
+            };
             let mut text = String::new();
             for (idx, label) in options.iter().enumerate() {
                 if idx == selected {
@@ -239,7 +376,7 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
         }
         ModalState::ModifyMenu { selected } => {
             let rect = crate::ui::components::centered_rect(36, 9, area);
-            let options = ["Add group", "Remove group", "Change details", "Password"];
+            let options = ["Add group", "Remove group", "Modify details", "Password"];
             let mut text = String::new();
             for (idx, label) in options.iter().enumerate() {
                 if idx == selected {
@@ -248,9 +385,14 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
                     text.push_str(&format!("  {}\n", label));
                 }
             }
+            let user_name = app
+                .users
+                .get(app.selected_user_index)
+                .map(|u| u.name.clone())
+                .unwrap_or_default();
             let p = Paragraph::new(text).block(
                 Block::default()
-                    .title("Modify")
+                    .title(format!("Modify user - {}", user_name))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.border)),
             );
@@ -271,9 +413,14 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
                     text.push_str(&format!("  {}\n", label));
                 }
             }
+            let user_name = app
+                .users
+                .get(app.selected_user_index)
+                .map(|u| u.name.clone())
+                .unwrap_or_default();
             let p = Paragraph::new(text).block(
                 Block::default()
-                    .title("Password")
+                    .title(format!("Password - {}", user_name))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.border)),
             );
@@ -329,9 +476,14 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
                     text.push_str(&format!("  {}\n", label));
                 }
             }
+            let user_name = app
+                .users
+                .get(app.selected_user_index)
+                .map(|u| u.name.clone())
+                .unwrap_or_default();
             let p = Paragraph::new(text).block(
                 Block::default()
-                    .title("Change details")
+                    .title(format!("Modify details - {}", user_name))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.border)),
             );
@@ -392,11 +544,23 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             offset: _,
             selected_multi,
         } => {
+            // Build list of eligible groups (not already a member of, and not the primary group)
+            let (username, primary_gid) = if let Some(u) = app.users.get(app.selected_user_index) {
+                (u.name.clone(), u.primary_gid)
+            } else {
+                (String::new(), 0)
+            };
+            let eligible: Vec<&crate::sys::SystemGroup> = app
+                .groups_all
+                .iter()
+                .filter(|g| g.gid != primary_gid && !g.members.iter().any(|m| m == &username))
+                .collect();
+
             let width = (area.width.saturating_sub(10)).clamp(40, 60);
             let height = (area.height.saturating_sub(6)).clamp(8, 20);
             let rect = crate::ui::components::centered_rect(width, height, area);
             let visible_capacity = rect.height.saturating_sub(2) as usize;
-            let total = app.groups_all.len();
+            let total = eligible.len();
             let max_offset = total.saturating_sub(visible_capacity);
             let mut off = selected.saturating_sub(visible_capacity / 2);
             if off > max_offset {
@@ -404,7 +568,7 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             }
             let start = off.min(total);
             let end = (start + visible_capacity).min(total);
-            let slice = &app.groups_all[start..end];
+            let slice = &eligible[start..end];
             let mut items: Vec<ListItem> = Vec::with_capacity(slice.len());
             for (i, g) in slice.iter().enumerate() {
                 let abs_index = start + i;
@@ -422,7 +586,7 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             let list = List::new(items)
                 .block(
                     Block::default()
-                        .title("Add to group")
+                        .title("Group to add")
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(app.theme.border)),
                 )
@@ -518,6 +682,24 @@ pub fn render_user_modal(f: &mut Frame, area: Rect, app: &mut AppState, state: &
             let p = Paragraph::new(body).block(
                 Block::default()
                     .title("Confirm delete")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border)),
+            );
+            f.render_widget(Clear, rect);
+            f.render_widget(p, rect);
+        }
+        ModalState::ConfirmRemoveUserFromGroup {
+            selected,
+            group_name,
+        } => {
+            let rect = crate::ui::components::centered_rect(54, 7, area);
+            let mut body = format!("Remove user from group '{}' ?\n\n", group_name);
+            let yes = if selected == 0 { "[Yes]" } else { " Yes " };
+            let no = if selected == 1 { "[No]" } else { " No  " };
+            body.push_str(&format!("  {}    {}", yes, no));
+            let p = Paragraph::new(body).block(
+                Block::default()
+                    .title("Confirm removal")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.border)),
             );

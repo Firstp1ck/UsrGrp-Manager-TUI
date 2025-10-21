@@ -12,8 +12,8 @@ use std::time::Duration;
 use crate::app::filterconf::FiltersConfig;
 use crate::app::keymap::KeyAction;
 use crate::app::{
-    ActiveTab, AppState, GroupsFilter, InputMode, ModalState, ModifyField, PendingAction,
-    UsersFocus,
+    ActionsContext, ActiveTab, AppState, GroupsFilter, GroupsFocus, InputMode, ModalState,
+    ModifyField, PendingAction, UsersFocus,
 };
 use crate::search::apply_filters_and_search;
 use crate::sys;
@@ -35,6 +35,13 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
             match app.input_mode {
                 InputMode::Normal => match app.keymap.resolve(&key) {
                     Some(KeyAction::Quit) => break,
+                    Some(KeyAction::OpenHelp) => {
+                        app.modal = Some(ModalState::Help { scroll: 0 });
+                        app.input_mode = InputMode::Modal;
+                    }
+                    Some(KeyAction::ToggleKeybindsPane) => {
+                        app.show_keybinds = !app.show_keybinds;
+                    }
                     Some(KeyAction::Ignore) => { /* ignore */ }
                     Some(KeyAction::OpenFilterMenu) => {
                         app.modal = Some(ModalState::FilterMenu { selected: 0 });
@@ -47,29 +54,62 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                             ActiveTab::Groups => InputMode::SearchGroups,
                         };
                     }
-                    Some(KeyAction::NewUser) => {
-                        // Open create user modal; default to create home
-                        app.modal = Some(ModalState::UserAddInput {
-                            selected: 0,
-                            name: String::new(),
-                            password: String::new(),
-                            confirm: String::new(),
-                            create_home: true,
-                            add_to_wheel: false,
-                        });
-                        app.input_mode = InputMode::Modal;
-                    }
+                    Some(KeyAction::NewUser) => match app.active_tab {
+                        ActiveTab::Users => {
+                            if matches!(app.users_focus, UsersFocus::MemberOf) {
+                                // In Member of pane: open Add-to-groups multi-select
+                                app.modal = Some(ModalState::ModifyGroupsAdd {
+                                    selected: 0,
+                                    offset: 0,
+                                    selected_multi: Vec::new(),
+                                });
+                                app.input_mode = InputMode::Modal;
+                            } else {
+                                // Open create user modal; default to create home
+                                app.modal = Some(ModalState::UserAddInput {
+                                    selected: 0,
+                                    name: String::new(),
+                                    password: String::new(),
+                                    confirm: String::new(),
+                                    create_home: true,
+                                    add_to_wheel: false,
+                                });
+                                app.input_mode = InputMode::Modal;
+                            }
+                        }
+                        ActiveTab::Groups => {
+                            // Open create group input modal
+                            app.modal = Some(ModalState::GroupAddInput {
+                                name: String::new(),
+                            });
+                            app.input_mode = InputMode::Modal;
+                        }
+                    },
                     Some(KeyAction::SwitchTab) => {
                         app.active_tab = match app.active_tab {
                             ActiveTab::Users => ActiveTab::Groups,
                             ActiveTab::Groups => ActiveTab::Users,
                         };
                     }
-                    Some(KeyAction::ToggleUsersFocus) => {
-                        if let ActiveTab::Users = app.active_tab {
+                    Some(KeyAction::ToggleUsersFocus) => match app.active_tab {
+                        ActiveTab::Users => {
                             app.users_focus = match app.users_focus {
                                 UsersFocus::UsersList => UsersFocus::MemberOf,
                                 UsersFocus::MemberOf => UsersFocus::UsersList,
+                            };
+                        }
+                        ActiveTab::Groups => {
+                            app.groups_focus = match app.groups_focus {
+                                GroupsFocus::GroupsList => GroupsFocus::Members,
+                                GroupsFocus::Members => GroupsFocus::GroupsList,
+                            };
+                        }
+                    },
+                    Some(KeyAction::ToggleGroupsFocus) => {
+                        if let ActiveTab::Groups = app.active_tab {
+                            app.groups_focus = match app.groups_focus {
+                                GroupsFocus::GroupsList => GroupsFocus::Members,
+                                GroupsFocus::Members => GroupsFocus::GroupsList,
                             };
                         }
                     }
@@ -107,16 +147,107 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                                         }
                                     }
                                 } else {
+                                    // Open Actions for Users section: ensure no residual context
+                                    app.actions_context = None;
                                     app.modal = Some(ModalState::Actions { selected: 0 });
                                     app.input_mode = InputMode::Modal;
                                 }
                             }
                         }
                         ActiveTab::Groups => {
-                            if !app.groups.is_empty() {
+                            if matches!(app.groups_focus, GroupsFocus::Members) {
+                                if let Some(g) = app.groups.get(app.selected_group_index) {
+                                    let members = g.members.clone();
+                                    if app.selected_group_member_index < members.len() {
+                                        let uname =
+                                            members[app.selected_group_member_index].clone();
+                                        if let Some(idx) =
+                                            app.users.iter().position(|u| u.name == uname)
+                                        {
+                                            app.selected_user_index = idx;
+                                        } else if let Some(idx_all) =
+                                            app.users_all.iter().position(|u| u.name == uname)
+                                        {
+                                            app.users = app.users_all.clone();
+                                            app.selected_user_index = idx_all;
+                                        }
+                                        app.actions_context =
+                                            Some(ActionsContext::GroupMemberRemoval {
+                                                group_name: uname,
+                                            });
+                                        app.modal = Some(ModalState::Actions { selected: 0 });
+                                        app.input_mode = InputMode::Modal;
+                                    }
+                                }
+                            } else if let Some(g) = app.groups.get(app.selected_group_index) {
                                 app.modal = Some(ModalState::GroupsActions {
                                     selected: 0,
-                                    target_gid: None,
+                                    target_gid: Some(g.gid),
+                                });
+                                app.input_mode = InputMode::Modal;
+                            }
+                        }
+                    },
+                    Some(KeyAction::DeleteSelection) => match app.active_tab {
+                        ActiveTab::Users => {
+                            if app.users.is_empty() {
+                                break;
+                            }
+                            match app.users_focus {
+                                UsersFocus::UsersList => {
+                                    let allowed = app
+                                        .users
+                                        .get(app.selected_user_index)
+                                        .map(|u| u.uid >= 1000 && u.uid <= 1999)
+                                        .unwrap_or(false);
+                                    if allowed {
+                                        app.modal = Some(ModalState::DeleteConfirm {
+                                            selected: 1,
+                                            allowed,
+                                            delete_home: false,
+                                        });
+                                    } else {
+                                        app.modal = Some(ModalState::Info {
+                                            message:
+                                                "Deletion not allowed. Only UID 1000-1999 allowed"
+                                                    .to_string(),
+                                        });
+                                    }
+                                    app.input_mode = InputMode::Modal;
+                                }
+                                UsersFocus::MemberOf => {
+                                    if let Some(u) = app.users.get(app.selected_user_index) {
+                                        let uname = u.name.clone();
+                                        let pgid = u.primary_gid;
+                                        let groups_for_user: Vec<sys::SystemGroup> = app
+                                            .groups
+                                            .iter()
+                                            .filter(|g| {
+                                                g.gid == pgid
+                                                    || g.members.iter().any(|m| m == &uname)
+                                            })
+                                            .cloned()
+                                            .collect();
+                                        if let Some(sel_group) =
+                                            groups_for_user.get(app.selected_group_index)
+                                        {
+                                            app.modal =
+                                                Some(ModalState::ConfirmRemoveUserFromGroup {
+                                                    selected: 1,
+                                                    group_name: sel_group.name.clone(),
+                                                });
+                                            app.input_mode = InputMode::Modal;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        ActiveTab::Groups => {
+                            if !app.groups.is_empty() {
+                                let gid = app.groups.get(app.selected_group_index).map(|g| g.gid);
+                                app.modal = Some(ModalState::GroupDeleteConfirm {
+                                    selected: 1,
+                                    target_gid: gid,
                                 });
                                 app.input_mode = InputMode::Modal;
                             }
@@ -153,13 +284,30 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                                 }
                             }
                         },
-                        ActiveTab::Groups => {
-                            if app.selected_group_index > 0 {
-                                app.selected_group_index -= 1;
-                            } else if !app.groups.is_empty() {
-                                app.selected_group_index = app.groups.len().saturating_sub(1);
+                        ActiveTab::Groups => match app.groups_focus {
+                            GroupsFocus::GroupsList => {
+                                if app.selected_group_index > 0 {
+                                    app.selected_group_index -= 1;
+                                } else if !app.groups.is_empty() {
+                                    app.selected_group_index = app.groups.len().saturating_sub(1);
+                                }
                             }
-                        }
+                            GroupsFocus::Members => {
+                                if app.selected_group_member_index > 0 {
+                                    app.selected_group_member_index -= 1;
+                                } else {
+                                    let members_len = app
+                                        .groups
+                                        .get(app.selected_group_index)
+                                        .map(|g| g.members.len())
+                                        .unwrap_or(0);
+                                    if members_len > 0 {
+                                        app.selected_group_member_index =
+                                            members_len.saturating_sub(1);
+                                    }
+                                }
+                            }
+                        },
                     },
                     Some(KeyAction::MoveDown) => match app.active_tab {
                         ActiveTab::Users => match app.users_focus {
@@ -192,13 +340,27 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                                 }
                             }
                         },
-                        ActiveTab::Groups => {
-                            if app.selected_group_index + 1 < app.groups.len() {
-                                app.selected_group_index += 1;
-                            } else if !app.groups.is_empty() {
-                                app.selected_group_index = 0;
+                        ActiveTab::Groups => match app.groups_focus {
+                            GroupsFocus::GroupsList => {
+                                if app.selected_group_index + 1 < app.groups.len() {
+                                    app.selected_group_index += 1;
+                                } else if !app.groups.is_empty() {
+                                    app.selected_group_index = 0;
+                                }
                             }
-                        }
+                            GroupsFocus::Members => {
+                                let members_len = app
+                                    .groups
+                                    .get(app.selected_group_index)
+                                    .map(|g| g.members.len())
+                                    .unwrap_or(0);
+                                if app.selected_group_member_index + 1 < members_len {
+                                    app.selected_group_member_index += 1;
+                                } else if members_len > 0 {
+                                    app.selected_group_member_index = 0;
+                                }
+                            }
+                        },
                     },
                     Some(KeyAction::MoveLeftPage) | Some(KeyAction::PageUp) => {
                         let rpp = app.rows_per_page.max(1);
@@ -219,13 +381,22 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                                     }
                                 }
                             },
-                            ActiveTab::Groups => {
-                                if app.selected_group_index >= rpp {
-                                    app.selected_group_index -= rpp;
-                                } else {
-                                    app.selected_group_index = 0;
+                            ActiveTab::Groups => match app.groups_focus {
+                                GroupsFocus::GroupsList => {
+                                    if app.selected_group_index >= rpp {
+                                        app.selected_group_index -= rpp;
+                                    } else {
+                                        app.selected_group_index = 0;
+                                    }
                                 }
-                            }
+                                GroupsFocus::Members => {
+                                    if app.selected_group_member_index >= rpp {
+                                        app.selected_group_member_index -= rpp;
+                                    } else {
+                                        app.selected_group_member_index = 0;
+                                    }
+                                }
+                            },
                         }
                     }
                     Some(KeyAction::MoveRightPage) | Some(KeyAction::PageDown) => {
@@ -257,11 +428,24 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
                                         new_idx.min(groups_len.saturating_sub(1));
                                 }
                             },
-                            ActiveTab::Groups => {
-                                let new_idx = app.selected_group_index.saturating_add(rpp);
-                                app.selected_group_index =
-                                    new_idx.min(app.groups.len().saturating_sub(1));
-                            }
+                            ActiveTab::Groups => match app.groups_focus {
+                                GroupsFocus::GroupsList => {
+                                    let new_idx = app.selected_group_index.saturating_add(rpp);
+                                    app.selected_group_index =
+                                        new_idx.min(app.groups.len().saturating_sub(1));
+                                }
+                                GroupsFocus::Members => {
+                                    let members_len = app
+                                        .groups
+                                        .get(app.selected_group_index)
+                                        .map(|g| g.members.len())
+                                        .unwrap_or(0);
+                                    let new_idx =
+                                        app.selected_group_member_index.saturating_add(rpp);
+                                    app.selected_group_member_index =
+                                        new_idx.min(members_len.saturating_sub(1));
+                                }
+                            },
                         }
                     }
                     None => {}
@@ -382,7 +566,11 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             _ => {}
         },
         Some(ModalState::Actions { selected }) => match key.code {
-            KeyCode::Esc => close_modal(app),
+            KeyCode::Esc => {
+                // Leaving actions, clear any temporary context
+                app.actions_context = None;
+                close_modal(app)
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 if *selected > 0 {
                     *selected -= 1;
@@ -397,33 +585,64 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                     *selected = 0;
                 }
             }
-            KeyCode::Enter => match *selected {
-                0 => {
-                    app.modal = Some(ModalState::ModifyMenu { selected: 0 });
-                }
-                1 => {
-                    if let Some(user) = app.users.get(app.selected_user_index) {
-                        let allowed = user.uid >= 1000 && user.uid <= 1999;
-                        if allowed {
-                            app.modal = Some(ModalState::DeleteConfirm {
-                                selected: 1,
-                                allowed,
-                                delete_home: false,
-                            });
-                        } else {
-                            app.modal = Some(ModalState::Info {
-                                message: format!(
-                                    "Deletion not allowed. Only UID 1000-1999 allowed: {}",
-                                    user.name
-                                ),
-                            });
-                        }
-                    } else {
-                        close_modal(app);
+            KeyCode::Enter => {
+                match *selected {
+                    0 => {
+                        // Modify path should not carry special context
+                        app.actions_context = None;
+                        app.modal = Some(ModalState::ModifyMenu { selected: 0 });
                     }
+                    1 => {
+                        if let Some(ActionsContext::GroupMemberRemoval { group_name }) =
+                            app.actions_context.clone()
+                        {
+                            if let Some(user) = app.users.get(app.selected_user_index) {
+                                if group_name == user.name {
+                                    app.modal = Some(ModalState::Info {
+                                        message: "Cannot remove from self-named group.".to_string(),
+                                    });
+                                } else {
+                                    let pending = PendingAction::RemoveUserFromGroup {
+                                        username: user.name.clone(),
+                                        groupname: group_name,
+                                    };
+                                    if let Err(_e) = perform_pending_action(
+                                        app,
+                                        pending.clone(),
+                                        app.sudo_password.clone(),
+                                    ) {
+                                        app.modal = Some(ModalState::SudoPrompt {
+                                            next: pending,
+                                            password: String::new(),
+                                            error: None,
+                                        });
+                                    }
+                                }
+                            }
+                            app.actions_context = None;
+                        } else if let Some(user) = app.users.get(app.selected_user_index) {
+                            let allowed = user.uid >= 1000 && user.uid <= 1999;
+                            if allowed {
+                                app.modal = Some(ModalState::DeleteConfirm {
+                                    selected: 1,
+                                    allowed,
+                                    delete_home: false,
+                                });
+                            } else {
+                                app.modal = Some(ModalState::Info {
+                                    message: format!(
+                                        "Deletion not allowed. Only UID 1000-1999 allowed: {}",
+                                        user.name
+                                    ),
+                                });
+                            }
+                        } else {
+                            close_modal(app);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             _ => {}
         },
         Some(ModalState::ModifyMenu { selected }) => match key.code {
@@ -593,7 +812,17 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             offset,
             selected_multi,
         }) => {
-            let total = app.groups_all.len();
+            // Compute eligible groups count (not primary group, not already member)
+            let (username, primary_gid) = if let Some(u) = app.users.get(app.selected_user_index) {
+                (u.name.clone(), u.primary_gid)
+            } else {
+                (String::new(), 0)
+            };
+            let total = app
+                .groups_all
+                .iter()
+                .filter(|g| g.gid != primary_gid && !g.members.iter().any(|m| m == &username))
+                .count();
             match key.code {
                 KeyCode::Esc => close_modal(app),
                 KeyCode::Backspace => {
@@ -644,8 +873,19 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                     if let Some(user) = app.users.get(app.selected_user_index) {
                         if !selected_multi.is_empty() {
                             let mut names: Vec<String> = Vec::with_capacity(selected_multi.len());
+                            // Recompute eligible groups to map indices correctly
+                            let username = user.name.clone();
+                            let primary_gid = user.primary_gid;
+                            let eligible: Vec<&crate::sys::SystemGroup> = app
+                                .groups_all
+                                .iter()
+                                .filter(|g| {
+                                    g.gid != primary_gid
+                                        && !g.members.iter().any(|m| m == &username)
+                                })
+                                .collect();
                             for idx in selected_multi.iter() {
-                                if let Some(g) = app.groups_all.get(*idx) {
+                                if let Some(g) = eligible.get(*idx) {
                                     names.push(g.name.clone());
                                 }
                             }
@@ -1027,6 +1267,47 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             }
             _ => {}
         },
+        Some(ModalState::ConfirmRemoveUserFromGroup {
+            selected,
+            group_name,
+        }) => match key.code {
+            KeyCode::Esc => close_modal(app),
+            KeyCode::Backspace => close_modal(app),
+            KeyCode::Left | KeyCode::Right => {
+                *selected = if *selected == 0 { 1 } else { 0 };
+            }
+            KeyCode::Enter => {
+                if *selected == 0 {
+                    if let Some(user) = app.users.get(app.selected_user_index) {
+                        if *group_name == user.name {
+                            // Should not happen; guard
+                            close_modal(app);
+                        } else {
+                            let pending = PendingAction::RemoveUserFromGroup {
+                                username: user.name.clone(),
+                                groupname: group_name.clone(),
+                            };
+                            if let Err(_e) = perform_pending_action(
+                                app,
+                                pending.clone(),
+                                app.sudo_password.clone(),
+                            ) {
+                                app.modal = Some(ModalState::SudoPrompt {
+                                    next: pending,
+                                    password: String::new(),
+                                    error: None,
+                                });
+                            }
+                        }
+                    } else {
+                        close_modal(app);
+                    }
+                } else {
+                    close_modal(app);
+                }
+            }
+            _ => {}
+        },
         Some(ModalState::GroupsActions {
             selected,
             target_gid,
@@ -1034,34 +1315,64 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             KeyCode::Esc => close_modal(app),
             KeyCode::Backspace => close_modal(app),
             KeyCode::Up | KeyCode::Char('k') => {
+                let max_index = if target_gid.is_some() { 1 } else { 2 };
                 if *selected > 0 {
                     *selected -= 1;
                 } else {
-                    *selected = 2;
+                    *selected = max_index;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if *selected < 2 {
+                let max_index = if target_gid.is_some() { 1 } else { 2 };
+                if *selected < max_index {
                     *selected += 1;
                 } else {
                     *selected = 0;
                 }
             }
-            KeyCode::Enter => match *selected {
-                0 => {
-                    app.modal = Some(ModalState::GroupAddInput {
-                        name: String::new(),
-                    })
+            KeyCode::Enter => {
+                if target_gid.is_some() {
+                    // Options: 0 => Modify group, 1 => Remove group
+                    match *selected {
+                        0 => {
+                            app.modal = Some(ModalState::GroupModifyMenu {
+                                selected: 0,
+                                target_gid: *target_gid,
+                            });
+                        }
+                        1 => {
+                            app.modal = Some(ModalState::GroupDeleteConfirm {
+                                selected: 1,
+                                target_gid: *target_gid,
+                            });
+                        }
+                        _ => {}
+                    }
+                } else {
+                    // Options: 0 => Add group, 1 => Remove group, 2 => Modify group (members)
+                    match *selected {
+                        0 => {
+                            app.modal = Some(ModalState::GroupAddInput {
+                                name: String::new(),
+                            })
+                        }
+                        1 => {
+                            let gid = app.groups.get(app.selected_group_index).map(|g| g.gid);
+                            app.modal = Some(ModalState::GroupDeleteConfirm {
+                                selected: 1,
+                                target_gid: gid,
+                            });
+                        }
+                        2 => {
+                            app.modal = Some(ModalState::GroupModifyMenu {
+                                selected: 0,
+                                target_gid: *target_gid,
+                            })
+                        }
+                        _ => {}
+                    }
                 }
-                1 => app.modal = Some(ModalState::GroupDeleteConfirm { selected: 1 }),
-                2 => {
-                    app.modal = Some(ModalState::GroupModifyMenu {
-                        selected: 0,
-                        target_gid: *target_gid,
-                    })
-                }
-                _ => {}
-            },
+            }
             _ => {}
         },
         Some(ModalState::GroupAddInput { name }) => match key.code {
@@ -1095,12 +1406,15 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             }
             _ => {}
         },
-        Some(ModalState::GroupDeleteConfirm { selected }) => match key.code {
+        Some(ModalState::GroupDeleteConfirm {
+            selected,
+            target_gid,
+        }) => match key.code {
             KeyCode::Esc => close_modal(app),
             KeyCode::Backspace => {
                 app.modal = Some(ModalState::GroupsActions {
                     selected: 1,
-                    target_gid: None,
+                    target_gid: *target_gid,
                 });
             }
             KeyCode::Left | KeyCode::Right => {
@@ -1108,10 +1422,16 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             }
             KeyCode::Enter => {
                 if *selected == 0 {
-                    let group_name_opt = app
-                        .groups
-                        .get(app.selected_group_index)
-                        .map(|g| g.name.clone());
+                    let group_name_opt = if let Some(gid) = *target_gid {
+                        app.groups
+                            .iter()
+                            .find(|g| g.gid == gid)
+                            .map(|g| g.name.clone())
+                    } else {
+                        app.groups
+                            .get(app.selected_group_index)
+                            .map(|g| g.name.clone())
+                    };
                     if let Some(group_name) = group_name_opt {
                         let pending = PendingAction::DeleteGroup {
                             groupname: group_name.clone(),
@@ -1679,6 +1999,26 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             KeyCode::Esc | KeyCode::Enter => close_modal(app),
             _ => {}
         },
+        Some(ModalState::Help { scroll }) => match key.code {
+            KeyCode::Esc | KeyCode::Enter => close_modal(app),
+            KeyCode::Up => {
+                let s = scroll.saturating_sub(1);
+                app.modal = Some(ModalState::Help { scroll: s });
+            }
+            KeyCode::Down => {
+                let s = scroll.saturating_add(1);
+                app.modal = Some(ModalState::Help { scroll: s });
+            }
+            KeyCode::PageUp => {
+                let s = scroll.saturating_sub(10);
+                app.modal = Some(ModalState::Help { scroll: s });
+            }
+            KeyCode::PageDown => {
+                let s = scroll.saturating_add(10);
+                app.modal = Some(ModalState::Help { scroll: s });
+            }
+            _ => {}
+        },
         None => {}
     }
 }
@@ -1928,10 +2268,12 @@ mod tests {
 
     #[test]
     fn filter_menu_show_all_clears_users_filter_and_closes() {
-        let mut app = AppState::default();
-        app.active_tab = ActiveTab::Users;
-        app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::FilterMenu { selected: 0 });
+        let mut app = AppState {
+            active_tab: ActiveTab::Users,
+            input_mode: InputMode::Modal,
+            modal: Some(ModalState::FilterMenu { selected: 0 }),
+            ..AppState::default()
+        };
 
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
@@ -1942,18 +2284,19 @@ mod tests {
 
     #[test]
     fn actions_delete_opens_delete_confirm_with_allowed_flag() {
-        let mut app = AppState::default();
-        // Provide a deletable user (UID in 1000-1999)
-        app.users = vec![crate::sys::SystemUser {
-            uid: 1500,
-            name: "testuser".to_string(),
-            primary_gid: 1500,
-            full_name: None,
-            home_dir: "/home/testuser".to_string(),
-            shell: "/bin/bash".to_string(),
-        }];
-        app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::Actions { selected: 1 });
+        let mut app = AppState {
+            users: vec![crate::sys::SystemUser {
+                uid: 1500,
+                name: "testuser".to_string(),
+                primary_gid: 1500,
+                full_name: None,
+                home_dir: "/home/testuser".to_string(),
+                shell: "/bin/bash".to_string(),
+            }],
+            input_mode: InputMode::Modal,
+            modal: Some(ModalState::Actions { selected: 1 }),
+            ..AppState::default()
+        };
 
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
@@ -1965,14 +2308,16 @@ mod tests {
 
     #[test]
     fn change_password_mismatch_shows_info() {
-        let mut app = AppState::default();
-        app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::ChangePassword {
-            selected: 3, // Submit
-            password: "secret".to_string(),
-            confirm: "different".to_string(),
-            must_change: false,
-        });
+        let mut app = AppState {
+            input_mode: InputMode::Modal,
+            modal: Some(ModalState::ChangePassword {
+                selected: 3, // Submit
+                password: "secret".to_string(),
+                confirm: "different".to_string(),
+                must_change: false,
+            }),
+            ..AppState::default()
+        };
 
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
@@ -1986,15 +2331,17 @@ mod tests {
 
     #[test]
     fn sudo_prompt_backspace_closes_when_empty() {
-        let mut app = AppState::default();
-        app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::SudoPrompt {
-            next: PendingAction::ResetPassword {
-                username: "user".to_string(),
-            },
-            password: String::new(),
-            error: None,
-        });
+        let mut app = AppState {
+            input_mode: InputMode::Modal,
+            modal: Some(ModalState::SudoPrompt {
+                next: PendingAction::ResetPassword {
+                    username: "user".to_string(),
+                },
+                password: String::new(),
+                error: None,
+            }),
+            ..AppState::default()
+        };
 
         handle_modal_key(&mut app, key(KeyCode::Backspace));
 
@@ -2005,28 +2352,30 @@ mod tests {
     #[test]
     fn modify_groups_remove_primary_group_shows_info() {
         // Create a user 'alice' with primary_gid 100 and groups including that primary group
-        let mut app = AppState::default();
-        app.users = vec![crate::sys::SystemUser {
-            uid: 1000,
-            name: "alice".to_string(),
-            primary_gid: 100,
-            full_name: None,
-            home_dir: "/home/alice".to_string(),
-            shell: "/bin/bash".to_string(),
-        }];
-        app.groups_all = vec![
-            crate::sys::SystemGroup {
-                gid: 100,
-                name: "users".to_string(),
-                members: vec![],
-            },
-            crate::sys::SystemGroup {
-                gid: 10,
-                name: "wheel".to_string(),
-                members: vec!["alice".to_string()],
-            },
-        ];
-        app.selected_user_index = 0;
+        let mut app = AppState {
+            users: vec![crate::sys::SystemUser {
+                uid: 1000,
+                name: "alice".to_string(),
+                primary_gid: 100,
+                full_name: None,
+                home_dir: "/home/alice".to_string(),
+                shell: "/bin/bash".to_string(),
+            }],
+            groups_all: vec![
+                crate::sys::SystemGroup {
+                    gid: 100,
+                    name: "users".to_string(),
+                    members: vec![],
+                },
+                crate::sys::SystemGroup {
+                    gid: 10,
+                    name: "wheel".to_string(),
+                    members: vec!["alice".to_string()],
+                },
+            ],
+            selected_user_index: 0,
+            ..AppState::default()
+        };
 
         // Open ModifyGroupsRemove and select the primary group entry (index 0 in the filtered list)
         app.input_mode = InputMode::Modal;
@@ -2048,19 +2397,20 @@ mod tests {
 
     #[test]
     fn actions_delete_blocked_for_non_user_uid_range() {
-        let mut app = AppState::default();
-        // Root-like user (UID < 1000) should be blocked
-        app.users = vec![crate::sys::SystemUser {
-            uid: 0,
-            name: "root".to_string(),
-            primary_gid: 0,
-            full_name: None,
-            home_dir: "/root".to_string(),
-            shell: "/bin/bash".to_string(),
-        }];
-        app.selected_user_index = 0;
-        app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::Actions { selected: 1 }); // Delete
+        let mut app = AppState {
+            users: vec![crate::sys::SystemUser {
+                uid: 0,
+                name: "root".to_string(),
+                primary_gid: 0,
+                full_name: None,
+                home_dir: "/root".to_string(),
+                shell: "/bin/bash".to_string(),
+            }],
+            selected_user_index: 0,
+            input_mode: InputMode::Modal,
+            modal: Some(ModalState::Actions { selected: 1 }), // Delete
+            ..AppState::default()
+        };
 
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
@@ -2075,25 +2425,27 @@ mod tests {
 
     #[test]
     fn groups_rename_blocked_for_system_gid() {
-        let mut app = AppState::default();
-        app.groups = vec![
-            crate::sys::SystemGroup {
-                gid: 10,
-                name: "wheel".to_string(),
-                members: vec![],
-            },
-            crate::sys::SystemGroup {
-                gid: 1000,
-                name: "users".to_string(),
-                members: vec![],
-            },
-        ];
-        app.selected_group_index = 0; // system group
-        app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::GroupModifyMenu {
-            selected: 2,
-            target_gid: None,
-        }); // Rename
+        let mut app = AppState {
+            groups: vec![
+                crate::sys::SystemGroup {
+                    gid: 10,
+                    name: "wheel".to_string(),
+                    members: vec![],
+                },
+                crate::sys::SystemGroup {
+                    gid: 1000,
+                    name: "users".to_string(),
+                    members: vec![],
+                },
+            ],
+            selected_group_index: 0,
+            input_mode: InputMode::Modal,
+            modal: Some(ModalState::GroupModifyMenu {
+                selected: 2,
+                target_gid: None,
+            }), // Rename
+            ..AppState::default()
+        };
 
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
@@ -2110,16 +2462,18 @@ mod tests {
     #[test]
     fn privileged_action_opens_sudo_prompt_without_credentials() {
         // Set up a normal user entry
-        let mut app = AppState::default();
-        app.users = vec![crate::sys::SystemUser {
-            uid: 1000,
-            name: "userx".to_string(),
-            primary_gid: 1000,
-            full_name: None,
-            home_dir: "/home/userx".to_string(),
-            shell: "/bin/bash".to_string(),
-        }];
-        app.selected_user_index = 0;
+        let mut app = AppState {
+            users: vec![crate::sys::SystemUser {
+                uid: 1000,
+                name: "userx".to_string(),
+                primary_gid: 1000,
+                full_name: None,
+                home_dir: "/home/userx".to_string(),
+                shell: "/bin/bash".to_string(),
+            }],
+            selected_user_index: 0,
+            ..AppState::default()
+        };
 
         // Open ModifyPasswordMenu and choose Reset (selection 1) which requires privileges
         app.input_mode = InputMode::Modal;

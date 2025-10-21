@@ -107,6 +107,7 @@ fn search_applies_filters_across_users_and_groups() {
         active_tab: ActiveTab::Users,
         selected_user_index: 0,
         selected_group_index: 0,
+        selected_group_member_index: 0,
         rows_per_page: 10,
         _table_state: TableState::default(),
         input_mode: InputMode::Normal,
@@ -115,10 +116,13 @@ fn search_applies_filters_across_users_and_groups() {
         keymap: usrgrp_manager::app::keymap::Keymap::default(),
         modal: None,
         users_focus: UsersFocus::UsersList,
+        groups_focus: usrgrp_manager::app::GroupsFocus::GroupsList,
         sudo_password: None,
         users_filter: Some(UsersFilter::OnlyUserIds),
         groups_filter: Some(GroupsFilter::OnlyUserGids),
         users_filter_chips: Default::default(),
+        actions_context: None,
+        show_keybinds: true,
     };
 
     // Users search
@@ -142,10 +146,10 @@ fn search_applies_filters_across_users_and_groups() {
 fn is_root() -> bool {
     if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
         for line in s.lines() {
-            if let Some(rest) = line.strip_prefix("Uid:") {
-                if let Some(first) = rest.split_whitespace().next() {
-                    return first == "0";
-                }
+            if let Some(rest) = line.strip_prefix("Uid:")
+                && let Some(first) = rest.split_whitespace().next()
+            {
+                return first == "0";
             }
         }
     }
@@ -241,6 +245,7 @@ fn search_mode_gating_leaves_lists_unchanged() {
         active_tab: ActiveTab::Users,
         selected_user_index: 0,
         selected_group_index: 0,
+        selected_group_member_index: 0,
         rows_per_page: 10,
         _table_state: TableState::default(),
         input_mode: InputMode::Normal,
@@ -249,10 +254,13 @@ fn search_mode_gating_leaves_lists_unchanged() {
         keymap: usrgrp_manager::app::keymap::Keymap::default(),
         modal: None,
         users_focus: UsersFocus::UsersList,
+        groups_focus: usrgrp_manager::app::GroupsFocus::GroupsList,
         sudo_password: None,
         users_filter: None,
         groups_filter: None,
         users_filter_chips: Default::default(),
+        actions_context: None,
+        show_keybinds: true,
     };
 
     apply_filters_and_search(&mut app);
@@ -303,12 +311,13 @@ fn search_numeric_matching_users_and_groups() {
     let mut app = AppState {
         started_at: std::time::Instant::now(),
         users_all: users.clone(),
-        users: users,
+        users,
         groups_all: groups.clone(),
-        groups: groups,
+        groups,
         active_tab: ActiveTab::Users,
         selected_user_index: 0,
         selected_group_index: 0,
+        selected_group_member_index: 0,
         rows_per_page: 10,
         _table_state: TableState::default(),
         input_mode: InputMode::SearchUsers,
@@ -317,10 +326,13 @@ fn search_numeric_matching_users_and_groups() {
         keymap: usrgrp_manager::app::keymap::Keymap::default(),
         modal: None,
         users_focus: UsersFocus::UsersList,
+        groups_focus: usrgrp_manager::app::GroupsFocus::GroupsList,
         sudo_password: None,
         users_filter: None,
         groups_filter: None,
         users_filter_chips: Default::default(),
+        actions_context: None,
+        show_keybinds: true,
     };
 
     apply_filters_and_search(&mut app);
@@ -384,6 +396,7 @@ fn filters_apply_with_empty_query() {
         active_tab: ActiveTab::Users,
         selected_user_index: 1,
         selected_group_index: 1,
+        selected_group_member_index: 0,
         rows_per_page: 10,
         _table_state: TableState::default(),
         input_mode: InputMode::SearchUsers,
@@ -392,10 +405,13 @@ fn filters_apply_with_empty_query() {
         keymap: usrgrp_manager::app::keymap::Keymap::default(),
         modal: None,
         users_focus: UsersFocus::UsersList,
+        groups_focus: usrgrp_manager::app::GroupsFocus::GroupsList,
         sudo_password: None,
         users_filter: Some(UsersFilter::OnlySystemIds),
         groups_filter: Some(GroupsFilter::OnlySystemGids),
         users_filter_chips: Default::default(),
+        actions_context: None,
+        show_keybinds: true,
     };
 
     apply_filters_and_search(&mut app);

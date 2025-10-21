@@ -264,6 +264,9 @@ pub enum ModalState {
     Info {
         message: String,
     },
+    Help {
+        scroll: u16,
+    },
     SudoPrompt {
         next: PendingAction,
         password: String,
@@ -278,6 +281,11 @@ pub enum ModalState {
     },
     GroupDeleteConfirm {
         selected: usize,
+        target_gid: Option<u32>,
+    },
+    ConfirmRemoveUserFromGroup {
+        selected: usize,
+        group_name: String,
     },
     GroupModifyMenu {
         selected: usize,
@@ -337,6 +345,17 @@ pub struct UsersFilterChips {
 pub enum GroupsFilter {
     OnlyUserGids,   // gid >= 1000
     OnlySystemGids, // gid < 1000
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupsFocus {
+    GroupsList,
+    Members,
+}
+
+#[derive(Clone, Debug)]
+pub enum ActionsContext {
+    GroupMemberRemoval { group_name: String },
 }
 
 /// Actions that require privileged changes, executed via `sys::SystemAdapter`.
@@ -418,6 +437,7 @@ pub struct AppState {
     pub active_tab: ActiveTab,
     pub selected_user_index: usize,
     pub selected_group_index: usize,
+    pub selected_group_member_index: usize,
     pub rows_per_page: usize,
     pub _table_state: TableState,
     pub input_mode: InputMode,
@@ -426,10 +446,13 @@ pub struct AppState {
     pub keymap: keymap::Keymap,
     pub modal: Option<ModalState>,
     pub users_focus: UsersFocus,
+    pub groups_focus: GroupsFocus,
     pub sudo_password: Option<String>,
     pub users_filter: Option<UsersFilter>,
     pub groups_filter: Option<GroupsFilter>,
     pub users_filter_chips: UsersFilterChips,
+    pub actions_context: Option<ActionsContext>,
+    pub show_keybinds: bool,
 }
 
 impl AppState {
@@ -449,6 +472,7 @@ impl AppState {
             active_tab: ActiveTab::Users,
             selected_user_index: 0,
             selected_group_index: 0,
+            selected_group_member_index: 0,
             rows_per_page: 10,
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
@@ -463,10 +487,13 @@ impl AppState {
             ),
             modal: None,
             users_focus: UsersFocus::UsersList,
+            groups_focus: GroupsFocus::GroupsList,
             sudo_password: None,
             users_filter: None,
             groups_filter: None,
             users_filter_chips: UsersFilterChips::default(),
+            actions_context: None,
+            show_keybinds: true,
         };
 
         // Load and apply filter configuration from filter.conf (creates default if missing/empty)
@@ -538,3 +565,8 @@ impl Default for AppState {
 
 /// Re-export the application event loop entry function.
 pub use update::run_app as run;
+
+/// Resolve the sudo group name from environment, defaulting to "wheel".
+pub fn sudo_group_name() -> String {
+    std::env::var("UGM_SUDO_GROUP").unwrap_or_else(|_| "wheel".to_string())
+}

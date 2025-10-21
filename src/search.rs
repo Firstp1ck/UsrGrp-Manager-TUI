@@ -96,12 +96,14 @@ pub fn apply_filters_and_search(app: &mut AppState) {
     app.selected_group_index = 0.min(app.groups.len().saturating_sub(1));
 }
 
-// Lightweight shadow status used for filters
+// Lightweight shadow status used for filters and details
 #[derive(Clone, Debug)]
 pub struct ShadowStatus {
     pub locked: bool,
     pub no_password: bool,
     pub expired: bool,
+    pub last_change_days: Option<i64>,
+    pub expire_abs_days: Option<i64>,
 }
 
 fn read_shadow_status() -> ShadowMapResult {
@@ -153,6 +155,12 @@ fn read_shadow_status() -> ShadowMapResult {
                 locked,
                 no_password,
                 expired,
+                last_change_days: if lastchg > 0 { Some(lastchg) } else { None },
+                expire_abs_days: if expire_abs >= 0 {
+                    Some(expire_abs)
+                } else {
+                    None
+                },
             },
         );
     }
@@ -164,6 +172,14 @@ fn get_shadow_status() -> ShadowMapResult {
         return res;
     }
     read_shadow_status()
+}
+
+/// Best-effort lookup of a single user's shadow status for details display.
+/// Returns None if shadow is unreadable or user not present.
+pub fn user_shadow_status(username: &str) -> Option<ShadowStatus> {
+    get_shadow_status()
+        .ok()
+        .and_then(|m| m.get(username).cloned())
 }
 
 thread_local! {
@@ -189,6 +205,8 @@ pub fn make_shadow_status(locked: bool, no_password: bool, expired: bool) -> Sha
         locked,
         no_password,
         expired,
+        last_change_days: None,
+        expire_abs_days: None,
     }
 }
 
@@ -238,6 +256,7 @@ mod tests {
             active_tab: ActiveTab::Users,
             selected_user_index: 0,
             selected_group_index: 0,
+            selected_group_member_index: 0,
             rows_per_page: 10,
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
@@ -246,10 +265,13 @@ mod tests {
             keymap: crate::app::keymap::Keymap::default(),
             modal: None,
             users_focus: UsersFocus::UsersList,
+            groups_focus: crate::app::GroupsFocus::GroupsList,
             sudo_password: None,
             users_filter: None,
             groups_filter: None,
             users_filter_chips: Default::default(),
+            actions_context: None,
+            show_keybinds: true,
         }
     }
 

@@ -82,7 +82,9 @@ mod sys_tests {
 
 #[cfg(test)]
 mod search_tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::widgets::TableState;
+    use usrgrp_manager::app::keymap::KeyAction;
     use usrgrp_manager::app::keymap::Keymap;
     use usrgrp_manager::app::{ActiveTab, AppState, InputMode, Theme, UsersFocus};
     use usrgrp_manager::search::{
@@ -100,6 +102,7 @@ mod search_tests {
             active_tab: ActiveTab::Users,
             selected_user_index: 0,
             selected_group_index: 0,
+            selected_group_member_index: 0,
             rows_per_page: 10,
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
@@ -108,10 +111,13 @@ mod search_tests {
             keymap: Keymap::default(),
             modal: None,
             users_focus: UsersFocus::UsersList,
+            groups_focus: usrgrp_manager::app::GroupsFocus::GroupsList,
             sudo_password: None,
             users_filter: None,
             groups_filter: None,
             users_filter_chips: Default::default(),
+            actions_context: None,
+            show_keybinds: true,
         }
     }
 
@@ -170,6 +176,19 @@ mod search_tests {
         apply_filters_and_search(&mut app);
         assert_eq!(app.users.len(), 1);
         assert_eq!(app.users[0].name, "bob");
+    }
+
+    #[test]
+    fn test_toggle_keybinds_pane_mapping_and_state() {
+        let mut app = create_test_app();
+        assert!(app.show_keybinds);
+        // Simulate pressing Shift+K
+        let key = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::SHIFT);
+        let action = app.keymap.resolve(&key);
+        assert!(matches!(action, Some(KeyAction::ToggleKeybindsPane)));
+        // Manually flip state like event loop would
+        app.show_keybinds = !app.show_keybinds;
+        assert!(!app.show_keybinds);
     }
 
     #[test]

@@ -6,10 +6,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub enum KeyAction {
     Quit,
     OpenFilterMenu,
+    OpenHelp,
     StartSearch,
     NewUser,
+    DeleteSelection,
     SwitchTab,
     ToggleUsersFocus,
+    ToggleGroupsFocus,
+    ToggleKeybindsPane,
     EnterAction,
     MoveUp,
     MoveDown,
@@ -37,9 +41,15 @@ impl Keymap {
         bindings.insert((M::NONE, Char('f')), KeyAction::OpenFilterMenu);
         bindings.insert((M::NONE, Char('/')), KeyAction::StartSearch);
         bindings.insert((M::NONE, Char('n')), KeyAction::NewUser);
+        bindings.insert((M::NONE, Char('?')), KeyAction::OpenHelp);
+        bindings.insert((M::NONE, KeyCode::Delete), KeyAction::DeleteSelection);
         bindings.insert((M::NONE, Tab), KeyAction::SwitchTab);
         // Shift+Tab is BackTab in crossterm
         bindings.insert((M::NONE, BackTab), KeyAction::ToggleUsersFocus);
+        // Some terminals report BackTab with SHIFT modifier, and some send Tab+SHIFT
+        bindings.insert((M::SHIFT, BackTab), KeyAction::ToggleUsersFocus);
+        bindings.insert((M::SHIFT, Tab), KeyAction::ToggleUsersFocus);
+        // Ctrl+Tab no longer toggles panes in Groups
 
         bindings.insert((M::NONE, Enter), KeyAction::EnterAction);
         // Navigation
@@ -47,11 +57,16 @@ impl Keymap {
         bindings.insert((M::NONE, Down), KeyAction::MoveDown);
         bindings.insert((M::NONE, Left), KeyAction::MoveLeftPage);
         bindings.insert((M::NONE, Right), KeyAction::MoveRightPage);
-        // Vim keys
+        // Vim-like keys
         bindings.insert((M::NONE, Char('k')), KeyAction::MoveUp);
         bindings.insert((M::NONE, Char('j')), KeyAction::MoveDown);
         bindings.insert((M::NONE, Char('h')), KeyAction::MoveLeftPage);
         bindings.insert((M::NONE, Char('l')), KeyAction::MoveRightPage);
+        // Toggle keybindings pane (support Shift+K variants across terminals)
+        bindings.insert((M::SHIFT, Char('k')), KeyAction::ToggleKeybindsPane);
+        bindings.insert((M::SHIFT, Char('K')), KeyAction::ToggleKeybindsPane);
+        bindings.insert((M::NONE, Char('K')), KeyAction::ToggleKeybindsPane);
+
         // Page keys
         bindings.insert((M::NONE, PageUp), KeyAction::PageUp);
         bindings.insert((M::NONE, PageDown), KeyAction::PageDown);
@@ -106,8 +121,9 @@ impl Keymap {
         let mut buf = String::new();
         buf.push_str("# usrgrp-manager keybindings\n");
         buf.push_str("# Format: <Action> = <KeySpec>\n");
-        buf.push_str("# KeySpec examples: q, Ctrl+q, Enter, Esc, Tab, BackTab, Up, Down, Left, Right, PageUp, PageDown, /, n, f, j, k, h, l\n");
-        buf.push_str("# Actions: Quit, OpenFilterMenu, StartSearch, NewUser, SwitchTab, ToggleUsersFocus, EnterAction, MoveUp, MoveDown, MoveLeftPage, MoveRightPage, PageUp, PageDown, Ignore\n\n");
+        buf.push_str("# KeySpec examples: q, Ctrl+q, Enter, Esc, Tab, BackTab, Up, Down, Left, Right, PageUp, PageDown, Delete, /, n, f, j, k, h, l\n");
+        buf.push_str("# Actions: Quit, OpenFilterMenu, StartSearch, NewUser, DeleteSelection, SwitchTab, ToggleUsersFocus, ToggleGroupsFocus, ToggleKeybindsPane, EnterAction, MoveUp, MoveDown, MoveLeftPage, MoveRightPage, PageUp, PageDown, Ignore\n\n");
+        buf.push_str("# Additional: OpenHelp (mapped to '?')\n\n");
 
         // Emit a stable, readable subset of current bindings
         let dump = [
@@ -118,6 +134,7 @@ impl Keymap {
             ("n", KeyAction::NewUser),
             ("Tab", KeyAction::SwitchTab),
             ("BackTab", KeyAction::ToggleUsersFocus),
+            ("?", KeyAction::OpenHelp),
             ("Enter", KeyAction::EnterAction),
             ("Up", KeyAction::MoveUp),
             ("Down", KeyAction::MoveDown),
@@ -129,6 +146,7 @@ impl Keymap {
             ("l", KeyAction::MoveRightPage),
             ("PageUp", KeyAction::PageUp),
             ("PageDown", KeyAction::PageDown),
+            ("Delete", KeyAction::DeleteSelection),
         ];
         for (k, a) in dump {
             let _ = writeln!(&mut buf, "{} = {}", format_action(a), k);
@@ -141,6 +159,40 @@ impl Keymap {
         let mm = key.modifiers;
         let code = key.code;
         self.bindings.get(&(mm, code)).copied()
+    }
+
+    /// Return a snapshot of all bindings as ((modifiers, code), action) pairs.
+    pub fn all_bindings(&self) -> Vec<((KeyModifiers, KeyCode), KeyAction)> {
+        self.bindings.iter().map(|(k, v)| (*k, *v)).collect()
+    }
+
+    /// Format a key (modifiers + code) into a human-readable spec like "Ctrl+q", "BackTab".
+    pub fn format_key(mods: KeyModifiers, code: KeyCode) -> String {
+        use KeyCode::*;
+        let base = match code {
+            Enter => "Enter".to_string(),
+            Delete => "Delete".to_string(),
+            Esc => "Esc".to_string(),
+            Tab => "Tab".to_string(),
+            BackTab => "BackTab".to_string(),
+            Up => "Up".to_string(),
+            Down => "Down".to_string(),
+            Left => "Left".to_string(),
+            Right => "Right".to_string(),
+            PageUp => "PageUp".to_string(),
+            PageDown => "PageDown".to_string(),
+            Char('/') => "/".to_string(),
+            Char(c) => c.to_string(),
+            _ => format!("{:?}", code),
+        };
+        if mods.contains(KeyModifiers::CONTROL) {
+            format!("Ctrl+{}", base)
+        } else if mods.is_empty() {
+            base
+        } else {
+            // Future: format other modifiers when supported
+            base
+        }
     }
 }
 
@@ -162,6 +214,7 @@ fn parse_key(spec: &str) -> Option<(KeyModifiers, KeyCode)> {
     // Future: Alt+ / Shift+
     let code = match rest {
         "Enter" => Enter,
+        "Delete" => Delete,
         "/" => Char('/'),
         "Esc" | "Escape" => Esc,
         "Tab" => Tab,
@@ -188,10 +241,14 @@ fn parse_action(s: &str) -> Option<KeyAction> {
     match s.trim() {
         "Quit" => Some(KeyAction::Quit),
         "OpenFilterMenu" => Some(KeyAction::OpenFilterMenu),
+        "OpenHelp" => Some(KeyAction::OpenHelp),
         "StartSearch" => Some(KeyAction::StartSearch),
         "NewUser" => Some(KeyAction::NewUser),
+        "DeleteSelection" => Some(KeyAction::DeleteSelection),
         "SwitchTab" => Some(KeyAction::SwitchTab),
         "ToggleUsersFocus" => Some(KeyAction::ToggleUsersFocus),
+        "ToggleGroupsFocus" => Some(KeyAction::ToggleGroupsFocus),
+        "ToggleKeybindsPane" => Some(KeyAction::ToggleKeybindsPane),
         "EnterAction" => Some(KeyAction::EnterAction),
         "MoveUp" => Some(KeyAction::MoveUp),
         "MoveDown" => Some(KeyAction::MoveDown),
@@ -204,14 +261,18 @@ fn parse_action(s: &str) -> Option<KeyAction> {
     }
 }
 
-fn format_action(a: KeyAction) -> &'static str {
+pub fn format_action(a: KeyAction) -> &'static str {
     match a {
         KeyAction::Quit => "Quit",
         KeyAction::OpenFilterMenu => "OpenFilterMenu",
+        KeyAction::OpenHelp => "OpenHelp",
         KeyAction::StartSearch => "StartSearch",
         KeyAction::NewUser => "NewUser",
+        KeyAction::DeleteSelection => "DeleteSelection",
         KeyAction::SwitchTab => "SwitchTab",
         KeyAction::ToggleUsersFocus => "ToggleUsersFocus",
+        KeyAction::ToggleGroupsFocus => "ToggleGroupsFocus",
+        KeyAction::ToggleKeybindsPane => "ToggleKeybindsPane",
         KeyAction::EnterAction => "EnterAction",
         KeyAction::MoveUp => "MoveUp",
         KeyAction::MoveDown => "MoveDown",
