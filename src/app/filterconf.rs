@@ -60,18 +60,24 @@ impl FiltersConfig {
         let mut cfg = Self::default_all_false();
         for raw in contents.lines() {
             let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             let mut parts = line.splitn(2, '=');
             let lhs = parts.next().map(|s| s.trim()).unwrap_or("");
             let rhs = parts.next().map(|s| s.trim()).unwrap_or("");
-            if lhs.is_empty() || rhs.is_empty() { continue; }
+            if lhs.is_empty() || rhs.is_empty() {
+                continue;
+            }
 
             match lhs {
                 // UsersFilter
                 "users_filter" => {
                     cfg.users_filter = match rhs {
                         "OnlyUserIds" | "users" | "user_ids" => Some(UsersFilter::OnlyUserIds),
-                        "OnlySystemIds" | "system" | "system_ids" => Some(UsersFilter::OnlySystemIds),
+                        "OnlySystemIds" | "system" | "system_ids" => {
+                            Some(UsersFilter::OnlySystemIds)
+                        }
                         "None" | "none" | "" => None,
                         _ => cfg.users_filter,
                     };
@@ -80,7 +86,9 @@ impl FiltersConfig {
                 "groups_filter" => {
                     cfg.groups_filter = match rhs {
                         "OnlyUserGids" | "user_gids" | "users" => Some(GroupsFilter::OnlyUserGids),
-                        "OnlySystemGids" | "system_gids" | "system" => Some(GroupsFilter::OnlySystemGids),
+                        "OnlySystemGids" | "system_gids" | "system" => {
+                            Some(GroupsFilter::OnlySystemGids)
+                        }
                         "None" | "none" | "" => None,
                         _ => cfg.groups_filter,
                     };
@@ -139,5 +147,3 @@ impl FiltersConfig {
 fn parse_bool(s: &str) -> bool {
     matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
-
-

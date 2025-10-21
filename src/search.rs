@@ -6,6 +6,10 @@
 use crate::app::{AppState, GroupsFilter, InputMode, UsersFilter};
 use std::collections::HashMap;
 
+type ShadowMap = HashMap<String, ShadowStatus>;
+type ShadowMapResult = std::io::Result<ShadowMap>;
+type ShadowProviderFn = dyn Fn() -> ShadowMapResult;
+
 /// Filter the visible users or groups of `app` according to the lowercase query.
 ///
 /// - In `SearchUsers`, filters by username, full name, home directory, shell, UID, or GID.
@@ -41,38 +45,34 @@ pub fn apply_filters_and_search(app: &mut AppState) {
         if chips.no_home {
             users_view.retain(|u| !std::path::Path::new(&u.home_dir).exists());
         }
-    // System-backed filters via /etc/shadow (best-effort; ignored if unreadable)
-        if chips.locked || chips.no_password || chips.expired {
-            if let Some(shadow) = get_shadow_status().ok() {
-                if chips.locked {
-                    users_view.retain(|u| shadow.get(&u.name).map(|s| s.locked).unwrap_or(false));
-                }
-                if chips.no_password {
-                    users_view.retain(|u| shadow.get(&u.name).map(|s| s.no_password).unwrap_or(false));
-                }
-                if chips.expired {
-                    users_view.retain(|u| shadow.get(&u.name).map(|s| s.expired).unwrap_or(false));
-                }
+        // System-backed filters via /etc/shadow (best-effort; ignored if unreadable)
+        if (chips.locked || chips.no_password || chips.expired)
+            && let Ok(shadow) = get_shadow_status()
+        {
+            if chips.locked {
+                users_view.retain(|u| shadow.get(&u.name).map(|s| s.locked).unwrap_or(false));
+            }
+            if chips.no_password {
+                users_view.retain(|u| shadow.get(&u.name).map(|s| s.no_password).unwrap_or(false));
+            }
+            if chips.expired {
+                users_view.retain(|u| shadow.get(&u.name).map(|s| s.expired).unwrap_or(false));
             }
         }
     }
     if matches!(app.input_mode, InputMode::SearchUsers) && !q.is_empty() {
-        users_view = users_view
-            .into_iter()
-            .filter(|u| {
-                u.name.to_lowercase().contains(&q)
-                    || u
-                        .full_name
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&q)
-                    || u.home_dir.to_lowercase().contains(&q)
-                    || u.shell.to_lowercase().contains(&q)
-                    || u.uid.to_string().contains(&q)
-                    || u.primary_gid.to_string().contains(&q)
-            })
-            .collect();
+        users_view.retain(|u| {
+            u.name.to_lowercase().contains(&q)
+                || u.full_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&q)
+                || u.home_dir.to_lowercase().contains(&q)
+                || u.shell.to_lowercase().contains(&q)
+                || u.uid.to_string().contains(&q)
+                || u.primary_gid.to_string().contains(&q)
+        });
     }
     app.users = users_view;
     app.selected_user_index = 0.min(app.users.len().saturating_sub(1));
@@ -86,14 +86,11 @@ pub fn apply_filters_and_search(app: &mut AppState) {
         }
     }
     if matches!(app.input_mode, InputMode::SearchGroups) && !q.is_empty() {
-        groups_view = groups_view
-            .into_iter()
-            .filter(|g| {
-                g.name.to_lowercase().contains(&q)
-                    || g.gid.to_string().contains(&q)
-                    || g.members.iter().any(|m| m.to_lowercase().contains(&q))
-            })
-            .collect();
+        groups_view.retain(|g| {
+            g.name.to_lowercase().contains(&q)
+                || g.gid.to_string().contains(&q)
+                || g.members.iter().any(|m| m.to_lowercase().contains(&q))
+        });
     }
     app.groups = groups_view;
     app.selected_group_index = 0.min(app.groups.len().saturating_sub(1));
@@ -107,15 +104,21 @@ pub struct ShadowStatus {
     pub expired: bool,
 }
 
-fn read_shadow_status() -> std::io::Result<HashMap<String, ShadowStatus>> {
+fn read_shadow_status() -> ShadowMapResult {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Quick permission check: if not root and cannot read, bail fast
-    if fs::metadata("/etc/shadow").map(|m| m.mode() & 0o004 == 0).unwrap_or(true) {
+    if fs::metadata("/etc/shadow")
+        .map(|m| m.mode() & 0o004 == 0)
+        .unwrap_or(true)
+    {
         // Likely unreadable, return an error to signal caller to skip filters
-        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "shadow unreadable"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "shadow unreadable",
+        ));
     }
 
     let contents = fs::read_to_string("/etc/shadow")?;
@@ -123,13 +126,15 @@ fn read_shadow_status() -> std::io::Result<HashMap<String, ShadowStatus>> {
         .duration_since(UNIX_EPOCH)
         .map(|d| (d.as_secs() / 86_400) as i64)
         .unwrap_or(0);
-    let mut map: HashMap<String, ShadowStatus> = HashMap::new();
+    let mut map: ShadowMap = HashMap::new();
     for line in contents.lines() {
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
         let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() < 2 { continue; }
+        if parts.len() < 2 {
+            continue;
+        }
         let name = parts[0].to_string();
         let pw = parts[1];
         let lastchg: i64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -154,7 +159,7 @@ fn read_shadow_status() -> std::io::Result<HashMap<String, ShadowStatus>> {
     Ok(map)
 }
 
-fn get_shadow_status() -> std::io::Result<HashMap<String, ShadowStatus>> {
+fn get_shadow_status() -> ShadowMapResult {
     if let Some(res) = SHADOW_PROVIDER.with(|p| p.borrow().as_ref().map(|f| f())) {
         return res;
     }
@@ -162,13 +167,13 @@ fn get_shadow_status() -> std::io::Result<HashMap<String, ShadowStatus>> {
 }
 
 thread_local! {
-    static SHADOW_PROVIDER: std::cell::RefCell<Option<Box<dyn Fn() -> std::io::Result<HashMap<String, ShadowStatus>>>>> = std::cell::RefCell::new(None);
+    static SHADOW_PROVIDER: std::cell::RefCell<Option<Box<ShadowProviderFn>>> = std::cell::RefCell::new(None);
 }
 
 #[allow(dead_code)]
 pub fn set_shadow_provider<F>(f: F)
 where
-    F: Fn() -> std::io::Result<HashMap<String, ShadowStatus>> + 'static,
+    F: Fn() -> ShadowMapResult + 'static,
 {
     SHADOW_PROVIDER.with(|p| *p.borrow_mut() = Some(Box::new(f)));
 }
@@ -180,7 +185,11 @@ pub fn clear_shadow_provider() {
 
 #[allow(dead_code)]
 pub fn make_shadow_status(locked: bool, no_password: bool, expired: bool) -> ShadowStatus {
-    ShadowStatus { locked, no_password, expired }
+    ShadowStatus {
+        locked,
+        no_password,
+        expired,
+    }
 }
 
 #[cfg(test)]

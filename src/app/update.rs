@@ -9,13 +9,13 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::time::Duration;
 
+use crate::app::filterconf::FiltersConfig;
+use crate::app::keymap::KeyAction;
 use crate::app::{
     ActiveTab, AppState, GroupsFilter, InputMode, ModalState, ModifyField, PendingAction,
     UsersFocus,
 };
 use crate::search::apply_filters_and_search;
-use crate::app::filterconf::FiltersConfig;
-use crate::app::keymap::KeyAction;
 use crate::sys;
 use crate::ui;
 
@@ -305,28 +305,51 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             KeyCode::Esc => close_modal(app),
             KeyCode::Backspace => close_modal(app),
             KeyCode::Up | KeyCode::Char('k') => {
-                let max = if matches!(app.active_tab, ActiveTab::Users) { 7 } else { 2 };
-                if *selected > 0 { *selected -= 1; } else { *selected = max; }
+                let max = if matches!(app.active_tab, ActiveTab::Users) {
+                    7
+                } else {
+                    2
+                };
+                if *selected > 0 {
+                    *selected -= 1;
+                } else {
+                    *selected = max;
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let max = if matches!(app.active_tab, ActiveTab::Users) { 7 } else { 2 };
-                if *selected < max { *selected += 1; } else { *selected = 0; }
+                let max = if matches!(app.active_tab, ActiveTab::Users) {
+                    7
+                } else {
+                    2
+                };
+                if *selected < max {
+                    *selected += 1;
+                } else {
+                    *selected = 0;
+                }
             }
             KeyCode::Char(' ') => {
                 if let ActiveTab::Users = app.active_tab {
                     match *selected {
                         1 => {
                             app.users_filter_chips.human_only = !app.users_filter_chips.human_only;
-                            if app.users_filter_chips.human_only { app.users_filter_chips.system_only = false; }
+                            if app.users_filter_chips.human_only {
+                                app.users_filter_chips.system_only = false;
+                            }
                         }
                         2 => {
-                            app.users_filter_chips.system_only = !app.users_filter_chips.system_only;
-                            if app.users_filter_chips.system_only { app.users_filter_chips.human_only = false; }
+                            app.users_filter_chips.system_only =
+                                !app.users_filter_chips.system_only;
+                            if app.users_filter_chips.system_only {
+                                app.users_filter_chips.human_only = false;
+                            }
                         }
                         3 => app.users_filter_chips.inactive = !app.users_filter_chips.inactive,
                         4 => app.users_filter_chips.no_home = !app.users_filter_chips.no_home,
                         5 => app.users_filter_chips.locked = !app.users_filter_chips.locked,
-                        6 => app.users_filter_chips.no_password = !app.users_filter_chips.no_password,
+                        6 => {
+                            app.users_filter_chips.no_password = !app.users_filter_chips.no_password
+                        }
                         7 => app.users_filter_chips.expired = !app.users_filter_chips.expired,
                         _ => {}
                     }
@@ -339,7 +362,9 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 match app.active_tab {
                     ActiveTab::Users => {
                         // Index 0 is Show all -> clear top-level users_filter
-                        if *selected == 0 { app.users_filter = None; }
+                        if *selected == 0 {
+                            app.users_filter = None;
+                        }
                     }
                     ActiveTab::Groups => match *selected {
                         0 => app.groups_filter = None,
@@ -1990,8 +2015,16 @@ mod tests {
             shell: "/bin/bash".to_string(),
         }];
         app.groups_all = vec![
-            crate::sys::SystemGroup { gid: 100, name: "users".to_string(), members: vec![] },
-            crate::sys::SystemGroup { gid: 10, name: "wheel".to_string(), members: vec!["alice".to_string()] },
+            crate::sys::SystemGroup {
+                gid: 100,
+                name: "users".to_string(),
+                members: vec![],
+            },
+            crate::sys::SystemGroup {
+                gid: 10,
+                name: "wheel".to_string(),
+                members: vec!["alice".to_string()],
+            },
         ];
         app.selected_user_index = 0;
 
@@ -2044,12 +2077,23 @@ mod tests {
     fn groups_rename_blocked_for_system_gid() {
         let mut app = AppState::default();
         app.groups = vec![
-            crate::sys::SystemGroup { gid: 10, name: "wheel".to_string(), members: vec![] },
-            crate::sys::SystemGroup { gid: 1000, name: "users".to_string(), members: vec![] },
+            crate::sys::SystemGroup {
+                gid: 10,
+                name: "wheel".to_string(),
+                members: vec![],
+            },
+            crate::sys::SystemGroup {
+                gid: 1000,
+                name: "users".to_string(),
+                members: vec![],
+            },
         ];
         app.selected_group_index = 0; // system group
         app.input_mode = InputMode::Modal;
-        app.modal = Some(ModalState::GroupModifyMenu { selected: 2, target_gid: None }); // Rename
+        app.modal = Some(ModalState::GroupModifyMenu {
+            selected: 2,
+            target_gid: None,
+        }); // Rename
 
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
@@ -2084,7 +2128,11 @@ mod tests {
         handle_modal_key(&mut app, key(KeyCode::Enter));
 
         match &app.modal {
-            Some(ModalState::SudoPrompt { next, password, error }) => {
+            Some(ModalState::SudoPrompt {
+                next,
+                password,
+                error,
+            }) => {
                 // Should queue the reset action and prompt for sudo
                 match next {
                     PendingAction::ResetPassword { username } => {
@@ -2102,7 +2150,10 @@ mod tests {
     // Test-only helper: simulate effects of a subset of PendingAction without system calls
     fn simulate_pending_action(app: &mut AppState, pending: PendingAction) {
         match pending {
-            PendingAction::DeleteUser { username, delete_home: _ } => {
+            PendingAction::DeleteUser {
+                username,
+                delete_home: _,
+            } => {
                 app.users_all.retain(|u| u.name != username);
                 app.users_all.sort_by_key(|u| u.uid);
                 apply_filters_and_search(app);
@@ -2126,15 +2177,32 @@ mod tests {
     fn selected_user_index_clamps_after_delete() {
         let mut app = AppState::default();
         app.users_all = vec![
-            crate::sys::SystemUser { uid: 1000, name: "a".into(), primary_gid: 1000, full_name: None, home_dir: "/home/a".into(), shell: "/bin/bash".into() },
-            crate::sys::SystemUser { uid: 1001, name: "b".into(), primary_gid: 1001, full_name: None, home_dir: "/home/b".into(), shell: "/bin/bash".into() },
+            crate::sys::SystemUser {
+                uid: 1000,
+                name: "a".into(),
+                primary_gid: 1000,
+                full_name: None,
+                home_dir: "/home/a".into(),
+                shell: "/bin/bash".into(),
+            },
+            crate::sys::SystemUser {
+                uid: 1001,
+                name: "b".into(),
+                primary_gid: 1001,
+                full_name: None,
+                home_dir: "/home/b".into(),
+                shell: "/bin/bash".into(),
+            },
         ];
         app.users = app.users_all.clone();
         app.selected_user_index = 1; // last item
 
         simulate_pending_action(
             &mut app,
-            PendingAction::DeleteUser { username: "b".into(), delete_home: false },
+            PendingAction::DeleteUser {
+                username: "b".into(),
+                delete_home: false,
+            },
         );
 
         assert_eq!(app.users.len(), 1);
@@ -2146,15 +2214,25 @@ mod tests {
     fn selected_group_index_clamps_after_delete() {
         let mut app = AppState::default();
         app.groups_all = vec![
-            crate::sys::SystemGroup { gid: 1000, name: "g1".into(), members: vec![] },
-            crate::sys::SystemGroup { gid: 1001, name: "g2".into(), members: vec![] },
+            crate::sys::SystemGroup {
+                gid: 1000,
+                name: "g1".into(),
+                members: vec![],
+            },
+            crate::sys::SystemGroup {
+                gid: 1001,
+                name: "g2".into(),
+                members: vec![],
+            },
         ];
         app.groups = app.groups_all.clone();
         app.selected_group_index = 1; // last item
 
         simulate_pending_action(
             &mut app,
-            PendingAction::DeleteGroup { groupname: "g2".into() },
+            PendingAction::DeleteGroup {
+                groupname: "g2".into(),
+            },
         );
 
         assert_eq!(app.groups.len(), 1);

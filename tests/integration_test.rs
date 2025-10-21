@@ -3,12 +3,19 @@
 // 1) Theme config roundtrip and init
 #[test]
 fn theme_roundtrip_and_init() {
-    use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use usrgrp_manager::app::Theme;
 
     // Unique temp path
     let mut path = std::env::temp_dir();
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     path.push(format!("ugm_theme_{}_{}.conf", std::process::id(), nonce));
     let path_str = path.to_string_lossy().to_string();
 
@@ -23,7 +30,10 @@ fn theme_roundtrip_and_init() {
 
     // load_or_init creates file if missing
     let mut p2 = PathBuf::from(&path_str);
-    p2.set_file_name(format!("{}_init.conf", p2.file_stem().unwrap().to_string_lossy()));
+    p2.set_file_name(format!(
+        "{}_init.conf",
+        p2.file_stem().unwrap().to_string_lossy()
+    ));
     let p2_str = p2.to_string_lossy().to_string();
     let _ = fs::remove_file(&p2_str);
     let _created = Theme::load_or_init(&p2_str);
@@ -39,20 +49,53 @@ fn theme_roundtrip_and_init() {
 fn search_applies_filters_across_users_and_groups() {
     use ratatui::widgets::TableState;
     use usrgrp_manager::{
-        app::{AppState, ActiveTab, InputMode, Theme, UsersFocus, UsersFilter, GroupsFilter},
+        app::{ActiveTab, AppState, GroupsFilter, InputMode, Theme, UsersFilter, UsersFocus},
         search::apply_filters_and_search,
     };
 
     // Seed users and groups
     let users = vec![
-        usrgrp_manager::sys::SystemUser { uid: 999,  name: "daemon".into(), primary_gid: 999, full_name: None, home_dir: "/".into(),         shell: "/sbin/nologin".into() },
-        usrgrp_manager::sys::SystemUser { uid: 1000, name: "alice".into(),  primary_gid: 1000, full_name: Some("Alice".into()), home_dir: "/home/alice".into(), shell: "/bin/zsh".into() },
-        usrgrp_manager::sys::SystemUser { uid: 1001, name: "bob".into(),    primary_gid: 1001, full_name: Some("Bobby".into()), home_dir: "/home/bob".into(),   shell: "/bin/bash".into() },
+        usrgrp_manager::sys::SystemUser {
+            uid: 999,
+            name: "daemon".into(),
+            primary_gid: 999,
+            full_name: None,
+            home_dir: "/".into(),
+            shell: "/sbin/nologin".into(),
+        },
+        usrgrp_manager::sys::SystemUser {
+            uid: 1000,
+            name: "alice".into(),
+            primary_gid: 1000,
+            full_name: Some("Alice".into()),
+            home_dir: "/home/alice".into(),
+            shell: "/bin/zsh".into(),
+        },
+        usrgrp_manager::sys::SystemUser {
+            uid: 1001,
+            name: "bob".into(),
+            primary_gid: 1001,
+            full_name: Some("Bobby".into()),
+            home_dir: "/home/bob".into(),
+            shell: "/bin/bash".into(),
+        },
     ];
     let groups = vec![
-        usrgrp_manager::sys::SystemGroup { gid: 998,  name: "wheel".into(), members: vec!["root".into()] },
-        usrgrp_manager::sys::SystemGroup { gid: 1000, name: "users".into(), members: vec!["alice".into()] },
-        usrgrp_manager::sys::SystemGroup { gid: 1001, name: "dev".into(),   members: vec!["bob".into()] },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 998,
+            name: "wheel".into(),
+            members: vec!["root".into()],
+        },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 1000,
+            name: "users".into(),
+            members: vec!["alice".into()],
+        },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 1001,
+            name: "dev".into(),
+            members: vec!["bob".into()],
+        },
     ];
 
     let mut app = AppState {
@@ -123,7 +166,9 @@ fn privileged_ops_require_auth_without_sudo_password() {
     let adapter = SystemAdapter::with_sudo_password(None);
 
     // create_group should fail with auth required
-    let err = adapter.create_group("ugm_test_should_not_exist").unwrap_err();
+    let err = adapter
+        .create_group("ugm_test_should_not_exist")
+        .unwrap_err();
     assert!(format!("{err}").contains("Authentication required"));
 
     // add_user_to_group should fail with auth required
@@ -142,26 +187,49 @@ fn delete_group_is_idempotent_without_sudo_when_missing() {
 
     let adapter = SystemAdapter::with_sudo_password(None);
     // Should return Ok if group is already absent (no sudo needed)
-    adapter.delete_group("ugm_definitely_missing_group_name").unwrap();
+    adapter
+        .delete_group("ugm_definitely_missing_group_name")
+        .unwrap();
 }
-
 
 // 5) Search mode-gating: when not in Search* modes, search_query should not filter
 #[test]
 fn search_mode_gating_leaves_lists_unchanged() {
     use ratatui::widgets::TableState;
     use usrgrp_manager::{
-        app::{AppState, ActiveTab, InputMode, Theme, UsersFocus},
+        app::{ActiveTab, AppState, InputMode, Theme, UsersFocus},
         search::apply_filters_and_search,
     };
 
     let users = vec![
-        usrgrp_manager::sys::SystemUser { uid: 1000, name: "alice".into(), primary_gid: 1000, full_name: None, home_dir: "/home/alice".into(), shell: "/bin/zsh".into() },
-        usrgrp_manager::sys::SystemUser { uid: 1001, name: "bob".into(),   primary_gid: 1001, full_name: None, home_dir: "/home/bob".into(),   shell: "/bin/bash".into() },
+        usrgrp_manager::sys::SystemUser {
+            uid: 1000,
+            name: "alice".into(),
+            primary_gid: 1000,
+            full_name: None,
+            home_dir: "/home/alice".into(),
+            shell: "/bin/zsh".into(),
+        },
+        usrgrp_manager::sys::SystemUser {
+            uid: 1001,
+            name: "bob".into(),
+            primary_gid: 1001,
+            full_name: None,
+            home_dir: "/home/bob".into(),
+            shell: "/bin/bash".into(),
+        },
     ];
     let groups = vec![
-        usrgrp_manager::sys::SystemGroup { gid: 1000, name: "users".into(), members: vec!["alice".into()] },
-        usrgrp_manager::sys::SystemGroup { gid: 1001, name: "dev".into(),   members: vec!["bob".into()] },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 1000,
+            name: "users".into(),
+            members: vec!["alice".into()],
+        },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 1001,
+            name: "dev".into(),
+            members: vec!["bob".into()],
+        },
     ];
 
     let mut app = AppState {
@@ -197,17 +265,39 @@ fn search_mode_gating_leaves_lists_unchanged() {
 fn search_numeric_matching_users_and_groups() {
     use ratatui::widgets::TableState;
     use usrgrp_manager::{
-        app::{AppState, ActiveTab, InputMode, Theme, UsersFocus},
+        app::{ActiveTab, AppState, InputMode, Theme, UsersFocus},
         search::apply_filters_and_search,
     };
 
     let users = vec![
-        usrgrp_manager::sys::SystemUser { uid: 999,  name: "daemon".into(), primary_gid: 999,  full_name: None, home_dir: "/".into(),           shell: "/sbin/nologin".into() },
-        usrgrp_manager::sys::SystemUser { uid: 1000, name: "alice".into(),  primary_gid: 1000, full_name: None, home_dir: "/home/alice".into(), shell: "/bin/zsh".into() },
+        usrgrp_manager::sys::SystemUser {
+            uid: 999,
+            name: "daemon".into(),
+            primary_gid: 999,
+            full_name: None,
+            home_dir: "/".into(),
+            shell: "/sbin/nologin".into(),
+        },
+        usrgrp_manager::sys::SystemUser {
+            uid: 1000,
+            name: "alice".into(),
+            primary_gid: 1000,
+            full_name: None,
+            home_dir: "/home/alice".into(),
+            shell: "/bin/zsh".into(),
+        },
     ];
     let groups = vec![
-        usrgrp_manager::sys::SystemGroup { gid: 1001, name: "dev".into(), members: vec!["alice".into()] },
-        usrgrp_manager::sys::SystemGroup { gid: 2000, name: "staff".into(), members: vec![] },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 1001,
+            name: "dev".into(),
+            members: vec!["alice".into()],
+        },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 2000,
+            name: "staff".into(),
+            members: vec![],
+        },
     ];
 
     let mut app = AppState {
@@ -250,17 +340,39 @@ fn search_numeric_matching_users_and_groups() {
 fn filters_apply_with_empty_query() {
     use ratatui::widgets::TableState;
     use usrgrp_manager::{
-        app::{AppState, ActiveTab, InputMode, Theme, UsersFocus, UsersFilter, GroupsFilter},
+        app::{ActiveTab, AppState, GroupsFilter, InputMode, Theme, UsersFilter, UsersFocus},
         search::apply_filters_and_search,
     };
 
     let users = vec![
-        usrgrp_manager::sys::SystemUser { uid: 500,  name: "sys".into(),   primary_gid: 500,  full_name: None, home_dir: "/".into(),           shell: "/sbin/nologin".into() },
-        usrgrp_manager::sys::SystemUser { uid: 1000, name: "alice".into(), primary_gid: 1000, full_name: None, home_dir: "/home/alice".into(), shell: "/bin/zsh".into() },
+        usrgrp_manager::sys::SystemUser {
+            uid: 500,
+            name: "sys".into(),
+            primary_gid: 500,
+            full_name: None,
+            home_dir: "/".into(),
+            shell: "/sbin/nologin".into(),
+        },
+        usrgrp_manager::sys::SystemUser {
+            uid: 1000,
+            name: "alice".into(),
+            primary_gid: 1000,
+            full_name: None,
+            home_dir: "/home/alice".into(),
+            shell: "/bin/zsh".into(),
+        },
     ];
     let groups = vec![
-        usrgrp_manager::sys::SystemGroup { gid: 99,  name: "system".into(), members: vec![] },
-        usrgrp_manager::sys::SystemGroup { gid: 1000, name: "users".into(), members: vec!["alice".into()] },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 99,
+            name: "system".into(),
+            members: vec![],
+        },
+        usrgrp_manager::sys::SystemGroup {
+            gid: 1000,
+            name: "users".into(),
+            members: vec!["alice".into()],
+        },
     ];
 
     let mut app = AppState {
@@ -303,12 +415,22 @@ fn filters_apply_with_empty_query() {
 // 8) Theme config robustness: unknown keys ignored, invalid values ignored, valid parsed
 #[test]
 fn theme_from_file_robustness() {
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use usrgrp_manager::app::Theme;
 
     let mut path = std::env::temp_dir();
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    path.push(format!("ugm_theme_rb_{}_{}.conf", std::process::id(), nonce));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    path.push(format!(
+        "ugm_theme_rb_{}_{}.conf",
+        std::process::id(),
+        nonce
+    ));
     let p = path.to_string_lossy().to_string();
 
     // Craft a config with a mix of valid/invalid/unknown keys
@@ -324,9 +446,15 @@ unknown_key = #abcdef
     let mocha = Theme::mocha();
 
     // text parsed as hex
-    assert_eq!(format!("{:?}", t.text), format!("{:?}", ratatui::style::Color::Rgb(0x11, 0x22, 0x33)));
+    assert_eq!(
+        format!("{:?}", t.text),
+        format!("{:?}", ratatui::style::Color::Rgb(0x11, 0x22, 0x33))
+    );
     // header_bg parsed as reset
-    assert_eq!(format!("{:?}", t.header_bg), format!("{:?}", ratatui::style::Color::Reset));
+    assert_eq!(
+        format!("{:?}", t.header_bg),
+        format!("{:?}", ratatui::style::Color::Reset)
+    );
     // title invalid -> should remain default (mocha)
     assert_eq!(format!("{:?}", t.title), format!("{:?}", mocha.title));
 
@@ -346,7 +474,9 @@ fn privileged_ops_auth_required_extended_when_not_root() {
     let err = adapter.change_user_shell("root", "/bin/bash").unwrap_err();
     assert!(format!("{err}").contains("Authentication required"));
 
-    let err = adapter.change_user_fullname("root", "Root User").unwrap_err();
+    let err = adapter
+        .change_user_fullname("root", "Root User")
+        .unwrap_err();
     assert!(format!("{err}").contains("Authentication required"));
 
     let err = adapter.rename_group("root", "root2").unwrap_err();
@@ -368,12 +498,22 @@ fn delete_group_is_idempotent_for_multiple_missing_names() {
 // 11) Theme write header/content: header lines present and all keys exactly once
 #[test]
 fn theme_write_includes_header_and_all_keys_once() {
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use usrgrp_manager::app::Theme;
 
     let mut path = std::env::temp_dir();
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    path.push(format!("ugm_theme_hdr_{}_{}.conf", std::process::id(), nonce));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    path.push(format!(
+        "ugm_theme_hdr_{}_{}.conf",
+        std::process::id(),
+        nonce
+    ));
     let p = path.to_string_lossy().to_string();
 
     let t = Theme::mocha();
@@ -403,5 +543,3 @@ fn theme_write_includes_header_and_all_keys_once() {
 
     let _ = std::fs::remove_file(&p);
 }
-
-

@@ -39,7 +39,11 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
     if app.users_filter_chips.expired {
         chips.push("expired");
     }
-    let chips_str = if chips.is_empty() { String::new() } else { format!("  filters:[{}]", chips.join(",")) };
+    let chips_str = if chips.is_empty() {
+        String::new()
+    } else {
+        format!("  filters:[{}]", chips.join(","))
+    };
     let msg = format!(
         "mode: {mode}  users:{}  groups:{}  rows/page:{}{}",
         app.users.len(),

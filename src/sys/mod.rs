@@ -592,14 +592,22 @@ wheel:x:998:root,jdoe
 
     #[test]
     fn format_cli_error_empty_and_nonempty_stderr() {
-        use std::process::Output;
         use std::os::unix::process::ExitStatusExt;
-        let out_with_err = Output { status: std::process::ExitStatus::from_raw(1), stdout: vec![], stderr: b"permission denied".to_vec() };
+        use std::process::Output;
+        let out_with_err = Output {
+            status: std::process::ExitStatus::from_raw(1),
+            stdout: vec![],
+            stderr: b"permission denied".to_vec(),
+        };
         let msg = super::format_cli_error("usermod -l", &out_with_err);
         assert!(msg.contains("usermod -l failed: permission denied"));
 
         // Simulate empty stderr; message should include status
-        let out_empty = Output { status: std::process::ExitStatus::from_raw(1), stdout: vec![], stderr: vec![] };
+        let out_empty = Output {
+            status: std::process::ExitStatus::from_raw(1),
+            stdout: vec![],
+            stderr: vec![],
+        };
         let msg2 = super::format_cli_error("groupadd", &out_empty);
         assert!(msg2.contains("groupadd returned non-zero status"));
     }

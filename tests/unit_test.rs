@@ -83,9 +83,11 @@ mod sys_tests {
 #[cfg(test)]
 mod search_tests {
     use ratatui::widgets::TableState;
-    use usrgrp_manager::app::{ActiveTab, AppState, InputMode, Theme, UsersFocus};
     use usrgrp_manager::app::keymap::Keymap;
-    use usrgrp_manager::search::{apply_filters_and_search, clear_shadow_provider, set_shadow_provider};
+    use usrgrp_manager::app::{ActiveTab, AppState, InputMode, Theme, UsersFocus};
+    use usrgrp_manager::search::{
+        apply_filters_and_search, clear_shadow_provider, set_shadow_provider,
+    };
     use usrgrp_manager::sys::{SystemGroup, SystemUser};
 
     fn create_test_app() -> AppState {
@@ -313,13 +315,21 @@ mod search_tests {
     fn shadow_filters_skip_when_unreadable() {
         // Provide two users; toggling locked/no_password/expired should not change results if provider errors
         let mut app = create_test_app();
-        app.users_all = vec![create_test_user("alice", 1000), create_test_user("bob", 1001)];
+        app.users_all = vec![
+            create_test_user("alice", 1000),
+            create_test_user("bob", 1001),
+        ];
         app.users = app.users_all.clone();
         app.users_filter_chips.locked = true;
         app.users_filter_chips.no_password = true;
         app.users_filter_chips.expired = true;
 
-        set_shadow_provider(|| Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "deny")));
+        set_shadow_provider(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "deny",
+            ))
+        });
         apply_filters_and_search(&mut app);
         assert_eq!(app.users.len(), 2);
         clear_shadow_provider();
@@ -339,9 +349,18 @@ mod search_tests {
         set_shadow_provider(|| {
             use std::collections::HashMap;
             let mut m: HashMap<String, usrgrp_manager::search::ShadowStatus> = HashMap::new();
-            m.insert("alice".to_string(), usrgrp_manager::search::make_shadow_status(true, false, false));
-            m.insert("bob".to_string(), usrgrp_manager::search::make_shadow_status(false, false, true));
-            m.insert("carol".to_string(), usrgrp_manager::search::make_shadow_status(false, true, false));
+            m.insert(
+                "alice".to_string(),
+                usrgrp_manager::search::make_shadow_status(true, false, false),
+            );
+            m.insert(
+                "bob".to_string(),
+                usrgrp_manager::search::make_shadow_status(false, false, true),
+            );
+            m.insert(
+                "carol".to_string(),
+                usrgrp_manager::search::make_shadow_status(false, true, false),
+            );
             Ok(m)
         });
 
@@ -377,7 +396,10 @@ mod search_tests {
 
         // Create a real temp dir for alice
         let mut existing = std::env::temp_dir();
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         existing.push(format!("ugm_home_exist_{}_{}", std::process::id(), nonce));
         std::fs::create_dir_all(&existing).expect("create temp home");
 
@@ -391,7 +413,11 @@ mod search_tests {
             shell: "/bin/bash".to_string(),
         };
         let mut bogus = std::env::temp_dir();
-        bogus.push(format!("ugm_home_missing_{}_{}_bogus", std::process::id(), nonce));
+        bogus.push(format!(
+            "ugm_home_missing_{}_{}_bogus",
+            std::process::id(),
+            nonce
+        ));
         let bob = SystemUser {
             uid: 1001,
             name: "bob".to_string(),
@@ -635,7 +661,7 @@ mod username_validation_tests {
 
 #[cfg(test)]
 mod integration_tests {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use usrgrp_manager::app::AppState;
     use usrgrp_manager::ui::render;
 

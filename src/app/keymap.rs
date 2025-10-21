@@ -27,7 +27,7 @@ pub struct Keymap {
 }
 
 impl Keymap {
-    pub fn default() -> Self {
+    pub fn new_defaults() -> Self {
         use KeyCode::*;
         use KeyModifiers as M;
         let mut bindings = std::collections::HashMap::new();
@@ -62,10 +62,10 @@ impl Keymap {
     pub fn load_or_init(path: &str) -> Self {
         let p = std::path::Path::new(path);
         if p.exists() {
-            return Self::from_file(path).unwrap_or_else(Self::default);
+            return Self::from_file(path).unwrap_or_default();
         }
         if let Some(existing) = crate::app::config_file_read_path("keybinds.conf") {
-            return Self::from_file(&existing).unwrap_or_else(Self::default);
+            return Self::from_file(&existing).unwrap_or_default();
         }
         let km = Self::default();
         let _ = km.write_file(path);
@@ -78,11 +78,15 @@ impl Keymap {
         // Start from defaults, then override with user-specified bindings
         for raw in contents.lines() {
             let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             let mut parts = line.splitn(2, '=');
             let lhs = parts.next().map(|s| s.trim()).unwrap_or("");
             let rhs = parts.next().map(|s| s.trim()).unwrap_or("");
-            if lhs.is_empty() || rhs.is_empty() { continue; }
+            if lhs.is_empty() || rhs.is_empty() {
+                continue;
+            }
             // Preferred format: Action = KeySpec
             if let (Some(action), Some(key)) = (parse_action(lhs), parse_key(rhs)) {
                 map.bindings.insert(key, action);
@@ -140,7 +144,11 @@ impl Keymap {
     }
 }
 
-// Intentionally no Default trait to avoid test/builds pulling in file IO; use Keymap::default()
+impl Default for Keymap {
+    fn default() -> Self {
+        Self::new_defaults()
+    }
+}
 
 fn parse_key(spec: &str) -> Option<(KeyModifiers, KeyCode)> {
     use KeyCode::*;
@@ -214,5 +222,3 @@ fn format_action(a: KeyAction) -> &'static str {
         KeyAction::Ignore => "Ignore",
     }
 }
-
-

@@ -3,16 +3,16 @@
 //! Defines enums and structs that model the TUI state, as well as helpers
 //! to construct defaults and to run the application loop (re-exported as `run`).
 //!
-pub mod update;
-pub mod keymap;
 pub mod filterconf;
+pub mod keymap;
+pub mod update;
 
 use ratatui::style::Color;
 use ratatui::widgets::TableState;
 use std::time::Instant;
 
 use crate::sys;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 
 /// Top-level active tab in the UI.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -75,15 +75,15 @@ impl Theme {
         // Palette reference: https://github.com/catppuccin/catppuccin
         Self {
             // text & neutrals
-            text: Color::Rgb(0xcd, 0xd6, 0xf4),      // text
-            _muted: Color::Rgb(0x7f, 0x84, 0x9c),    // overlay1
+            text: Color::Rgb(0xcd, 0xd6, 0xf4),   // text
+            _muted: Color::Rgb(0x7f, 0x84, 0x9c), // overlay1
             // accents and chrome
-            title: Color::Rgb(0xcb, 0xa6, 0xf7),     // mauve
-            border: Color::Rgb(0x58, 0x5b, 0x70),    // surface2
-            header_bg: Color::Rgb(0x31, 0x32, 0x44), // surface0
-            header_fg: Color::Rgb(0xb4, 0xbe, 0xfe), // lavender
-            status_bg: Color::Rgb(0x45, 0x47, 0x5a), // surface1
-            status_fg: Color::Rgb(0xcd, 0xd6, 0xf4), // text
+            title: Color::Rgb(0xcb, 0xa6, 0xf7),        // mauve
+            border: Color::Rgb(0x58, 0x5b, 0x70),       // surface2
+            header_bg: Color::Rgb(0x31, 0x32, 0x44),    // surface0
+            header_fg: Color::Rgb(0xb4, 0xbe, 0xfe),    // lavender
+            status_bg: Color::Rgb(0x45, 0x47, 0x5a),    // surface1
+            status_fg: Color::Rgb(0xcd, 0xd6, 0xf4),    // text
             highlight_fg: Color::Rgb(0xf9, 0xe2, 0xaf), // yellow
             highlight_bg: Color::Rgb(0x45, 0x47, 0x5a), // surface1
         }
@@ -132,15 +132,19 @@ impl Theme {
         if lower == "reset" {
             return Some(Color::Reset);
         }
-        let hex = if let Some(h) = lower.strip_prefix('#') { h } else { lower.as_str() };
-        if hex.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
+        let hex = if let Some(h) = lower.strip_prefix('#') {
+            h
+        } else {
+            lower.as_str()
+        };
+        if hex.len() == 6
+            && let (Ok(r), Ok(g), Ok(b)) = (
                 u8::from_str_radix(&hex[0..2], 16),
                 u8::from_str_radix(&hex[2..4], 16),
                 u8::from_str_radix(&hex[4..6], 16),
-            ) {
-                return Some(Color::Rgb(r, g, b));
-            }
+            )
+        {
+            return Some(Color::Rgb(r, g, b));
         }
         None
     }
@@ -320,13 +324,13 @@ pub enum UsersFilter {
 
 #[derive(Clone, Debug, Default)]
 pub struct UsersFilterChips {
-    pub human_only: bool,   // uid >= 1000
-    pub system_only: bool,  // uid < 1000
-    pub inactive: bool,     // shell is nologin/false
-    pub no_home: bool,      // home directory does not exist
-    pub locked: bool,       // requires system info (not yet implemented)
-    pub no_password: bool,  // requires system info (not yet implemented)
-    pub expired: bool,      // requires system info (not yet implemented)
+    pub human_only: bool,  // uid >= 1000
+    pub system_only: bool, // uid < 1000
+    pub inactive: bool,    // shell is nologin/false
+    pub no_home: bool,     // home directory does not exist
+    pub locked: bool,      // requires system info (not yet implemented)
+    pub no_password: bool, // requires system info (not yet implemented)
+    pub expired: bool,     // requires system info (not yet implemented)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,10 +454,12 @@ impl AppState {
             input_mode: InputMode::Normal,
             search_query: String::new(),
             theme: Theme::load_or_init(
-                &config_file_read_path("theme.conf").unwrap_or_else(|| config_file_write_path("theme.conf")),
+                &config_file_read_path("theme.conf")
+                    .unwrap_or_else(|| config_file_write_path("theme.conf")),
             ),
             keymap: keymap::Keymap::load_or_init(
-                &config_file_read_path("keybinds.conf").unwrap_or_else(|| config_file_write_path("keybinds.conf")),
+                &config_file_read_path("keybinds.conf")
+                    .unwrap_or_else(|| config_file_write_path("keybinds.conf")),
             ),
             modal: None,
             users_focus: UsersFocus::UsersList,
@@ -465,7 +471,8 @@ impl AppState {
 
         // Load and apply filter configuration from filter.conf (creates default if missing/empty)
         let filters_cfg = filterconf::FiltersConfig::load_or_init(
-            &config_file_read_path("filter.conf").unwrap_or_else(|| config_file_write_path("filter.conf")),
+            &config_file_read_path("filter.conf")
+                .unwrap_or_else(|| config_file_write_path("filter.conf")),
         );
         filters_cfg.apply_to(&mut app);
 
@@ -479,12 +486,12 @@ impl AppState {
 /// Candidate roots in priority order for config files.
 fn config_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.trim().is_empty() {
-            let mut p = PathBuf::from(xdg);
-            p.push("UsrGrpManager");
-            roots.push(p);
-        }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.trim().is_empty()
+    {
+        let mut p = PathBuf::from(xdg);
+        p.push("UsrGrpManager");
+        roots.push(p);
     }
     if let Some(home) = dirs_next::home_dir() {
         let mut p = home.clone();
@@ -514,7 +521,7 @@ pub fn config_file_read_path(name: &str) -> Option<String> {
 
 /// Resolve a path for writing a config file; ensures the directory exists.
 pub fn config_file_write_path(name: &str) -> String {
-    for root in config_roots() {
+    if let Some(root) = config_roots().into_iter().next() {
         let _ = std::fs::create_dir_all(&root);
         let mut p = root.clone();
         p.push(name);
