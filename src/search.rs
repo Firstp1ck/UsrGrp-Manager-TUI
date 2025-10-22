@@ -97,74 +97,106 @@ pub fn apply_filters_and_search(app: &mut AppState) {
 }
 
 // Lightweight shadow status used for filters and details
+/// Represents password status information for a user from `/etc/shadow`.
+///
+/// This struct contains flags and timestamps related to a user's password state,
+/// as read from the `/etc/shadow` file (when readable). This information is used
+/// both for filtering and for displaying detailed user information.
 #[derive(Clone, Debug)]
 pub struct ShadowStatus {
+    /// Whether the password is locked (starts with '!', '*', or '!!').
     pub locked: bool,
+    /// Whether no password is set (empty password field).
     pub no_password: bool,
+    /// Whether the password has expired based on `/etc/shadow` rules.
     pub expired: bool,
+    /// Days since epoch when the password was last changed (if available).
     pub last_change_days: Option<i64>,
+    /// Absolute days since epoch when the account will expire (if specified).
     pub expire_abs_days: Option<i64>,
 }
 
+/// Read password status from `/etc/shadow` for all users.
+///
+/// This function is best-effort and may fail if:
+/// - Running on a non-Unix system
+/// - Insufficient permissions to read `/etc/shadow`
+/// - The file format is unexpected
+///
+/// # Returns
+///
+/// `std::io::Result<HashMap<String, ShadowStatus>>` mapping usernames to their shadow status.
 fn read_shadow_status() -> ShadowMapResult {
-    use std::fs;
-    use std::os::unix::fs::MetadataExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Quick permission check: if not root and cannot read, bail fast
-    if fs::metadata("/etc/shadow")
-        .map(|m| m.mode() & 0o004 == 0)
-        .unwrap_or(true)
+    #[cfg(unix)]
     {
-        // Likely unreadable, return an error to signal caller to skip filters
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "shadow unreadable",
-        ));
-    }
+        use std::fs;
+        use std::os::unix::fs::MetadataExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
 
-    let contents = fs::read_to_string("/etc/shadow")?;
-    let today_days: i64 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| (d.as_secs() / 86_400) as i64)
-        .unwrap_or(0);
-    let mut map: ShadowMap = HashMap::new();
-    for line in contents.lines() {
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
+        // Quick permission check: if not root and cannot read, bail fast
+        if fs::metadata("/etc/shadow")
+            .map(|m| m.mode() & 0o004 == 0)
+            .unwrap_or(true)
+        {
+            // Likely unreadable, return an error to signal caller to skip filters
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "shadow unreadable",
+            ));
         }
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() < 2 {
-            continue;
-        }
-        let name = parts[0].to_string();
-        let pw = parts[1];
-        let lastchg: i64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let max: i64 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(-1);
-        let expire_abs: i64 = parts.get(7).and_then(|s| s.parse().ok()).unwrap_or(-1);
 
-        let locked = pw.starts_with('!') || pw == "*" || pw == "!!";
-        let no_password = pw.is_empty();
-        let expired_by_max = max >= 0 && lastchg > 0 && (lastchg + max) <= today_days;
-        let expired_by_abs = expire_abs >= 0 && expire_abs <= today_days;
-        let expired = expired_by_max || expired_by_abs;
+        let contents = fs::read_to_string("/etc/shadow")?;
+        let today_days: i64 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| (d.as_secs() / 86_400) as i64)
+            .unwrap_or(0);
+        let mut map: ShadowMap = HashMap::new();
+        for line in contents.lines() {
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let name = parts[0].to_string();
+            let pw = parts[1];
+            let lastchg: i64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let max: i64 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(-1);
+            let expire_abs: i64 = parts.get(7).and_then(|s| s.parse().ok()).unwrap_or(-1);
 
-        map.insert(
-            name,
-            ShadowStatus {
-                locked,
-                no_password,
-                expired,
-                last_change_days: if lastchg > 0 { Some(lastchg) } else { None },
-                expire_abs_days: if expire_abs >= 0 {
-                    Some(expire_abs)
-                } else {
-                    None
+            let locked = pw.starts_with('!') || pw == "*" || pw == "!!";
+            let no_password = pw.is_empty();
+            let expired_by_max = max >= 0 && lastchg > 0 && (lastchg + max) <= today_days;
+            let expired_by_abs = expire_abs >= 0 && expire_abs <= today_days;
+            let expired = expired_by_max || expired_by_abs;
+
+            map.insert(
+                name,
+                ShadowStatus {
+                    locked,
+                    no_password,
+                    expired,
+                    last_change_days: if lastchg > 0 { Some(lastchg) } else { None },
+                    expire_abs_days: if expire_abs >= 0 {
+                        Some(expire_abs)
+                    } else {
+                        None
+                    },
                 },
-            },
-        );
+            );
+        }
+        Ok(map)
     }
-    Ok(map)
+
+    #[cfg(not(unix))]
+    {
+        // Shadow file is Unix/Linux specific, not available on Windows
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "/etc/shadow not available on this platform",
+        ))
+    }
 }
 
 fn get_shadow_status() -> ShadowMapResult {
@@ -175,7 +207,19 @@ fn get_shadow_status() -> ShadowMapResult {
 }
 
 /// Best-effort lookup of a single user's shadow status for details display.
-/// Returns None if shadow is unreadable or user not present.
+///
+/// Returns `None` if:
+/// - Shadow file is unreadable
+/// - User is not present in the shadow file
+/// - Running on a non-Unix system
+///
+/// # Arguments
+///
+/// * `username` - The user to look up.
+///
+/// # Returns
+///
+/// `Option<ShadowStatus>` containing the user's password status if available.
 pub fn user_shadow_status(username: &str) -> Option<ShadowStatus> {
     get_shadow_status()
         .ok()
@@ -186,6 +230,15 @@ thread_local! {
     static SHADOW_PROVIDER: std::cell::RefCell<Option<Box<ShadowProviderFn>>> = std::cell::RefCell::new(None);
 }
 
+/// Set a custom shadow status provider function for testing.
+///
+/// This allows tests to provide mock shadow data without actually reading
+/// `/etc/shadow`. The provided function will be called instead of the default
+/// implementation.
+///
+/// # Arguments
+///
+/// * `f` - A function that returns a map of username to [`ShadowStatus`].
 #[allow(dead_code)]
 pub fn set_shadow_provider<F>(f: F)
 where
@@ -194,11 +247,19 @@ where
     SHADOW_PROVIDER.with(|p| *p.borrow_mut() = Some(Box::new(f)));
 }
 
+/// Clear the custom shadow status provider, reverting to the default implementation.
 #[allow(dead_code)]
 pub fn clear_shadow_provider() {
     SHADOW_PROVIDER.with(|p| *p.borrow_mut() = None);
 }
 
+/// Create a mock [`ShadowStatus`] for testing purposes.
+///
+/// # Arguments
+///
+/// * `locked` - Whether the password is locked.
+/// * `no_password` - Whether no password is set.
+/// * `expired` - Whether the password is expired.
 #[allow(dead_code)]
 pub fn make_shadow_status(locked: bool, no_password: bool, expired: bool) -> ShadowStatus {
     ShadowStatus {

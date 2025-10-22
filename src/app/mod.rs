@@ -15,45 +15,84 @@ use crate::sys;
 use std::path::PathBuf;
 
 /// Top-level active tab in the UI.
+///
+/// Determines which major view the user sees: either the Users tab or the Groups tab.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ActiveTab {
+    /// Displays the users list and related management options.
     Users,
+    /// Displays the groups list and related management options.
     Groups,
 }
 
 /// Which subsection is focused on the Users screen.
+///
+/// Used to implement the two-pane Users screen: the main Users list or the Member-of pane
+/// showing which groups the selected user is a member of.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UsersFocus {
+    /// Focus is on the main users table.
     UsersList,
+    /// Focus is on the "Member of" pane showing group memberships.
     MemberOf,
 }
 
+/// Which subsection is focused on the Groups screen.
+///
+/// Similar to [`UsersFocus`], allows toggling between the groups table and the members list.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GroupsFocus {
+    /// Focus is on the main groups table.
+    GroupsList,
+    /// Focus is on the members list for the selected group.
+    Members,
+}
+
 /// Current input mode for key handling.
+///
+/// Determines which keyboard shortcuts are active and how input is interpreted.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum InputMode {
+    /// Normal navigation mode; keybindings for movement and actions are active.
     Normal,
+    /// User is typing in the search box for the Users tab.
     SearchUsers,
+    /// User is typing in the search box for the Groups tab.
     SearchGroups,
+    /// A modal dialog is open; only modal-specific keybindings are active.
     Modal,
 }
 
 /// Color palette for theming the TUI.
+///
+/// Defines the visual appearance of the TUI, including text, borders, headers, and highlights.
+/// Can be loaded from a config file or use built-in defaults.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
+    /// Primary text color.
     pub text: Color,
+    /// Secondary/muted text color.
     pub _muted: Color,
+    /// Color for titles and headings.
     pub title: Color,
+    /// Color for borders and separators.
     pub border: Color,
+    /// Background color for headers.
     pub header_bg: Color,
+    /// Foreground (text) color for headers.
     pub header_fg: Color,
+    /// Background color for the status bar.
     pub status_bg: Color,
+    /// Foreground (text) color for the status bar.
     pub status_fg: Color,
+    /// Foreground color for highlighted/selected items.
     pub highlight_fg: Color,
+    /// Background color for highlighted/selected items.
     pub highlight_bg: Color,
 }
 
 impl Theme {
-    /// Dark default theme.
+    /// Dark default theme with neutral grays and cyan accents.
     #[allow(dead_code)]
     pub fn dark() -> Self {
         Self {
@@ -70,7 +109,7 @@ impl Theme {
         }
     }
 
-    /// Catppuccin Mocha theme defaults.
+    /// Catppuccin Mocha theme defaults with warm, sophisticated colors.
     pub fn mocha() -> Self {
         // Palette reference: https://github.com/catppuccin/catppuccin
         Self {
@@ -324,33 +363,47 @@ pub enum ModifyField {
     Fullname,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UsersFilter {
-    OnlyUserIds,   // uid >= 1000
-    OnlySystemIds, // uid < 1000
-}
-
+/// Combinable filter chips for users that refine the list further.
+///
+/// Unlike top-level filters, multiple chips can be enabled simultaneously.
 #[derive(Clone, Debug, Default)]
 pub struct UsersFilterChips {
-    pub human_only: bool,  // uid >= 1000
-    pub system_only: bool, // uid < 1000
-    pub inactive: bool,    // shell is nologin/false
-    pub no_home: bool,     // home directory does not exist
-    pub locked: bool,      // requires system info (not yet implemented)
-    pub no_password: bool, // requires system info (not yet implemented)
-    pub expired: bool,     // requires system info (not yet implemented)
+    /// Show only users with UID >= 1000 (opposite of system_only).
+    pub human_only: bool,
+    /// Show only users with UID < 1000 (opposite of human_only).
+    pub system_only: bool,
+    /// Show only users whose shell ends with "nologin" or "/false" (inactive accounts).
+    pub inactive: bool,
+    /// Show only users whose home directory does not exist.
+    pub no_home: bool,
+    /// Show only users with locked passwords (read from `/etc/shadow`).
+    pub locked: bool,
+    /// Show only users with no password set (empty field in `/etc/shadow`).
+    pub no_password: bool,
+    /// Show only users whose password has expired.
+    pub expired: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Filter types for narrowing the users list.
+///
+/// Allows showing only system users (UID < 1000) or only regular users (UID >= 1000).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UsersFilter {
+    /// Show only regular (non-system) users with UID >= 1000.
+    OnlyUserIds,
+    /// Show only system users with UID < 1000.
+    OnlySystemIds,
+}
+
+/// Filter types for narrowing the groups list.
+///
+/// Allows showing only system groups (GID < 1000) or only regular groups (GID >= 1000).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GroupsFilter {
-    OnlyUserGids,   // gid >= 1000
-    OnlySystemGids, // gid < 1000
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GroupsFocus {
-    GroupsList,
-    Members,
+    /// Show only regular (non-system) groups with GID >= 1000.
+    OnlyUserGids,
+    /// Show only system groups with GID < 1000.
+    OnlySystemGids,
 }
 
 #[derive(Clone, Debug)]

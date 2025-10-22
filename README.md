@@ -25,144 +25,105 @@ UsrGrp-Manager-TUI (Users/Groups Manager TUI)
   </p>
 </div>
 
-## Table of Contents
-- [Introduction](#introduction)
-  - [Status](#status)
-  - [Quick Start](#quick-start)
-- [Environment Setup](#environment-setup)
-- [Configuration](#configuration)
-- [Prerequisites](#prerequisites)
-- [Installation Details](#installation-details)
-- [Project Structure](#project-structure)
-- [Usage & Keybindings](#usage--keybindings)
-- [What’s Implemented](#whats-implemented)
-- [Notes & Requirements](#notes--requirements)
-- [Tests](#tests)
-- [Troubleshooting](#troubleshooting)
-  - [Permissions](#permissions)
-  - [External Tools Missing](#external-tools-missing)
-  - [Parsing Issues](#parsing-issues)
-- [Contributing & Support](#contributing--support)
-- [License](#license)
+## Quick Links
 
-## Introduction
+- 📖 **[Complete Documentation](https://github.com/Firstp1ck/UsrGrp-Manager-TUI/wiki)** – Installation, usage, shortcuts, troubleshooting
+- 🚀 **[Quick Start](https://github.com/Firstp1ck/UsrGrp-Manager-TUI/wiki/Quick%E2%80%90Start)**
+- ⌨️ **[Keyboard Shortcuts](https://github.com/Firstp1ck/UsrGrp-Manager-TUI/wiki/Keyboard%E2%80%90Shortcuts)**
+- 🆘 **[Troubleshooting & FAQ](https://github.com/Firstp1ck/UsrGrp-Manager-TUI/wiki/Troubleshooting%E2%80%90FAQ)**
 
-Keyboard‑driven terminal app to view and manage users and groups. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes. 
+## What is it?
 
-Linux‑focused. Written in Rust.
+Keyboard-driven terminal app to view and manage users and groups on Linux. Browse accounts, see memberships, search, and make common changes: rename users, update names or shells, adjust group membership. Safe to explore without admin rights; asks for permission to apply changes.
+
+**Status:** Alpha. Read-only browsing is safe; write operations require privileges and are still limited.
 
 ### Screenshot
+
 ![TUI screenshot](example-images/Release_v0.3.0.png)
 
 ### Demo
-![TUI GIF](example-example-images/usrgrp-manager-v0.2.0-sample.gif)
 
-### Status
-Alpha. Read‑only browsing is safe; write operations require privileges and are still limited.
+![TUI GIF](example-images/usrgrp-manager-v0.2.0-sample.gif)
 
-Alpha means:
-- Interfaces and keybindings may change without notice.
-- Some actions are intentionally guarded (e.g., user deletion requires confirmation; optional home removal).
-- Error handling, edge cases, and performance are still being improved.
+## Installation
 
-### Quick Start
+### Quick Install (Arch Linux)
 
 Using yay:
+
 ```bash
-yay -S usrgrp-manager-git
+yay -S usrgrp-manager-git      # Latest from main branch
 # or
-yay -S usrgrp-manager-bin
+yay -S usrgrp-manager-bin      # Prebuilt binary
 ```
 
 Using paru:
+
 ```bash
 paru -S usrgrp-manager-git
 # or
 paru -S usrgrp-manager-bin
 ```
-Using cargo:
+
+### Build from Source
+
 ```bash
-# Build and run (release)
 cargo build --release
+./target/release/usrgrp-manager
 ```
 
-After installation:
+For other installation methods, see [Install Documentation](https://github.com/Firstp1ck/UsrGrp-Manager-TUI/wiki/Install).
+
+## Running
+
 ```bash
-usrgrp-manager
+usrgrp-manager              # Browse read-only
+sudo usrgrp-manager         # Required for write operations
 ```
 
-## Configuration
+## Features
 
-- Logging level:
-```bash
-USRGRP_MANAGER_LOG=info   # or debug, trace
-```
+### Users
+- View users from `/etc/passwd`
+- Create/delete users
+- Modify username, full name, shell
+- Manage group membership
+- Set/change/reset passwords
+- View user details: UID, GID, home, shell, password status, sudo membership, SSH keys, processes
 
-- Sudo group name (for sudo membership checks):
-```bash
-export UGM_SUDO_GROUP=sudo   # defaults to 'wheel' if unset
-```
+![Actions menu](example-images/Release_v0.3.0_User_actions.png)
 
+![Modify user](example-images/Release_v0.3.0_User_mod.png)
 
-## Environment Setup
+![Modify details](example-images/Release_v0.3.0_User_mod_details.png)
 
-- Linux/BSD terminals supported; primary target is Linux.
-- Read operations work without privileges.
-- Write operations (create/delete users/groups, modify memberships, change shell/password) require appropriate privileges (root or sudo).
+![Remove user from groups](example-images/Release_v0.3.0_Remove_UserFromGroups.png)
+
+### Groups
+- View groups from `/etc/group`
+- Create/delete groups
+- Manage members
+- View group details: GID, classification, membership count, privilege level
+
+![Modify groups](example-images/Release_v0.3.0_Modify_Groups.png)
+
+### General
+- Fast search/filter (case-insensitive substring matching)
+
+![Filter users](example-images/Release_v0.3.0_filters.png)
+
+- Safe paging and navigation
+- Keyboard-driven (no mouse required)
+- Confirmation prompts for destructive actions
 
 ## Prerequisites
 
-- Rust toolchain (stable) and Cargo
-- Linux system with standard user/group management tools:
-  - `usermod`, `useradd`, `userdel`
-  - `groupadd`, `groupdel`, `gpasswd`
-  - `chpasswd`, `chage`
-
-## Installation Details
-
-- Build: `cargo build --release`
-- Run: `cargo run --release`
-- Logging: set `USRGRP_MANAGER_LOG=info|debug|trace` (default: `info`)
-- Feature flags: `file-parse` exists, but enumeration currently parses `/etc/passwd` and `/etc/group` by default.
-
-### Upgrade Notes (v0.3.0)
-
-- `Ctrl+Tab` pane toggling was removed; use `Shift+Tab`.
-- Use `Shift+K` to toggle the keybindings side panel.
-
-### Install from AUR
-
-- usrgrp-manager-git: latest development version from the main branch
-- usrgrp-manager-bin: prebuilt binaries from the latest release
-
-Install yay (AUR helper) if needed:
-```bash
-sudo pacman -S --needed git base-devel
-git clone https://aur.archlinux.org/yay.git
-cd yay
-makepkg -si
-```
-
-Using yay:
-```bash
-yay -S usrgrp-manager-git
-# or
-yay -S usrgrp-manager-bin
-```
-
-Using paru:
-```bash
-paru -S usrgrp-manager-git
-# or
-paru -S usrgrp-manager-bin
-```
-
-After installation:
-```bash
-usrgrp-manager
-```
+- Rust toolchain (stable) + Cargo
+- Linux system with standard user/group tools: `usermod`, `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `chpasswd`, `chage`
 
 ## Project Structure
+
 ```text
 src/
   main.rs                    # Entry point
@@ -179,146 +140,32 @@ src/
   search.rs                  # Search functionality
 ```
 
-## Usage & Keybindings
+## Configuration
 
-- Quit: `q`
-- Switch tab: `Tab` (Users ↔ Groups)
- - Users tab focus: `Shift+Tab` toggles Users list ↔ Member‑of list
-- Move: `↑/k`, `↓/j`
-- Page: `←/h` (previous page), `→/l` (next page)
-- Search: `/` to start, type query, `Enter` to apply, `Esc` to cancel
-- Filter dialog example:
+```bash
+# Logging level
+USRGRP_MANAGER_LOG=info    # or debug, trace
 
-![Filter users](example-images/Release_v0.3.0_filters.png)
-- Open actions on selection: `Enter`
-- In popups: `↑/k`, `↓/j`, `PageUp`, `PageDown`, `Enter`, `Esc`
-
-- Toggle keybindings panel: `Shift+K`
-- Help: `?`
-
-- New user: `n` (toggle "Create home" with `Space`)
-- Pane toggle change: `Ctrl+Tab` was removed; use `Shift+Tab` instead
-- Delete confirmation: `Space` toggles "Also delete home"
-- Password: Actions → Modify → Password
-  - Set/change: masked input with confirm; toggle "must change at next login" with `Space`; select Submit and press `Enter`
-  - Reset: expire password immediately (forces change at next login)
-
-## What’s Implemented
-
-- Users tab
-  - Table of users (from `/etc/passwd`), selection, paging
-  - Detail pane (expanded):
-    - Identity: UID, primary GID, and primary group name
-    - Home: path, existence, and octal permissions (e.g., 755)
-    - Shell: validity (in `/etc/shells`) and interactivity (`nologin`/`false` detection)
-    - Password status: locked, no_password, expired; last change and expiry (days since epoch)
-    - Sudo membership: whether the user is in the configured sudo group
-    - SSH: count of entries in `~/.ssh/authorized_keys` (best‑effort)
-    - Processes: current number of processes owned by the user (best‑effort)
-  - Member‑of pane: primary and supplementary groups
-  - Create user (`useradd`; optional `-m` to create home)
-  - Delete user (`userdel`; optional `-r` to remove home)
-  - Password management:
-    - Set/change (masked via `chpasswd`, optional "must change at next login")
-    - Reset (expire now via `chage -d 0`)
-  - Actions → Modify:
-    - Add user to groups (via `gpasswd -a`)
-    - Remove user from groups (via `gpasswd -d`, excluding primary group)
-    - Change username (`usermod -l`)
-    - Change full name (GECOS, `usermod -c`)
-    - Change login shell (pick from `/etc/shells`, `usermod -s`)
-
-  - Examples:
-
-![Actions menu](example-images/Release_v0.3.0_User_actions.png)
-
-![Modify user](example-images/Release_v0.3.0_User_mod.png)
-
-![Modify details](example-images/Release_v0.3.0_User_mod_details.png)
-
-![Remove user from groups](example-images/Release_v0.3.0_Remove_UserFromGroups.png)
-
-- Groups tab
-  - Table of groups (from `/etc/group`), selection, paging
-  - Detail pane (expanded):
-    - Classification: GID and whether it's a system or user group
-    - Membership: counts of primary vs secondary members; preview of top‑N names
-    - Orphan detection: flags listed secondary members not present in users
-    - Distributions: shell interactivity, UID class (system <1000 vs user ≥1000), account status
-    - Privilege: indicates if this is the sudo‑capable group
-    - Change proxy: `/etc/group` mtime (days since epoch) as a rough change indicator
-  - Actions:
-    - Create group (`groupadd`)
-    - Delete group (`groupdel`)
-    - Modify members (add/remove users)
-
-  - Example:
-
-![Modify groups](example-images/Release_v0.3.0_Modify_Groups.png)
-
-- Search
-  - Simple substring filter for Users and Groups tabs
-
-## Notes & Requirements
-
-- Linux/BSD only. macOS behavior may differ (Directory Services).
-- Write actions call system tools and require appropriate privileges (root or sudo): `usermod`, `gpasswd`, `groupadd`, `groupdel`, `useradd`, `userdel`, `chpasswd`, `chage`.
-- User deletion is implemented with confirmation and optional home removal.
-
-- Some account fields (password status, last change/expiry) rely on best‑effort reads of `/etc/shadow`; these may be unavailable without sufficient privileges.
-- SSH key counting and process counts are best‑effort and can vary across environments.
+# Sudo group name (for sudo membership checks)
+export UGM_SUDO_GROUP=sudo   # defaults to 'wheel' if unset
+```
 
 ## Tests
 
-- Run all tests: `cargo test` (Tests run while building the project automatically)
-
-What’s covered today:
-- Unit tests for parsers in `src/sys/mod.rs` (fake `/etc/passwd` and `/etc/group` files).
-- Unit tests for filtering in `src/search.rs` (case‑insensitive user/group search, membership matching).
-
-Guidelines:
-- Keep small unit tests inline next to the code with `#[cfg(test)]` for private helpers and pure logic.
-- For broader or cross‑module tests, add a `src/lib.rs` exposing modules (e.g., `pub mod app; pub mod search; pub mod sys;`) and place integration tests in `tests/`.
-- Avoid invoking privileged commands (`useradd`, `gpasswd`, etc.) in tests. Prefer testing pure parts (parsing, filtering) or introduce a trait to mock `SystemAdapter` in higher‑level tests.
-
-Optional:
-- UI snapshot/sanity tests can be written using `ratatui`’s test backend (and, if desired, a snapshot tool like `insta`). These should render minimal views and assert on expected labels/highlights, not terminal specifics.
-
-## Troubleshooting
-
-### Permissions
 ```bash
-# Verify you have sufficient privileges when applying changes
-id
-sudo -v  # refresh sudo credentials
+cargo test    # Run all tests
 ```
 
-### External Tools Missing
-```bash
-# Check required tools are available
-command -v useradd usermod userdel groupadd groupdel gpasswd chpasswd chage
-```
-
-### Parsing Issues
-```bash
-# Inspect passwd/group files
-getent passwd | head -n 5
-getent group  | head -n 5
-
-# Validate shells list
-cat /etc/shells
-```
-
-If problems persist, run with verbose logs:
-```bash
-USRGRP_MANAGER_LOG=debug cargo run --release
-```
+What's covered:
+- Unit tests for parsers in `src/sys/mod.rs`
+- Unit tests for filtering in `src/search.rs`
 
 ## Contributing & Support
 
 - Open issues or pull requests on GitHub
-- Suggestions and feedback welcome!
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
+- Feedback and suggestions welcome!
 
 ## License
 
-See [LICENSE](https://github.com/firstpick/usrgrp-manager/blob/main/LICENSE) for details.
+See [LICENSE](https://github.com/Firstp1ck/UsrGrp-Manager-TUI/blob/main/LICENSE) for details.

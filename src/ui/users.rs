@@ -1,8 +1,9 @@
 //! Users screen rendering and modals.
 //!
 //! Contains the users table, details and member-of panels, and all user
-//! modification modal dialogs.
-//!
+//! modification modal dialogs including create, delete, password management,
+//! and group membership changes.
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -11,6 +12,17 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, R
 use crate::app::{AppState, ModalState, ModifyField, UsersFocus};
 
 /// Render the users table and manage selection/pagination state.
+///
+/// Displays a table of users (UID, name, GID, home directory, shell) with
+/// the currently selected user highlighted. This function also calculates
+/// pagination and updates the rows-per-page based on available space.
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the table will be drawn.
+/// * `app` - The application state containing users and selection info. Pagination
+///   state will be updated based on the area height.
 pub fn render_users_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     let body_height = area.height.saturating_sub(3) as usize;
     if body_height > 0 {
@@ -95,6 +107,21 @@ pub fn render_users_table(f: &mut Frame, area: Rect, app: &mut AppState) {
 }
 
 /// Render the details panel for the selected user.
+///
+/// This panel displays comprehensive information about the currently selected user, including:
+/// - Identity (UID, GID, primary group name)
+/// - Home directory (path, existence, permissions)
+/// - Shell (validity, interactivity)
+/// - Password status (locked, no password, expired, last change, expiry)
+/// - Sudo membership (whether in the sudo group)
+/// - SSH keys (count from `~/.ssh/authorized_keys`)
+/// - Processes (current count owned by the user)
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the details panel will be drawn.
+/// * `app` - The application state containing user data.
 pub fn render_user_details(f: &mut Frame, area: Rect, app: &AppState) {
     let user = app.users.get(app.selected_user_index);
     let (username, fullname, uid, gid, home, shell) = match user {
@@ -134,6 +161,7 @@ pub fn render_user_details(f: &mut Frame, area: Rect, app: &AppState) {
             }
             #[cfg(not(unix))]
             {
+                let _ = meta; // Use meta to avoid unused variable warning
                 (true, "-".to_string())
             }
         }
@@ -262,6 +290,16 @@ pub fn render_user_details(f: &mut Frame, area: Rect, app: &AppState) {
 }
 
 /// Render the list of groups the selected user belongs to.
+///
+/// This panel displays the groups to which the currently selected user belongs,
+/// including the primary group and any other groups the user is explicitly
+/// a member of. It allows for pagination and selection of groups.
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the groups panel will be drawn.
+/// * `app` - The application state containing user and group data.
 pub fn render_user_groups(f: &mut Frame, area: Rect, app: &mut AppState) {
     let groups = if let Some(u) = app.users.get(app.selected_user_index) {
         let name = u.name.clone();

@@ -591,6 +591,7 @@ wheel:x:998:root,jdoe
     }
 
     #[test]
+    #[cfg(unix)]
     fn format_cli_error_empty_and_nonempty_stderr() {
         use std::os::unix::process::ExitStatusExt;
         use std::process::Output;

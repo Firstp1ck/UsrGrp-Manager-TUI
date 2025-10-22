@@ -1,7 +1,9 @@
 //! Shared UI components (status bar, modal helpers).
 //!
-//! Contains small building blocks reused by users/groups screens.
-//!
+//! Contains small building blocks reused by users/groups screens, including
+//! the status bar showing current mode and filters, and helpers for rendering
+//! modals and input dialogs.
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -11,7 +13,19 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::app::{AppState, ModalState};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Render the bottom status bar with mode and counts.
+/// Render the bottom status bar with current mode, counts, and active filters.
+///
+/// The status bar displays:
+/// - Current input mode (Normal, Search, Modal)
+/// - Number of visible users and groups
+/// - Items per page
+/// - Currently active filter chips
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the status bar will be drawn.
+/// * `app` - The application state containing mode, counts, and filter information.
 pub fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
     let mode = match app.input_mode {
         crate::app::InputMode::Normal => "NORMAL",
@@ -62,6 +76,16 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
 }
 
 /// Render the right-side keybinds viewer with grouped sections.
+///
+/// This panel displays all current keybindings organized into logical groups
+/// (general, navigation, etc.), helping users discover and remember shortcuts.
+/// It is shown/hidden by toggling via [`Shift+K`].
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the keybinds panel will be drawn.
+/// * `app` - The application state containing the current keymap.
 pub fn render_keybinds_panel(f: &mut Frame, area: Rect, app: &AppState) {
     let block = Block::default()
         .title("Keybindings")

@@ -2,7 +2,7 @@
 //!
 //! Contains the groups table, details panel, members list, and group-related
 //! modal dialogs for add/remove/rename actions.
-//!
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -11,6 +11,17 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, R
 use crate::app::{AppState, GroupsFocus, ModalState};
 
 /// Render the groups table and manage selection/pagination state.
+///
+/// Displays a table of groups (GID and name) with the currently selected group
+/// highlighted. This function also calculates pagination and updates the
+/// rows-per-page based on available space.
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the table will be drawn.
+/// * `app` - The application state containing groups and selection info. Pagination
+///   state will be updated based on the area height.
 pub fn render_groups_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     let body_height = area.height.saturating_sub(3) as usize;
     if body_height > 0 {
@@ -71,6 +82,21 @@ pub fn render_groups_table(f: &mut Frame, area: Rect, app: &mut AppState) {
 }
 
 /// Render the selected group's summary details.
+///
+/// This panel displays comprehensive information about the currently selected group, including:
+/// - Classification (GID, system vs. user group)
+/// - Membership counts (primary members, secondary members)
+/// - Member preview (list of top members)
+/// - Orphan detection (secondary members not in user database)
+/// - Distributions (shell interactivity, UID class, account status)
+/// - Privilege (whether this is the sudo-capable group)
+/// - Change indicator (last modification time of `/etc/group`)
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the details panel will be drawn.
+/// * `app` - The application state containing group and user data.
 pub fn render_group_details(f: &mut Frame, area: Rect, app: &AppState) {
     let group = app.groups.get(app.selected_group_index);
     let (
@@ -258,6 +284,15 @@ pub fn render_group_details(f: &mut Frame, area: Rect, app: &AppState) {
 }
 
 /// Render the selected group's members list.
+///
+/// This panel displays the members of the currently selected group. It supports
+/// pagination and highlights the currently selected member.
+///
+/// # Arguments
+///
+/// * `f` - The frame to render into.
+/// * `area` - The rectangle area where the members list will be drawn.
+/// * `app` - The application state containing group and user data.
 pub fn render_group_members(f: &mut Frame, area: Rect, app: &mut AppState) {
     let members = app
         .groups

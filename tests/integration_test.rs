@@ -143,6 +143,7 @@ fn search_applies_filters_across_users_and_groups() {
     assert_eq!(app.selected_group_index, 0);
 }
 
+#[cfg(unix)]
 fn is_root() -> bool {
     if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
         for line in s.lines() {
@@ -158,6 +159,7 @@ fn is_root() -> bool {
 
 // 3) Privileged ops require authentication when not root
 #[test]
+#[cfg(unix)]
 fn privileged_ops_require_auth_without_sudo_password() {
     use usrgrp_manager::sys::SystemAdapter;
 
@@ -186,6 +188,7 @@ fn privileged_ops_require_auth_without_sudo_password() {
 
 // 4) delete_group is idempotent when group is already missing
 #[test]
+#[cfg(unix)]
 fn delete_group_is_idempotent_without_sudo_when_missing() {
     use usrgrp_manager::sys::SystemAdapter;
 
@@ -479,6 +482,7 @@ unknown_key = #abcdef
 
 // 9) Extended auth coverage for more ops (non-root)
 #[test]
+#[cfg(unix)]
 fn privileged_ops_auth_required_extended_when_not_root() {
     use usrgrp_manager::sys::SystemAdapter;
     if is_root() {
@@ -504,6 +508,7 @@ fn privileged_ops_auth_required_extended_when_not_root() {
 
 // 10) Idempotent delete_group for multiple distinct missing names
 #[test]
+#[cfg(unix)]
 fn delete_group_is_idempotent_for_multiple_missing_names() {
     use usrgrp_manager::sys::SystemAdapter;
     let adapter = SystemAdapter::with_sudo_password(None);

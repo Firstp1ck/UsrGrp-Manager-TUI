@@ -1,36 +1,77 @@
 //! Keybinding configuration: parse `keybinds.conf`, provide defaults, and map keys to actions.
+//!
+//! This module manages keyboard shortcuts for the TUI. It supports:
+//! - Loading custom keybindings from a config file (`keybinds.conf`)
+//! - Providing sensible defaults if no config is present
+//! - Resolving key presses (with modifiers) to semantic actions
+//! - Exporting the current keymap back to a file for reference or customization
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+/// Semantic keyboard actions that can be bound to key combinations.
+///
+/// Each action represents a distinct operation in the TUI. Multiple key combinations
+/// can map to the same action, allowing for flexibility (e.g., both 'j' and Down arrow
+/// can move down).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KeyAction {
+    /// Exit the application.
     Quit,
+    /// Open the filter menu modal.
     OpenFilterMenu,
+    /// Display the help/keybindings reference.
     OpenHelp,
+    /// Start/enter search mode.
     StartSearch,
+    /// Trigger "new user" or "new group" creation.
     NewUser,
+    /// Delete the currently selected item.
     DeleteSelection,
+    /// Switch between Users and Groups tabs.
     SwitchTab,
+    /// Toggle focus between main list and supplementary pane on Users screen.
     ToggleUsersFocus,
+    /// Toggle focus between main list and members pane on Groups screen.
     ToggleGroupsFocus,
+    /// Toggle the visibility of the keybindings panel on the right.
     ToggleKeybindsPane,
+    /// Open an action menu for the selected item (user or group).
     EnterAction,
+    /// Move up in the current list.
     MoveUp,
+    /// Move down in the current list.
     MoveDown,
+    /// Move to the previous page of results.
     PageUp,
+    /// Move to the next page of results.
     PageDown,
+    /// Move left in pagination (previous page).
     MoveLeftPage,
+    /// Move right in pagination (next page).
     MoveRightPage,
+    /// Ignore this key (used for keys that shouldn't trigger anything).
     Ignore,
 }
 
+/// Manages keybinding configuration and key-to-action resolution.
+///
+/// The keymap uses a canonical mapping from `(KeyModifiers, KeyCode)` pairs to [`KeyAction`]s.
+/// It supports loading from and saving to a configuration file, with sensible defaults if
+/// no custom config is present.
 #[derive(Clone, Debug)]
 pub struct Keymap {
-    // canonical mapping from (modifiers, code) to action
+    /// Canonical mapping from (modifiers, code) to action.
     bindings: std::collections::HashMap<(KeyModifiers, KeyCode), KeyAction>,
 }
 
 impl Keymap {
+    /// Create a keymap with default keybindings.
+    ///
+    /// Includes:
+    /// - Arrow keys and vim-style keys (hjkl) for navigation
+    /// - Common keys like q (quit), / (search), n (new), f (filter)
+    /// - Tab/BackTab for pane switching
+    /// - Page Up/Down for pagination
     pub fn new_defaults() -> Self {
         use KeyCode::*;
         use KeyModifiers as M;
@@ -74,6 +115,16 @@ impl Keymap {
         Self { bindings }
     }
 
+    /// Load a keymap from a file, or create defaults if the file doesn't exist.
+    ///
+    /// This is the main entry point for loading user configuration. It first checks
+    /// if the specified path exists; if not, it looks for the file in standard config
+    /// locations. If still not found, it creates a fresh default keymap and writes it
+    /// to the specified path for future customization.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the keymap configuration file.
     pub fn load_or_init(path: &str) -> Self {
         let p = std::path::Path::new(path);
         if p.exists() {
@@ -87,6 +138,19 @@ impl Keymap {
         km
     }
 
+    /// Load a keymap from a configuration file.
+    ///
+    /// The file should use the format: `<Action> = <KeySpec>` or the legacy
+    /// `<KeySpec> = <Action>` format. The method starts from defaults and overrides
+    /// with user-specified bindings.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the keymap configuration file.
+    ///
+    /// # Returns
+    ///
+    /// `Some(keymap)` if the file exists and is readable; `None` otherwise.
     pub fn from_file(path: &str) -> Option<Self> {
         let contents = std::fs::read_to_string(path).ok()?;
         let mut map = Self::default();
@@ -116,6 +180,18 @@ impl Keymap {
         Some(map)
     }
 
+    /// Write the current keymap to a configuration file.
+    ///
+    /// This method exports the current keymap to a file in a human-readable format.
+    /// It includes comments and examples for common key combinations.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path where the keymap will be written.
+    ///
+    /// # Returns
+    ///
+    /// `std::io::Result<()>` indicating success or failure.
     pub fn write_file(&self, path: &str) -> std::io::Result<()> {
         use std::fmt::Write as _;
         let mut buf = String::new();
@@ -155,6 +231,18 @@ impl Keymap {
         std::fs::write(path, buf)
     }
 
+    /// Resolve a key event to its corresponding action.
+    ///
+    /// This method takes a [`KeyEvent`] and attempts to find the action it maps to.
+    /// It considers the modifiers and key code.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key event to resolve.
+    ///
+    /// # Returns
+    ///
+    /// `Option<KeyAction>` indicating the action if found, or `None` if no action is mapped.
     pub fn resolve(&self, key: &KeyEvent) -> Option<KeyAction> {
         let mm = key.modifiers;
         let code = key.code;
@@ -162,11 +250,28 @@ impl Keymap {
     }
 
     /// Return a snapshot of all bindings as ((modifiers, code), action) pairs.
+    ///
+    /// This method is useful for debugging or for saving the current keymap.
+    ///
+    /// # Returns
+    ///
+    /// A vector of tuples containing the key (modifiers + code) and its action.
     pub fn all_bindings(&self) -> Vec<((KeyModifiers, KeyCode), KeyAction)> {
         self.bindings.iter().map(|(k, v)| (*k, *v)).collect()
     }
 
     /// Format a key (modifiers + code) into a human-readable spec like "Ctrl+q", "BackTab".
+    ///
+    /// This method is used to display key combinations in a user-friendly format.
+    ///
+    /// # Arguments
+    ///
+    /// * `mods` - The key modifiers.
+    /// * `code` - The key code.
+    ///
+    /// # Returns
+    ///
+    /// A string representing the key combination.
     pub fn format_key(mods: KeyModifiers, code: KeyCode) -> String {
         use KeyCode::*;
         let base = match code {

@@ -1,28 +1,56 @@
 //! Filters configuration: parse/write `filter.conf` and apply to AppState.
+//!
+//! This module manages filter settings that can be persisted to a configuration file.
+//! It supports:
+//! - Loading filter preferences from `filter.conf`
+//! - Saving current filter state back to the file
+//! - Applying filters to the application state
 
 use super::{AppState, GroupsFilter, UsersFilter};
 
+/// Represents filter settings that can be loaded from or saved to a configuration file.
+///
+/// Filters control which users and groups are visible in the UI. They can be either
+/// top-level (mutually exclusive) or combinable "chips" (multiple can be active at once).
 #[derive(Clone, Debug, Default)]
 pub struct FiltersConfig {
-    // Top-level filters (optional)
+    /// Top-level filter for users (optional): show only user or system accounts.
     pub users_filter: Option<UsersFilter>,
+    /// Top-level filter for groups (optional): show only user or system groups.
     pub groups_filter: Option<GroupsFilter>,
 
-    // Chip filters for users
+    /// Show only users with UID >= 1000 (human/regular accounts).
     pub human_only: bool,
+    /// Show only users with UID < 1000 (system accounts).
     pub system_only: bool,
+    /// Show only inactive users (those with nologin or false shells).
     pub inactive: bool,
+    /// Show only users whose home directory does not exist.
     pub no_home: bool,
+    /// Show only users with locked passwords (from `/etc/shadow`).
     pub locked: bool,
+    /// Show only users with no password set (empty password field).
     pub no_password: bool,
+    /// Show only users whose password has expired.
     pub expired: bool,
 }
 
 impl FiltersConfig {
+    /// Create a filters configuration with all options disabled/empty.
+    ///
+    /// This is equivalent to `Default::default()`.
     pub fn default_all_false() -> Self {
         Self::default()
     }
 
+    /// Extract the current filter state from an [`AppState`].
+    ///
+    /// This method reads the current filter settings from the application state
+    /// and converts them into a [`FiltersConfig`] for saving or exporting.
+    ///
+    /// # Arguments
+    ///
+    /// * `app` - The application state to extract filters from.
     pub fn from_app(app: &AppState) -> Self {
         Self {
             users_filter: app.users_filter,
@@ -37,10 +65,29 @@ impl FiltersConfig {
         }
     }
 
+    /// Save the current filter state from an [`AppState`] to a file.
+    ///
+    /// This is a convenience method that combines [`from_app`](Self::from_app) and
+    /// [`write_file`](Self::write_file).
+    ///
+    /// # Arguments
+    ///
+    /// * `app` - The application state containing the current filters.
+    /// * `path` - The path where the configuration will be written.
     pub fn save_from_app(app: &AppState, path: &str) -> std::io::Result<()> {
         Self::from_app(app).write_file(path)
     }
 
+    /// Load filters from a file, or create defaults if the file doesn't exist.
+    ///
+    /// This is the main entry point for loading filter configuration. It first checks
+    /// if the specified path exists; if not, it searches standard config locations.
+    /// If still not found, it creates a default (all filters off) and writes it to
+    /// the specified path for future customization.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the filters configuration file.
     pub fn load_or_init(path: &str) -> Self {
         let p = std::path::Path::new(path);
         if p.exists() {
@@ -55,6 +102,18 @@ impl FiltersConfig {
         cfg
     }
 
+    /// Load filters from a configuration file.
+    ///
+    /// The file should use the format: `<key> = <value>`. Comments (lines starting with '#')
+    /// and empty lines are ignored. Unknown keys are skipped silently.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the filters configuration file.
+    ///
+    /// # Returns
+    ///
+    /// `Some(config)` if the file exists and is readable; `None` otherwise.
     pub fn from_file(path: &str) -> Option<Self> {
         let contents = std::fs::read_to_string(path).ok()?;
         let mut cfg = Self::default_all_false();
@@ -107,6 +166,14 @@ impl FiltersConfig {
         Some(cfg)
     }
 
+    /// Write the current filter state to a configuration file.
+    ///
+    /// This method writes the current filter settings to the specified path in the
+    /// format: `<key> = <value>`.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path where the configuration will be written.
     pub fn write_file(&self, path: &str) -> std::io::Result<()> {
         use std::fmt::Write as _;
         let mut buf = String::new();
@@ -131,6 +198,13 @@ impl FiltersConfig {
         std::fs::write(path, buf)
     }
 
+    /// Apply the current filter state to an [`AppState`].
+    ///
+    /// This method updates the application state with the current filter settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `app` - The application state to update.
     pub fn apply_to(&self, app: &mut AppState) {
         app.users_filter = self.users_filter;
         app.groups_filter = self.groups_filter;
