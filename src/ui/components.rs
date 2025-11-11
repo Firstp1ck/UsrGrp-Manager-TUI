@@ -79,7 +79,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
 ///
 /// This panel displays all current keybindings organized into logical groups
 /// (general, navigation, etc.), helping users discover and remember shortcuts.
-/// It is shown/hidden by toggling via [`Shift+K`].
+/// It is shown/hidden by toggling via `Shift+K`.
 ///
 /// # Arguments
 ///
