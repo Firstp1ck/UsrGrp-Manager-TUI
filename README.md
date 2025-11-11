@@ -160,6 +160,9 @@ What's covered:
 - Unit tests for parsers in `src/sys/mod.rs`
 - Unit tests for filtering in `src/search.rs`
 
+## Potential Future implementations:
+- **Change Permissions easly**
+
 ## Contributing & Support
 
 - Open issues or pull requests on GitHub
