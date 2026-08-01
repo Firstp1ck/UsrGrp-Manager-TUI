@@ -6,3 +6,4 @@ wiki/*
 RELEASE*.md
 plans/archive/
 /.pi-subagents/
+/dev/COMMIT/
