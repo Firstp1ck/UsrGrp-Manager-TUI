@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install supply-chain tools
         run: |
-          cargo install cargo-deny --version 0.18.4 --locked
+          cargo install cargo-deny --version 0.19.9 --locked
           cargo install cargo-audit --version 0.22.0 --locked
       - name: Dependency policy
         run: cargo deny check
