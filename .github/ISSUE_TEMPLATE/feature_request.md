@@ -1,20 +1,18 @@
 ---
-name: Feature request
-about: Suggest an idea for this project
-title: ''
-labels: ''
-assignees: ''
-
+name: Reliability or usability proposal
+about: Propose a scoped improvement
+title: ""
+labels: enhancement
 ---
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+## Problem
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+What current local Linux user/group-management workflow is unreliable or unclear?
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+## Proposed behavior
 
-**Additional context**
-Add any other context or screenshots about the feature request here.
+Describe the smallest user-visible change. Explain how it preserves typed command contracts, root protection, explicit confirmation, and deterministic no-host-tool tests where relevant.
+
+## Alternatives and scope
+
+List alternatives and note any out-of-scope product expansion (remote management, NSS/LDAP writes, plugins, import/export, etc.).

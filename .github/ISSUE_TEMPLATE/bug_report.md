@@ -1,38 +1,26 @@
 ---
 name: Bug report
-about: Create a report to help us improve
-title: ''
-labels: ''
-assignees: ''
-
+about: Report a reproducible usrgrp-manager problem
+title: ""
+labels: bug
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## What happened?
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+Describe the observed behavior and expected result.
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## Safe reproduction
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+List non-destructive steps. Do **not** include passwords, sudo input, account database contents, or unredacted command output. Do not run account mutations on a production host merely to reproduce an issue.
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+## Environment
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+- usrgrp-manager revision/version:
+- Linux distribution/version:
+- terminal emulator:
+- Rust version (if built from source):
+- Was the operation read-only, root, or sudo-authenticated?
 
-**Additional context**
-Add any other context about the problem here.
+## Diagnostics
+
+Include stable error codes and redacted output only. Security-sensitive reports belong in the private process described by `SECURITY.md`.

@@ -1,25 +1,64 @@
-name: Rust
+name: Rust checks
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  build:
-    permissions:
-      contents: read
-      pull-requests: write
-      
-    runs-on: ubuntu-latest
-
+  test:
+    name: ${{ matrix.toolchain }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.89.0", stable]
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install toolchain and required quality components
+        run: |
+          rustup toolchain install ${{ matrix.toolchain }} --profile minimal
+          rustup component add rustfmt clippy --toolchain ${{ matrix.toolchain }}
+      - name: Declare tested policy
+        run: |
+          echo "toolchain=${{ matrix.toolchain }} locked=true all-features=true no-default-features=true"
+          echo "format=true clippy=-Dwarnings docs=true normal-tests-forbid-real-processes=true"
+      - name: Format
+        run: cargo +${{ matrix.toolchain }} fmt --all -- --check
+      - name: Build and test all features
+        run: cargo +${{ matrix.toolchain }} test --workspace --all-targets --all-features --locked
+      - name: Test without default features
+        run: cargo +${{ matrix.toolchain }} test --workspace --no-default-features --locked
+      - name: Documentation
+        run: |
+          cargo +${{ matrix.toolchain }} test --doc --locked
+          cargo +${{ matrix.toolchain }} doc --workspace --all-features --no-deps --locked
+      - name: Clippy
+        run: cargo +${{ matrix.toolchain }} clippy --workspace --all-targets --all-features --locked -- -D warnings
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install supply-chain tools
+        run: |
+          cargo install cargo-deny --version 0.18.4 --locked
+          cargo install cargo-audit --version 0.22.0 --locked
+      - name: Dependency policy
+        run: cargo deny check
+      - name: Advisory audit
+        run: cargo audit
+      - name: Dependency duplicates
+        run: cargo tree --duplicates

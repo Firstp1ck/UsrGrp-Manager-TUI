@@ -13,9 +13,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod app;
+pub mod config;
 pub mod error;
 pub mod search;
 pub mod sys;
+pub mod terminal;
 pub mod ui;
 
 // Re-export commonly used items at the crate root for convenience

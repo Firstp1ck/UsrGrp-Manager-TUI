@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>usrgrp-manager Reliability and Robustness Report</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--radius:16px;--shadow:0 14px 36px rgb(0 0 0/.22)}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.skip{position:fixed;top:8px;left:8px;transform:translateY(-150%);background:var(--blue);color:#06111f;padding:8px 12px;border-radius:8px;font-weight:800;z-index:20}.skip:focus{transform:none}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,.section{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}header{padding:30px;margin-bottom:20px}.section{padding:24px;margin:18px 0}h1,h2,h3{line-height:1.25;margin-top:0}h1{font-size:clamp(1.9rem,5vw,3rem);letter-spacing:-.025em;margin-bottom:8px}h2{font-size:1.45rem;border-bottom:1px solid var(--line);padding-bottom:10px}h3{font-size:1.08rem;margin-bottom:6px}.lead{font-size:1.1rem;max-width:82ch}.muted{color:var(--muted)}.badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:.78rem;font-weight:750;letter-spacing:.035em;text-transform:uppercase;margin-bottom:8px}.good{color:var(--green)}.warn{color:var(--yellow)}.bad{color:var(--red)}.info{color:var(--blue)}.badge.good{background:rgb(80 216 144/.14);border:1px solid rgb(80 216 144/.38)}.badge.warn{background:rgb(247 198 92/.14);border:1px solid rgb(247 198 92/.38)}.badge.info{background:rgb(101 181 255/.14);border:1px solid rgb(101 181 255/.38)}.callout{border-left:5px solid var(--yellow);background:rgb(247 198 92/.08);border-radius:8px;padding:14px 16px;margin:14px 0}.callout.ok{border-left-color:var(--green);background:rgb(80 216 144/.08)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.card,.metric,.step{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:16px}.metric strong{display:block;font-size:1.35rem}.table-wrap{overflow-x:auto;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:660px}th,td{text-align:left;vertical-align:top;padding:11px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.86rem;text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .38em;border-radius:5px}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap}nav[role=tablist]{display:flex;gap:8px;overflow-x:auto;padding:8px;margin:0 0 18px;border:1px solid var(--line);border-radius:12px;background:rgb(7 16 28/.72)}[role=tab]{appearance:none;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);padding:9px 13px;white-space:nowrap;font:inherit;font-weight:750;cursor:pointer}[role=tab][aria-selected=true]{color:var(--text);border-color:rgb(101 181 255/.45);background:rgb(101 181 255/.14)}.tabs-ready [role=tabpanel][hidden]{display:none}figure{margin:18px 0}svg{display:block;width:100%;height:auto;background:var(--code);border:1px solid var(--line);border-radius:12px}figcaption{color:var(--muted);margin-top:8px;font-size:.92rem}.axis{fill:var(--muted);font:13px system-ui}.label{fill:var(--text);font:600 14px system-ui}.node{fill:#182b43;stroke:var(--blue);stroke-width:2}.nodeText{fill:var(--text);font:650 14px system-ui;text-anchor:middle}.edge{fill:none;stroke:var(--muted);stroke-width:2.5;marker-end:url(#arrow)}ol.steps{list-style:none;padding:0;counter-reset:s}ol.steps>li{counter-increment:s;margin:14px 0}ol.steps>li:before{content:counter(s);float:left;display:grid;place-items:center;width:30px;height:30px;margin:1px 12px 0 0;border-radius:50%;background:var(--blue);color:#06111f;font-weight:800}.step{overflow:hidden}details{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}summary{cursor:pointer;color:var(--blue);font-weight:700}.tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.button{border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--text);padding:8px 12px;min-height:42px;font:inherit;font-weight:700;cursor:pointer}.status{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}footer{color:var(--muted);margin-top:24px;font-size:.9rem}@media(max-width:620px){main{width:min(100% - 18px,1120px);margin-top:10px}header,.section{padding:18px}nav[role=tablist]{position:sticky;top:0;z-index:5}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}@media print{:root{color-scheme:light}body{background:#fff;color:#111}main{width:100%;margin:0}header,.section,.card,.metric,.step{box-shadow:none;background:#fff;color:#111;border-color:#bbb;break-inside:avoid}nav[role=tablist],.skip,.tools{display:none!important}[role=tabpanel],[role=tabpanel][hidden]{display:block!important}pre,code,svg{background:#f1f3f5;color:#111}.muted,figcaption,footer{color:#444}a{color:#111}}
+</style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to report</a>
+<main id="content">
+<header>
+<span class="badge info">Implementation verification</span>
+<h1>Reliability and robustness implementation</h1>
+<p class="lead">Evidence-backed report for <strong>usrgrp-manager</strong>, based on the integrated worktree at baseline <code>0b154c1</code>, the canonical plan, four implementation handoffs, local ArchWiki references, deterministic checks, and a provider-diverse final review quorum.</p>
+<div class="callout"><strong>Conclusion:</strong> The justified code improvements are implemented and locally verified. The repository is substantially safer and more deterministic, but the overall plan remains <strong>incomplete</strong> until real account-tool and real PTY validation run in an explicitly approved disposable environment, and hosted CI is observed.</div>
+<p class="muted"><strong>Confidence: 94/100.</strong> Local code, tests, lint, docs, dependency policy, benchmark, and independent reviews are directly verified. Confidence is reduced by intentionally unexecuted external release gates.</p>
+<div class="tools"><button class="button" type="button" id="print">Print report</button><button class="button" type="button" id="copy">Copy report link</button></div>
+</header>
+<nav role="tablist" aria-label="Report sections">
+<button id="tab-overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0">Overview</button>
+<button id="tab-architecture" role="tab" aria-selected="false" aria-controls="architecture" tabindex="-1">Architecture</button>
+<button id="tab-validation" role="tab" aria-selected="false" aria-controls="validation" tabindex="-1">Validation</button>
+<button id="tab-review" role="tab" aria-selected="false" aria-controls="review" tabindex="-1">Review &amp; risks</button>
+<button id="tab-next" role="tab" aria-selected="false" aria-controls="next" tabindex="-1">Remaining gates</button>
+</nav>
+<section class="section" id="overview" role="tabpanel" aria-labelledby="tab-overview">
+<h2>Overview</h2>
+<div class="grid">
+<div class="metric"><span class="badge good">Passed</span><strong>81 tests</strong><span class="muted">Locked all-target/all-feature suite; one benign helper marker remains intentionally ignored.</span></div>
+<div class="metric"><span class="badge good">D7 passed</span><strong>10.20 ms / 0.21 ms</strong><span class="muted">Dense 100,000-edge fixture: search/render p95 against 50/16 ms limits.</span></div>
+<div class="metric"><span class="badge good">Quorum</span><strong>2 providers</strong><span class="muted">Kimi K3 and Claude Sonnet 4.5 final read-only reviews.</span></div>
+<div class="metric"><span class="badge warn">Pending</span><strong>3 external checks</strong><span class="muted">Disposable real tools, real PTY, and hosted workflow/actionlint evidence.</span></div>
+</div>
+<h3 style="margin-top:22px">Report map</h3>
+<div class="table-wrap"><table data-overview><thead><tr><th>Area</th><th>Implemented evidence</th><th>Status</th><th>Next action</th></tr></thead><tbody>
+<tr><td>Trusted system boundary</td><td>Typed validation/errors, checked eUID, closed programs, bounded child lifecycle, one-shot zeroizing secrets</td><td><span class="good">Locally verified</span></td><td>Validate real tools only in disposable Linux</td></tr>
+<tr><td>Operations and state</td><td>Stable identities, composite exact plans, aggregate reports, retry preconditions, stale snapshot retention</td><td><span class="good">Locally verified</span></td><td>Observe real postconditions in release environment</td></tr>
+<tr><td>UI and configuration</td><td>Immutable I/O-free renderers, cached memberships/diagnostics, stable pane identities, bounded config with atomic fault tests</td><td><span class="good">Locally verified</span></td><td>Real PTY cleanup validation</td></tr>
+<tr><td>Release gates</td><td>MSRV/stable workflow, SHA pins, deny/audit policy, dependency automation, corrected docs</td><td><span class="warn">External evidence pending</span></td><td>Run hosted CI and approved disposable tests</td></tr>
+</tbody></table></div>
+</section>
+<section class="section" id="architecture" role="tabpanel" aria-labelledby="tab-architecture">
+<h2>Architecture and implementation</h2>
+<div class="grid">
+<div class="card"><span class="badge good">Secrets</span><h3>No password-bearing argv</h3><p><code>SecretString</code> and <code>PasswordRecord</code> are non-debug, zeroizing, and stdin-only. Sudo authentication and <code>chpasswd</code> payload transport remain separate protocols.</p></div>
+<div class="card"><span class="badge good">Identity</span><h3>Fail closed</h3><p>Effective UID uses checked Linux APIs. Root is unconditionally immutable; service identities and elevation groups require an explicit injected policy.</p></div>
+<div class="card"><span class="badge good">Operations</span><h3>One exact composite plan</h3><p>Create/password/membership, password/expiry, and bulk actions share one validated preview and one aggregate completion/partial report.</p></div>
+<div class="card"><span class="badge good">Effects</span><h3>Rendering is pure</h3><p>Filesystem/process reads are outside <code>src/ui</code>. Diagnostics and membership edges are bounded and cached before frames render.</p></div>
+</div>
+<figure data-visual-kind="diagram" data-purpose="Explain the trusted mutation sequence">
+<svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 900 270"><title id="flow-title">Trusted mutation sequence</title><desc id="flow-desc">A UI action becomes a validated composite plan, is confirmed as a redacted preview, obtains one-shot elevation, runs bounded commands, and returns reconciliation evidence.</desc><defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker></defs>
+<path class="edge" d="M170 110H230"/><path class="edge" d="M390 110H450"/><path class="edge" d="M610 110H670"/>
+<rect class="node" x="20" y="70" width="150" height="80" rx="12"/><text class="nodeText" x="95" y="105">UI action</text><text class="nodeText" x="95" y="128">stable target</text>
+<rect class="node" x="230" y="70" width="160" height="80" rx="12"/><text class="nodeText" x="310" y="105">Composite plan</text><text class="nodeText" x="310" y="128">redacted preview</text>
+<rect class="node" x="450" y="70" width="160" height="80" rx="12"/><text class="nodeText" x="530" y="105">One-shot grant</text><text class="nodeText" x="530" y="128">bounded runner</text>
+<rect class="node" x="670" y="70" width="200" height="80" rx="12"/><text class="nodeText" x="770" y="105">Operation report</text><text class="nodeText" x="770" y="128">reconcile / stale</text></svg>
+<figcaption>Observed implementation flow across <code>src/app</code> and <code>src/sys</code>; command choice, privilege policy, target binding, and reconciliation remain inside the trusted adapter.</figcaption>
+</figure>
+</section>
+<section class="section" id="validation" role="tabpanel" aria-labelledby="tab-validation">
+<h2>Validation evidence</h2>
+<figure data-visual-kind="graph" data-purpose="Show benchmark consumption of the D7 latency budgets" data-source="cargo bench --bench search_and_render, release profile, dense 100,000-edge fixture">
+<svg role="img" aria-labelledby="bench-title bench-desc" viewBox="0 0 760 300"><title id="bench-title">D7 p95 latency as percent of budget</title><desc id="bench-desc">Search uses 20.4 percent of its 50 millisecond budget; rendering uses 1.3 percent of its 16 millisecond budget.</desc>
+<text class="axis" x="190" y="270">0%</text><text class="axis" x="650" y="270">100% of limit</text><line x1="190" y1="240" x2="670" y2="240" stroke="#2b3b55"/>
+<text class="label" x="20" y="100">Search p95</text><rect x="190" y="70" width="98" height="38" rx="6" fill="#65b5ff"/><text class="label" x="300" y="96">10.197 ms / 50 ms</text>
+<text class="label" x="20" y="180">Render p95</text><rect x="190" y="150" width="7" height="38" rx="4" fill="#50d890"/><text class="label" x="210" y="176">0.206 ms / 16 ms</text></svg>
+<figcaption>Release-mode measurement on the current x86_64 Linux host, 100 samples, 10,000 users, 10,000 groups, and 100,000 cached membership edges. Exact values vary by host; both are below the recorded D7 limits.</figcaption>
+</figure>
+<div class="table-wrap"><table><thead><tr><th>Command/evidence</th><th>Result</th><th>What it proves</th><th>Limitation</th></tr></thead><tbody>
+<tr><td><code>cargo clippy --workspace --all-targets --all-features --locked -- -D warnings</code></td><td class="good">Pass</td><td>Production, tests, and benchmark are warning-clean</td><td>Local toolchain execution</td></tr>
+<tr><td><code>cargo test --workspace --all-targets --all-features --locked</code></td><td class="good">81 pass</td><td>Deterministic trusted-boundary, action, config, UI, terminal, and guard coverage</td><td>No real account tools by design</td></tr>
+<tr><td><code>cargo +1.89.0 test …</code> and no-default/docs gates</td><td class="good">Pass</td><td>Declared MSRV and feature modes compile/test</td><td>Hosted runner not observed</td></tr>
+<tr><td><code>cargo deny check</code>, <code>cargo audit</code>, duplicate tree</td><td class="good">Policy pass</td><td>Reviewed license/source/advisory policy</td><td>Three allowed warnings and duplicate families remain documented</td></tr>
+<tr><td>Static guards</td><td class="good">Pass</td><td>Integration and source unit tests cannot introduce production runners or direct account-tool spawns</td><td>Guard is source-pattern based</td></tr>
+</tbody></table></div>
+</section>
+<section class="section" id="review" role="tabpanel" aria-labelledby="tab-review">
+<h2>Independent review and risk disposition</h2>
+<div class="callout ok"><strong>Review quorum satisfied:</strong> the bounded retry/diversity gate returned 2/2 qualifying successes from distinct provider families. Runtime metadata identifies <code>00732c51</code> as Anthropic Claude Sonnet 4.5 and <code>3b4a5a53</code> as Moonshot Kimi K3. Both reviews reported no blocker after the accepted fixes.</div>
+<div class="table-wrap"><table><thead><tr><th>Finding</th><th>Disposition</th><th>Evidence</th></tr></thead><tbody>
+<tr><td>Round-1 blockers/high/medium findings</td><td class="good">Accepted, fixed, revalidated</td><td>Composite operations, retry, grants, policy, terminal/child cleanup, shadow, bounds, CI, metadata, config and selection tests</td></tr>
+<tr><td>Dense per-frame member scan</td><td class="good">Accepted, fixed</td><td>Bounded <code>user_group_gids</code> cache; dense 100,000-edge benchmark passes</td></tr>
+<tr><td>Source unit-test guard gap</td><td class="good">Accepted, fixed</td><td><code>core_static_guards</code> now scans integration tests and <code>#[cfg(test)]</code> source sections</td></tr>
+<tr><td>Supply-chain warnings/duplicates</td><td class="warn">Deferred, reviewed risk</td><td>Owner and review expiry recorded; no forced incompatible upgrade without evidence</td></tr>
+<tr><td>Hosted CI/actionlint</td><td class="warn">External verification pending</td><td>Workflow structure and local commands pass; hosted execution is not locally reproducible</td></tr>
+<tr><td>Real tools and PTY</td><td class="warn">External verification pending</td><td>Intentionally not run on the host; requires explicit approval for disposable infrastructure</td></tr>
+</tbody></table></div>
+<details><summary>Review artifacts</summary><ul><li><a href="../plans/reviews/reliability-final-anthropic.md">Final Anthropic review</a></li><li><a href="../plans/reviews/reliability-final-moonshot.md">Final Moonshot review</a></li><li><a href="../plans/planned/reliability-robustness.md">Canonical plan and dispositions</a></li></ul></details>
+</section>
+<section class="section" id="next" role="tabpanel" aria-labelledby="tab-next">
+<h2>Remaining release and completion gates</h2>
+<ol class="steps">
+<li class="step"><h3>Approve disposable real-tool validation</h3><p>Run account lifecycle and integrity checks only inside an explicitly approved disposable Linux container/VM. Verify <code>pwck</code>/<code>grpck</code>, mutation postconditions, sudo timestamp behavior, partial failure evidence, and secret redaction. Do not run these commands against the host.</p><p class="muted"><strong>Done when:</strong> bounded logs and final disposable state are recorded without secrets.</p></li>
+<li class="step"><h3>Validate a real PTY and hosted workflow</h3><p>Exercise terminal partial initialization/panic/error paths in a disposable PTY and observe the GitHub-hosted MSRV/stable workflow or run <code>actionlint</code> when available.</p><p class="muted"><strong>Done when:</strong> cleanup and hosted workflow evidence are attached to the plan.</p></li>
+<li class="step"><h3>Close and archive only after external evidence</h3><p>Update remaining milestone checkboxes, record external evidence and accepted risks, rerun final checks, then move the canonical plan from <code>plans/planned/</code> to ignored <code>plans/archive/</code>.</p><p class="muted"><strong>Done when:</strong> no completion criterion remains open and the report/plan links remain valid.</p></li>
+</ol>
+<div class="callout"><strong>Safety boundary:</strong> Docker is available on the host, but no image pull, privileged container, real account mutation, or PTY mutation was started because that external side effect requires explicit approval.</div>
+<h3>Source notes</h3><ul><li><code>/usr/share/doc/arch-wiki/html/en/Users_and_groups.html</code> — local passwd/group records, account tools, and <code>pwck</code>/<code>grpck</code> integrity checks.</li><li><code>/usr/share/doc/arch-wiki/html/en/Sudo.html</code> — timestamp behavior and security implications.</li><li>Repository evidence: canonical plan, handoffs, final review artifacts, Cargo checks, benchmark output, and current diff.</li></ul>
+</section>
+<footer><p><strong>Status:</strong> code-ready, release-gate incomplete. Generated 2026-08-01. No secrets or private logs are embedded.</p></footer>
+<div id="status" class="status" role="status" aria-live="polite"></div>
+</main>
+<script>
+(()=>{document.documentElement.classList.add('tabs-ready');const tabs=[...document.querySelectorAll('[role=tab]')];function activate(tab,hash=true){tabs.forEach(t=>{const on=t===tab;t.setAttribute('aria-selected',String(on));t.tabIndex=on?0:-1;document.getElementById(t.getAttribute('aria-controls')).hidden=!on});if(hash)history.replaceState(null,'','#'+tab.getAttribute('aria-controls'))}tabs.forEach((tab,i)=>{tab.addEventListener('click',()=>activate(tab));tab.addEventListener('keydown',e=>{let n=null;if(e.key==='ArrowRight')n=(i+1)%tabs.length;if(e.key==='ArrowLeft')n=(i-1+tabs.length)%tabs.length;if(e.key==='Home')n=0;if(e.key==='End')n=tabs.length-1;if(n!==null){e.preventDefault();activate(tabs[n]);tabs[n].focus()}})});const hash=location.hash.slice(1);activate(tabs.find(t=>t.getAttribute('aria-controls')===hash)||tabs[0],false);document.getElementById('print').addEventListener('click',()=>print());document.getElementById('copy').addEventListener('click',async()=>{const s=document.getElementById('status');try{await navigator.clipboard.writeText(location.href);s.textContent='Report link copied.'}catch{s.textContent='Copy unavailable; use the address bar.'}})})();
+</script>
+</body>
+</html>

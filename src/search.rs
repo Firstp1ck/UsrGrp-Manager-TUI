@@ -1,393 +1,297 @@
-//! Search utilities for filtering users and groups.
-//!
-//! Currently provides [`apply_filters_and_search`] which filters the `AppState` in-place
-//! based on the current input mode and query string.
-//!
+//! Pure search/filter reducers plus an explicit shadow-refresh effect.
+
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Read,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+const MAX_SHADOW_BYTES: usize = 1024 * 1024;
+const MAX_SHADOW_RECORD_BYTES: usize = 8192;
+const MAX_QUERY_BYTES: usize = 256;
+
 use crate::app::{AppState, GroupsFilter, InputMode, UsersFilter};
-use std::collections::HashMap;
 
-type ShadowMap = HashMap<String, ShadowStatus>;
-type ShadowMapResult = std::io::Result<ShadowMap>;
-type ShadowProviderFn = dyn Fn() -> ShadowMapResult;
-
-/// Filter the visible users or groups of `app` according to the lowercase query.
-///
-/// - In `SearchUsers`, filters by username, full name, home directory, shell, UID, or GID.
-/// - In `SearchGroups`, filters by group name, GID, or any member name.
-/// - For empty queries, restores the full lists.
-pub fn apply_filters_and_search(app: &mut AppState) {
-    let q = app.search_query.to_lowercase();
-
-    // Users view
-    let mut users_view = app.users_all.clone();
-    if let Some(f) = app.users_filter {
-        match f {
-            UsersFilter::OnlyUserIds => users_view.retain(|u| u.uid >= 1000),
-            UsersFilter::OnlySystemIds => users_view.retain(|u| u.uid < 1000),
-        }
-    }
-
-    // Apply chip filters (combinable)
-    {
-        let chips = &app.users_filter_chips;
-        if chips.human_only {
-            users_view.retain(|u| u.uid >= 1000);
-        }
-        if chips.system_only {
-            users_view.retain(|u| u.uid < 1000);
-        }
-        if chips.inactive {
-            users_view.retain(|u| {
-                let sh = u.shell.to_ascii_lowercase();
-                sh.contains("nologin") || sh.ends_with("/false")
-            });
-        }
-        if chips.no_home {
-            users_view.retain(|u| !std::path::Path::new(&u.home_dir).exists());
-        }
-        // System-backed filters via /etc/shadow (best-effort; ignored if unreadable)
-        if (chips.locked || chips.no_password || chips.expired)
-            && let Ok(shadow) = get_shadow_status()
-        {
-            if chips.locked {
-                users_view.retain(|u| shadow.get(&u.name).map(|s| s.locked).unwrap_or(false));
-            }
-            if chips.no_password {
-                users_view.retain(|u| shadow.get(&u.name).map(|s| s.no_password).unwrap_or(false));
-            }
-            if chips.expired {
-                users_view.retain(|u| shadow.get(&u.name).map(|s| s.expired).unwrap_or(false));
-            }
-        }
-    }
-    if matches!(app.input_mode, InputMode::SearchUsers) && !q.is_empty() {
-        users_view.retain(|u| {
-            u.name.to_lowercase().contains(&q)
-                || u.full_name
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&q)
-                || u.home_dir.to_lowercase().contains(&q)
-                || u.shell.to_lowercase().contains(&q)
-                || u.uid.to_string().contains(&q)
-                || u.primary_gid.to_string().contains(&q)
-        });
-    }
-    app.users = users_view;
-    app.selected_user_index = 0.min(app.users.len().saturating_sub(1));
-
-    // Groups view
-    let mut groups_view = app.groups_all.clone();
-    if let Some(f) = app.groups_filter {
-        match f {
-            GroupsFilter::OnlyUserGids => groups_view.retain(|g| g.gid >= 1000),
-            GroupsFilter::OnlySystemGids => groups_view.retain(|g| g.gid < 1000),
-        }
-    }
-    if matches!(app.input_mode, InputMode::SearchGroups) && !q.is_empty() {
-        groups_view.retain(|g| {
-            g.name.to_lowercase().contains(&q)
-                || g.gid.to_string().contains(&q)
-                || g.members.iter().any(|m| m.to_lowercase().contains(&q))
-        });
-    }
-    app.groups = groups_view;
-    app.selected_group_index = 0.min(app.groups.len().saturating_sub(1));
-}
-
-// Lightweight shadow status used for filters and details
-/// Represents password status information for a user from `/etc/shadow`.
-///
-/// This struct contains flags and timestamps related to a user's password state,
-/// as read from the `/etc/shadow` file (when readable). This information is used
-/// both for filtering and for displaying detailed user information.
-#[derive(Clone, Debug)]
+/// Password status cached during an explicit refresh.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShadowStatus {
-    /// Whether the password is locked (starts with '!', '*', or '!!').
     pub locked: bool,
-    /// Whether no password is set (empty password field).
     pub no_password: bool,
-    /// Whether the password has expired based on `/etc/shadow` rules.
     pub expired: bool,
-    /// Days since epoch when the password was last changed (if available).
     pub last_change_days: Option<i64>,
-    /// Absolute days since epoch when the account will expire (if specified).
     pub expire_abs_days: Option<i64>,
 }
 
-/// Read password status from `/etc/shadow` for all users.
-///
-/// This function is best-effort and may fail if:
-/// - Running on a non-Unix system
-/// - Insufficient permissions to read `/etc/shadow`
-/// - The file format is unexpected
-///
-/// # Returns
-///
-/// `std::io::Result<HashMap<String, ShadowStatus>>` mapping usernames to their shadow status.
-fn read_shadow_status() -> ShadowMapResult {
-    #[cfg(unix)]
-    {
-        use std::fs;
-        use std::os::unix::fs::MetadataExt;
-        use std::time::{SystemTime, UNIX_EPOCH};
+/// Shadow data is never guessed from metadata.  Unavailable is distinct from
+/// known false and causes shadow-dependent filters to remain visibly inactive.
+#[derive(Clone, Debug)]
+pub enum ShadowState {
+    Known(HashMap<String, ShadowStatus>),
+    Unavailable { reason: String },
+}
 
-        // Quick permission check: if not root and cannot read, bail fast
-        if fs::metadata("/etc/shadow")
-            .map(|m| m.mode() & 0o004 == 0)
-            .unwrap_or(true)
-        {
-            // Likely unreadable, return an error to signal caller to skip filters
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "shadow unreadable",
-            ));
+impl Default for ShadowState {
+    fn default() -> Self {
+        Self::Unavailable {
+            reason: "shadow data has not been refreshed".to_owned(),
         }
+    }
+}
 
-        let contents = fs::read_to_string("/etc/shadow")?;
-        let today_days: i64 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| (d.as_secs() / 86_400) as i64)
-            .unwrap_or(0);
-        let mut map: ShadowMap = HashMap::new();
-        for line in contents.lines() {
-            if line.trim().is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let name = parts[0].to_string();
-            let pw = parts[1];
-            let lastchg: i64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let max: i64 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(-1);
-            let expire_abs: i64 = parts.get(7).and_then(|s| s.parse().ok()).unwrap_or(-1);
+/// Per-account shadow status. A readable source can still have no usable
+/// record for a passwd account, which is explicitly `Unknown` rather than a
+/// false status or a source-wide availability claim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccountShadowState {
+    Known(ShadowStatus),
+    Unknown { reason: &'static str },
+    Unavailable { reason: String },
+}
 
-            let locked = pw.starts_with('!') || pw == "*" || pw == "!!";
-            let no_password = pw.is_empty();
-            let expired_by_max = max >= 0 && lastchg > 0 && (lastchg + max) <= today_days;
-            let expired_by_abs = expire_abs >= 0 && expire_abs <= today_days;
-            let expired = expired_by_max || expired_by_abs;
-
-            map.insert(
-                name,
-                ShadowStatus {
-                    locked,
-                    no_password,
-                    expired,
-                    last_change_days: if lastchg > 0 { Some(lastchg) } else { None },
-                    expire_abs_days: if expire_abs >= 0 {
-                        Some(expire_abs)
-                    } else {
-                        None
-                    },
-                },
-            );
+impl ShadowState {
+    /// Compatibility lookup for renderers that only need a known value.
+    pub fn status(&self, username: &str) -> Option<&ShadowStatus> {
+        match self {
+            Self::Known(statuses) => statuses.get(username),
+            Self::Unavailable { .. } => None,
         }
-        Ok(map)
     }
 
-    #[cfg(not(unix))]
+    /// Return the honest account-level state required by filters and reports.
+    pub fn account_status(&self, username: &str) -> AccountShadowState {
+        match self {
+            Self::Known(statuses) => statuses
+                .get(username)
+                .cloned()
+                .map(AccountShadowState::Known)
+                .unwrap_or(AccountShadowState::Unknown {
+                    reason: "no usable shadow record for local passwd account",
+                }),
+            Self::Unavailable { reason } => AccountShadowState::Unavailable {
+                reason: reason.clone(),
+            },
+        }
+    }
+
+    pub fn availability_label(&self) -> &'static str {
+        match self {
+            Self::Known(_) => "known",
+            Self::Unavailable { .. } => "unavailable",
+        }
+    }
+}
+
+/// Explicitly read `/etc/shadow` once.  This is an application effect, never a
+/// renderer or filter side effect.  Actual open/read results determine state.
+pub fn read_shadow_state() -> ShadowState {
+    #[cfg(target_os = "linux")]
     {
-        // Shadow file is Unix/Linux specific, not available on Windows
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "/etc/shadow not available on this platform",
-        ))
+        match read_shadow_file() {
+            Ok(contents) => ShadowState::Known(parse_shadow_records(&contents, today_days())),
+            Err(error) => ShadowState::Unavailable {
+                reason: format!("shadow refresh failed: {}", error.kind()),
+            },
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        ShadowState::Unavailable {
+            reason: "shadow data is supported only on Linux".to_owned(),
+        }
     }
 }
 
-fn get_shadow_status() -> ShadowMapResult {
-    if let Some(res) = SHADOW_PROVIDER.with(|p| p.borrow().as_ref().map(|f| f())) {
-        return res;
+fn today_days() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| (duration.as_secs() / 86_400) as i64)
+        .unwrap_or_default()
+}
+
+fn read_shadow_file() -> std::io::Result<String> {
+    let mut file = File::open("/etc/shadow")?;
+    let mut bytes = Vec::with_capacity(MAX_SHADOW_BYTES.min(8192));
+    file.by_ref()
+        .take((MAX_SHADOW_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SHADOW_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "shadow file exceeds configured byte limit",
+        ));
     }
-    read_shadow_status()
+    String::from_utf8(bytes)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "shadow is not UTF-8"))
 }
 
-/// Best-effort lookup of a single user's shadow status for details display.
-///
-/// Returns `None` if:
-/// - Shadow file is unreadable
-/// - User is not present in the shadow file
-/// - Running on a non-Unix system
-///
-/// # Arguments
-///
-/// * `username` - The user to look up.
-///
-/// # Returns
-///
-/// `Option<ShadowStatus>` containing the user's password status if available.
-pub fn user_shadow_status(username: &str) -> Option<ShadowStatus> {
-    get_shadow_status()
-        .ok()
-        .and_then(|m| m.get(username).cloned())
-}
-
-thread_local! {
-    static SHADOW_PROVIDER: std::cell::RefCell<Option<Box<ShadowProviderFn>>> = std::cell::RefCell::new(None);
-}
-
-/// Set a custom shadow status provider function for testing.
-///
-/// This allows tests to provide mock shadow data without actually reading
-/// `/etc/shadow`. The provided function will be called instead of the default
-/// implementation.
-///
-/// # Arguments
-///
-/// * `f` - A function that returns a map of username to [`ShadowStatus`].
-#[allow(dead_code)]
-pub fn set_shadow_provider<F>(f: F)
-where
-    F: Fn() -> ShadowMapResult + 'static,
-{
-    SHADOW_PROVIDER.with(|p| *p.borrow_mut() = Some(Box::new(f)));
-}
-
-/// Clear the custom shadow status provider, reverting to the default implementation.
-#[allow(dead_code)]
-pub fn clear_shadow_provider() {
-    SHADOW_PROVIDER.with(|p| *p.borrow_mut() = None);
-}
-
-/// Create a mock [`ShadowStatus`] for testing purposes.
-///
-/// # Arguments
-///
-/// * `locked` - Whether the password is locked.
-/// * `no_password` - Whether no password is set.
-/// * `expired` - Whether the password is expired.
-#[allow(dead_code)]
-pub fn make_shadow_status(locked: bool, no_password: bool, expired: bool) -> ShadowStatus {
-    ShadowStatus {
-        locked,
-        no_password,
-        expired,
-        last_change_days: None,
-        expire_abs_days: None,
+/// Truncate a query by bytes while preserving a valid UTF-8 boundary.
+pub fn truncate_query_bytes(query: &str) -> String {
+    if query.len() <= MAX_QUERY_BYTES {
+        return query.to_owned();
     }
+    let mut end = MAX_QUERY_BYTES;
+    while !query.is_char_boundary(end) {
+        end -= 1;
+    }
+    query[..end].to_owned()
+}
+
+pub fn parse_shadow_records(contents: &str, today: i64) -> HashMap<String, ShadowStatus> {
+    const MAX_RECORDS: usize = 100_000;
+    let mut statuses = HashMap::new();
+    for line in contents
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .take(MAX_RECORDS)
+    {
+        if line.len() > MAX_SHADOW_RECORD_BYTES {
+            continue;
+        }
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.len() < 2 || fields[0].is_empty() {
+            continue;
+        }
+        let password = fields[1];
+        let last_change = fields.get(2).and_then(|value| value.parse::<i64>().ok());
+        let maximum_age = fields.get(4).and_then(|value| value.parse::<i64>().ok());
+        let absolute_expiry = fields.get(7).and_then(|value| value.parse::<i64>().ok());
+        // `chage -d 0` records day zero to force a password change. Preserve
+        // that distinct must-change state rather than treating it as unknown.
+        let must_change = last_change == Some(0);
+        let expired_by_age = matches!((last_change, maximum_age), (Some(last), Some(maximum)) if last > 0 && maximum >= 0 && last + maximum <= today);
+        let expired_by_date = absolute_expiry.is_some_and(|expiry| expiry >= 0 && expiry <= today);
+        statuses.insert(
+            fields[0].to_owned(),
+            ShadowStatus {
+                locked: password.starts_with('!') || password == "*",
+                no_password: password.is_empty(),
+                expired: must_change || expired_by_age || expired_by_date,
+                last_change_days: last_change.filter(|value| *value >= 0),
+                expire_abs_days: absolute_expiry.filter(|value| *value >= 0),
+            },
+        );
+    }
+    statuses
+}
+
+/// Purely filter `AppState` from cached state.  It performs no filesystem or
+/// process I/O and preserves selected identities where still visible.
+pub fn apply_filters_and_search(app: &mut AppState) {
+    let selected_user = app.users.get(app.selected_user_index).map(|user| user.uid);
+    let selected_group = app
+        .groups
+        .get(app.selected_group_index)
+        .map(|group| group.gid);
+    app.search_query = truncate_query_bytes(&app.search_query).to_ascii_lowercase();
+    let query = app.search_query.as_str();
+
+    let mut users = app.users_all.clone();
+    if let Some(filter) = app.users_filter {
+        match filter {
+            UsersFilter::OnlyUserIds => users.retain(|user| user.uid >= 1000),
+            UsersFilter::OnlySystemIds => users.retain(|user| user.uid < 1000),
+        }
+    }
+    let chips = &app.users_filter_chips;
+    if chips.human_only {
+        users.retain(|user| user.uid >= 1000);
+    }
+    if chips.system_only {
+        users.retain(|user| user.uid < 1000);
+    }
+    if chips.inactive {
+        users.retain(|user| {
+            let shell = user.shell.to_ascii_lowercase();
+            shell.contains("nologin") || shell.ends_with("/false")
+        });
+    }
+    if chips.no_home {
+        users.retain(|user| {
+            app.diagnostics
+                .homes
+                .get(&user.name)
+                .and_then(|diagnostic| diagnostic.exists)
+                .is_some_and(|exists| !exists)
+        });
+    }
+    if (chips.locked || chips.no_password || chips.expired)
+        && let ShadowState::Known(statuses) = &app.diagnostics.shadow
+    {
+        // Do not claim a complete status filter when any visible account is
+        // unknown to shadow.  The UI keeps the selected filter visible and
+        // reports shadow availability separately.
+        if users.iter().all(|user| statuses.contains_key(&user.name)) {
+            if chips.locked {
+                users.retain(|user| statuses[&user.name].locked);
+            }
+            if chips.no_password {
+                users.retain(|user| statuses[&user.name].no_password);
+            }
+            if chips.expired {
+                users.retain(|user| statuses[&user.name].expired);
+            }
+        }
+    }
+    if matches!(app.input_mode, InputMode::SearchUsers) && !query.is_empty() {
+        users.retain(|user| {
+            user.name.to_ascii_lowercase().contains(query)
+                || user
+                    .full_name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .contains(query)
+                || user.home_dir.to_ascii_lowercase().contains(query)
+                || user.shell.to_ascii_lowercase().contains(query)
+                || user.uid.to_string().contains(query)
+                || user.primary_gid.to_string().contains(query)
+        });
+    }
+    app.users = users;
+    app.selected_user_index = selected_user
+        .and_then(|uid| app.users.iter().position(|user| user.uid == uid))
+        .unwrap_or(0)
+        .min(app.users.len().saturating_sub(1));
+
+    let mut groups = app.groups_all.clone();
+    if let Some(filter) = app.groups_filter {
+        match filter {
+            GroupsFilter::OnlyUserGids => groups.retain(|group| group.gid >= 1000),
+            GroupsFilter::OnlySystemGids => groups.retain(|group| group.gid < 1000),
+        }
+    }
+    if matches!(app.input_mode, InputMode::SearchGroups) && !query.is_empty() {
+        groups.retain(|group| {
+            group.name.to_ascii_lowercase().contains(query)
+                || group.gid.to_string().contains(query)
+                || group
+                    .members
+                    .iter()
+                    .any(|member| member.to_ascii_lowercase().contains(query))
+        });
+    }
+    app.groups = groups;
+    app.selected_group_index = selected_group
+        .and_then(|gid| app.groups.iter().position(|group| group.gid == gid))
+        .unwrap_or(0)
+        .min(app.groups.len().saturating_sub(1));
+    app.selected_group_member_index = app.selected_group_member_index.min(
+        app.groups
+            .get(app.selected_group_index)
+            .map_or(0, |group| group.members.len().saturating_sub(1)),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ActiveTab, Theme, UsersFocus};
-    use ratatui::widgets::TableState;
-    use std::time::Instant;
-
-    fn mk_user(
-        uid: u32,
-        name: &str,
-        gid: u32,
-        full: Option<&str>,
-        home: &str,
-        shell: &str,
-    ) -> crate::sys::SystemUser {
-        crate::sys::SystemUser {
-            uid,
-            name: name.to_string(),
-            primary_gid: gid,
-            full_name: full.map(|s| s.to_string()),
-            home_dir: home.to_string(),
-            shell: shell.to_string(),
-        }
-    }
-
-    fn mk_group(gid: u32, name: &str, members: &[&str]) -> crate::sys::SystemGroup {
-        crate::sys::SystemGroup {
-            gid,
-            name: name.to_string(),
-            members: members.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-
-    fn mk_app(
-        users: Vec<crate::sys::SystemUser>,
-        groups: Vec<crate::sys::SystemGroup>,
-    ) -> crate::app::AppState {
-        crate::app::AppState {
-            started_at: Instant::now(),
-            users_all: users.clone(),
-            users,
-            groups_all: groups.clone(),
-            groups,
-            active_tab: ActiveTab::Users,
-            selected_user_index: 0,
-            selected_group_index: 0,
-            selected_group_member_index: 0,
-            rows_per_page: 10,
-            _table_state: TableState::default(),
-            input_mode: InputMode::Normal,
-            search_query: String::new(),
-            theme: Theme::dark(),
-            keymap: crate::app::keymap::Keymap::default(),
-            modal: None,
-            users_focus: UsersFocus::UsersList,
-            groups_focus: crate::app::GroupsFocus::GroupsList,
-            sudo_password: None,
-            users_filter: None,
-            groups_filter: None,
-            users_filter_chips: Default::default(),
-            actions_context: None,
-            show_keybinds: true,
-        }
-    }
 
     #[test]
-    fn search_users_filters_by_multiple_fields() {
-        let users = vec![
-            mk_user(
-                1000,
-                "alice",
-                1000,
-                Some("Alice A"),
-                "/home/alice",
-                "/bin/zsh",
-            ),
-            mk_user(
-                1001,
-                "bob",
-                1001,
-                Some("Bobby Tables"),
-                "/home/bob",
-                "/bin/bash",
-            ),
-        ];
-        let mut app = mk_app(users, vec![]);
-        app.input_mode = InputMode::SearchUsers;
-        app.search_query = "bOb".to_string();
-        app.input_mode = InputMode::SearchUsers;
-        apply_filters_and_search(&mut app);
-
-        assert_eq!(app.users.len(), 1);
-        assert_eq!(app.users[0].name, "bob");
-    }
-
-    #[test]
-    fn search_groups_filters_by_name_gid_or_members() {
-        let users = vec![
-            mk_user(1000, "alice", 1000, None, "/home/alice", "/bin/zsh"),
-            mk_user(1001, "bob", 1001, None, "/home/bob", "/bin/bash"),
-        ];
-        let groups = vec![
-            mk_group(1000, "users", &["alice"]),
-            mk_group(1001, "wheel", &["root", "bob"]),
-        ];
-        let mut app = mk_app(users, groups);
-        app.input_mode = InputMode::SearchGroups;
-        app.search_query = "wh".to_string();
-        app.input_mode = InputMode::SearchGroups;
-        apply_filters_and_search(&mut app);
-        assert_eq!(app.groups.len(), 1);
-        assert_eq!(app.groups[0].name, "wheel");
-
-        app.search_query = "bob".to_string();
-        app.input_mode = InputMode::SearchGroups;
-        apply_filters_and_search(&mut app);
-        assert_eq!(app.groups.len(), 1);
-        assert_eq!(app.groups[0].name, "wheel");
+    fn parser_marks_known_shadow_status() {
+        let statuses = parse_shadow_records("alice:!:1:0:30::::\nbob::1:0:30::::\n", 50);
+        assert!(statuses["alice"].locked);
+        assert!(statuses["bob"].no_password);
+        assert!(statuses["alice"].expired);
     }
 }

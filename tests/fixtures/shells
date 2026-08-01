@@ -1,0 +1,4 @@
+# valid shells
+/bin/sh
+/bin/bash
+not/absolute

@@ -1,302 +1,177 @@
-//! Keybinding configuration: parse `keybinds.conf`, provide defaults, and map keys to actions.
-//!
-//! This module manages keyboard shortcuts for the TUI. It supports:
-//! - Loading custom keybindings from a config file (`keybinds.conf`)
-//! - Providing sensible defaults if no config is present
-//! - Resolving key presses (with modifiers) to semantic actions
-//! - Exporting the current keymap back to a file for reference or customization
+//! Lossless, atomically persisted keyboard configuration.
+
+use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Semantic keyboard actions that can be bound to key combinations.
-///
-/// Each action represents a distinct operation in the TUI. Multiple key combinations
-/// can map to the same action, allowing for flexibility (e.g., both 'j' and Down arrow
-/// can move down).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum KeyAction {
-    /// Exit the application.
     Quit,
-    /// Open the filter menu modal.
     OpenFilterMenu,
-    /// Display the help/keybindings reference.
     OpenHelp,
-    /// Start/enter search mode.
     StartSearch,
-    /// Trigger "new user" or "new group" creation.
     NewUser,
-    /// Delete the currently selected item.
     DeleteSelection,
-    /// Switch between Users and Groups tabs.
     SwitchTab,
-    /// Toggle focus between main list and supplementary pane on Users screen.
     ToggleUsersFocus,
-    /// Toggle focus between main list and members pane on Groups screen.
     ToggleGroupsFocus,
-    /// Toggle the visibility of the keybindings panel on the right.
     ToggleKeybindsPane,
-    /// Open an action menu for the selected item (user or group).
     EnterAction,
-    /// Move up in the current list.
     MoveUp,
-    /// Move down in the current list.
     MoveDown,
-    /// Move to the previous page of results.
     PageUp,
-    /// Move to the next page of results.
     PageDown,
-    /// Move left in pagination (previous page).
     MoveLeftPage,
-    /// Move right in pagination (next page).
     MoveRightPage,
-    /// Ignore this key (used for keys that shouldn't trigger anything).
     Ignore,
 }
 
-/// Manages keybinding configuration and key-to-action resolution.
-///
-/// The keymap uses a canonical mapping from `(KeyModifiers, KeyCode)` pairs to [`KeyAction`]s.
-/// It supports loading from and saving to a configuration file, with sensible defaults if
-/// no custom config is present.
 #[derive(Clone, Debug)]
 pub struct Keymap {
-    /// Canonical mapping from (modifiers, code) to action.
-    bindings: std::collections::HashMap<(KeyModifiers, KeyCode), KeyAction>,
+    bindings: HashMap<(KeyModifiers, KeyCode), KeyAction>,
 }
 
 impl Keymap {
-    /// Create a keymap with default keybindings.
-    ///
-    /// Includes:
-    /// - Arrow keys and vim-style keys (hjkl) for navigation
-    /// - Common keys like q (quit), / (search), n (new), f (filter)
-    /// - Tab/BackTab for pane switching
-    /// - Page Up/Down for pagination
     pub fn new_defaults() -> Self {
+        use KeyAction::*;
         use KeyCode::*;
-        use KeyModifiers as M;
-        let mut bindings = std::collections::HashMap::new();
-        // Core actions matching current hardcoded behavior
-        bindings.insert((M::NONE, Char('q')), KeyAction::Quit);
-        bindings.insert((M::NONE, Esc), KeyAction::Ignore);
-        bindings.insert((M::NONE, Char('f')), KeyAction::OpenFilterMenu);
-        bindings.insert((M::NONE, Char('/')), KeyAction::StartSearch);
-        bindings.insert((M::NONE, Char('n')), KeyAction::NewUser);
-        bindings.insert((M::NONE, Char('?')), KeyAction::OpenHelp);
-        bindings.insert((M::NONE, KeyCode::Delete), KeyAction::DeleteSelection);
-        bindings.insert((M::NONE, Tab), KeyAction::SwitchTab);
-        // Shift+Tab is BackTab in crossterm
-        bindings.insert((M::NONE, BackTab), KeyAction::ToggleUsersFocus);
-        // Some terminals report BackTab with SHIFT modifier, and some send Tab+SHIFT
-        bindings.insert((M::SHIFT, BackTab), KeyAction::ToggleUsersFocus);
-        bindings.insert((M::SHIFT, Tab), KeyAction::ToggleUsersFocus);
-        // Ctrl+Tab no longer toggles panes in Groups
-
-        bindings.insert((M::NONE, Enter), KeyAction::EnterAction);
-        // Navigation
-        bindings.insert((M::NONE, Up), KeyAction::MoveUp);
-        bindings.insert((M::NONE, Down), KeyAction::MoveDown);
-        bindings.insert((M::NONE, Left), KeyAction::MoveLeftPage);
-        bindings.insert((M::NONE, Right), KeyAction::MoveRightPage);
-        // Vim-like keys
-        bindings.insert((M::NONE, Char('k')), KeyAction::MoveUp);
-        bindings.insert((M::NONE, Char('j')), KeyAction::MoveDown);
-        bindings.insert((M::NONE, Char('h')), KeyAction::MoveLeftPage);
-        bindings.insert((M::NONE, Char('l')), KeyAction::MoveRightPage);
-        // Toggle keybindings pane (support Shift+K variants across terminals)
-        bindings.insert((M::SHIFT, Char('k')), KeyAction::ToggleKeybindsPane);
-        bindings.insert((M::SHIFT, Char('K')), KeyAction::ToggleKeybindsPane);
-        bindings.insert((M::NONE, Char('K')), KeyAction::ToggleKeybindsPane);
-
-        // Page keys
-        bindings.insert((M::NONE, PageUp), KeyAction::PageUp);
-        bindings.insert((M::NONE, PageDown), KeyAction::PageDown);
-
-        Self { bindings }
-    }
-
-    /// Load a keymap from a file, or create defaults if the file doesn't exist.
-    ///
-    /// This is the main entry point for loading user configuration. It first checks
-    /// if the specified path exists; if not, it looks for the file in standard config
-    /// locations. If still not found, it creates a fresh default keymap and writes it
-    /// to the specified path for future customization.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - The path to the keymap configuration file.
-    pub fn load_or_init(path: &str) -> Self {
-        let p = std::path::Path::new(path);
-        if p.exists() {
-            return Self::from_file(path).unwrap_or_default();
-        }
-        if let Some(existing) = crate::app::config_file_read_path("keybinds.conf") {
-            return Self::from_file(&existing).unwrap_or_default();
-        }
-        let km = Self::default();
-        let _ = km.write_file(path);
-        km
-    }
-
-    /// Load a keymap from a configuration file.
-    ///
-    /// The file should use the format: `<Action> = <KeySpec>` or the legacy
-    /// `<KeySpec> = <Action>` format. The method starts from defaults and overrides
-    /// with user-specified bindings.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to the keymap configuration file.
-    ///
-    /// # Returns
-    ///
-    /// `Some(keymap)` if the file exists and is readable; `None` otherwise.
-    pub fn from_file(path: &str) -> Option<Self> {
-        let contents = std::fs::read_to_string(path).ok()?;
-        let mut map = Self::default();
-        // Start from defaults, then override with user-specified bindings
-        for raw in contents.lines() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let mut parts = line.splitn(2, '=');
-            let lhs = parts.next().map(|s| s.trim()).unwrap_or("");
-            let rhs = parts.next().map(|s| s.trim()).unwrap_or("");
-            if lhs.is_empty() || rhs.is_empty() {
-                continue;
-            }
-            // Preferred format: Action = KeySpec
-            if let (Some(action), Some(key)) = (parse_action(lhs), parse_key(rhs)) {
-                map.bindings.insert(key, action);
-                continue;
-            }
-            // Backward-compatible format: KeySpec = Action
-            if let (Some(key), Some(action)) = (parse_key(lhs), parse_action(rhs)) {
-                map.bindings.insert(key, action);
-                continue;
-            }
-        }
-        Some(map)
-    }
-
-    /// Write the current keymap to a configuration file.
-    ///
-    /// This method exports the current keymap to a file in a human-readable format.
-    /// It includes comments and examples for common key combinations.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - The path where the keymap will be written.
-    ///
-    /// # Returns
-    ///
-    /// `std::io::Result<()>` indicating success or failure.
-    pub fn write_file(&self, path: &str) -> std::io::Result<()> {
-        use std::fmt::Write as _;
-        let mut buf = String::new();
-        buf.push_str("# usrgrp-manager keybindings\n");
-        buf.push_str("# Format: <Action> = <KeySpec>\n");
-        buf.push_str("# KeySpec examples: q, Ctrl+q, Enter, Esc, Tab, BackTab, Up, Down, Left, Right, PageUp, PageDown, Delete, /, n, f, j, k, h, l\n");
-        buf.push_str("# Actions: Quit, OpenFilterMenu, StartSearch, NewUser, DeleteSelection, SwitchTab, ToggleUsersFocus, ToggleGroupsFocus, ToggleKeybindsPane, EnterAction, MoveUp, MoveDown, MoveLeftPage, MoveRightPage, PageUp, PageDown, Ignore\n\n");
-        buf.push_str("# Additional: OpenHelp (mapped to '?')\n\n");
-
-        // Emit a stable, readable subset of current bindings
-        let dump = [
-            ("q", KeyAction::Quit),
-            ("Esc", KeyAction::Ignore),
-            ("f", KeyAction::OpenFilterMenu),
-            ("/", KeyAction::StartSearch),
-            ("n", KeyAction::NewUser),
-            ("Tab", KeyAction::SwitchTab),
-            ("BackTab", KeyAction::ToggleUsersFocus),
-            ("?", KeyAction::OpenHelp),
-            ("Enter", KeyAction::EnterAction),
-            ("Up", KeyAction::MoveUp),
-            ("Down", KeyAction::MoveDown),
-            ("Left", KeyAction::MoveLeftPage),
-            ("Right", KeyAction::MoveRightPage),
-            ("j", KeyAction::MoveDown),
-            ("k", KeyAction::MoveUp),
-            ("h", KeyAction::MoveLeftPage),
-            ("l", KeyAction::MoveRightPage),
-            ("PageUp", KeyAction::PageUp),
-            ("PageDown", KeyAction::PageDown),
-            ("Delete", KeyAction::DeleteSelection),
+        use KeyModifiers as Modifiers;
+        let entries = [
+            ((Modifiers::NONE, Char('q')), Quit),
+            ((Modifiers::NONE, Esc), Ignore),
+            ((Modifiers::NONE, Char('f')), OpenFilterMenu),
+            ((Modifiers::NONE, Char('/')), StartSearch),
+            ((Modifiers::NONE, Char('n')), NewUser),
+            ((Modifiers::NONE, Char('?')), OpenHelp),
+            ((Modifiers::NONE, Delete), DeleteSelection),
+            ((Modifiers::NONE, Tab), SwitchTab),
+            ((Modifiers::NONE, BackTab), ToggleUsersFocus),
+            ((Modifiers::SHIFT, BackTab), ToggleUsersFocus),
+            ((Modifiers::SHIFT, Tab), ToggleUsersFocus),
+            ((Modifiers::NONE, Enter), EnterAction),
+            ((Modifiers::NONE, Up), MoveUp),
+            ((Modifiers::NONE, Down), MoveDown),
+            ((Modifiers::NONE, Left), MoveLeftPage),
+            ((Modifiers::NONE, Right), MoveRightPage),
+            ((Modifiers::NONE, Char('k')), MoveUp),
+            ((Modifiers::NONE, Char('j')), MoveDown),
+            ((Modifiers::NONE, Char('h')), MoveLeftPage),
+            ((Modifiers::NONE, Char('l')), MoveRightPage),
+            ((Modifiers::SHIFT, Char('k')), ToggleKeybindsPane),
+            ((Modifiers::SHIFT, Char('K')), ToggleKeybindsPane),
+            ((Modifiers::NONE, Char('K')), ToggleKeybindsPane),
+            ((Modifiers::NONE, KeyCode::PageUp), KeyAction::PageUp),
+            ((Modifiers::NONE, KeyCode::PageDown), KeyAction::PageDown),
         ];
-        for (k, a) in dump {
-            let _ = writeln!(&mut buf, "{} = {}", format_action(a), k);
+        Self {
+            bindings: entries.into_iter().collect(),
         }
-
-        std::fs::write(path, buf)
     }
 
-    /// Resolve a key event to its corresponding action.
-    ///
-    /// This method takes a [`KeyEvent`] and attempts to find the action it maps to.
-    /// It considers the modifiers and key code.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key event to resolve.
-    ///
-    /// # Returns
-    ///
-    /// `Option<KeyAction>` indicating the action if found, or `None` if no action is mapped.
+    pub fn load_or_init(path: &str) -> std::io::Result<Self> {
+        match Self::from_file(path) {
+            Ok(keymap) => Ok(keymap),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let keymap = Self::default();
+                keymap.write_file(path)?;
+                Ok(keymap)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Read either canonical `Action = Key` lines or the old reversed form.
+    pub fn from_file(path: &str) -> std::io::Result<Self> {
+        let contents = crate::config::read_bounded(path)?;
+        let mut keymap = Self::default();
+        let mut seen = std::collections::HashSet::new();
+        for assignment in crate::config::parse_assignments(&contents)? {
+            let left = assignment.key.as_str();
+            let right = assignment.value.as_str();
+            let Some(action) = parse_action(left).or_else(|| parse_action(right)) else {
+                return invalid_line(assignment.line, "unknown key action");
+            };
+            let key = if parse_action(left).is_some() {
+                parse_key(right)
+            } else {
+                parse_key(left)
+            }
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "configuration line {}: invalid key binding",
+                        assignment.line
+                    ),
+                )
+            })?;
+            if !seen.insert(key) {
+                return invalid_line(assignment.line, "duplicate key binding");
+            }
+            keymap.bindings.insert(key, action);
+        }
+        Ok(keymap)
+    }
+
+    /// Persist exactly every current binding in a stable order.
+    pub fn write_file(&self, path: &str) -> std::io::Result<()> {
+        let mut bindings = self.all_bindings();
+        bindings.sort_by_key(|((modifiers, code), action)| {
+            (format_action(*action), Self::format_key(*modifiers, *code))
+        });
+        let mut contents = String::from(
+            "# usrgrp-manager keybindings\n# Format: Action = KeySpec\n# This file is atomically saved; every active binding is retained.\n\n",
+        );
+        for ((modifiers, code), action) in bindings {
+            contents.push_str(format_action(action));
+            contents.push_str(" = ");
+            contents.push_str(&Self::format_key(modifiers, code));
+            contents.push('\n');
+        }
+        crate::config::atomic_write(path, contents.as_bytes())
+    }
+
     pub fn resolve(&self, key: &KeyEvent) -> Option<KeyAction> {
-        let mm = key.modifiers;
-        let code = key.code;
-        self.bindings.get(&(mm, code)).copied()
+        self.bindings.get(&(key.modifiers, key.code)).copied()
     }
 
-    /// Return a snapshot of all bindings as ((modifiers, code), action) pairs.
-    ///
-    /// This method is useful for debugging or for saving the current keymap.
-    ///
-    /// # Returns
-    ///
-    /// A vector of tuples containing the key (modifiers + code) and its action.
     pub fn all_bindings(&self) -> Vec<((KeyModifiers, KeyCode), KeyAction)> {
-        self.bindings.iter().map(|(k, v)| (*k, *v)).collect()
+        self.bindings
+            .iter()
+            .map(|(key, action)| (*key, *action))
+            .collect()
     }
 
-    /// Format a key (modifiers + code) into a human-readable spec like "Ctrl+q", "BackTab".
-    ///
-    /// This method is used to display key combinations in a user-friendly format.
-    ///
-    /// # Arguments
-    ///
-    /// * `mods` - The key modifiers.
-    /// * `code` - The key code.
-    ///
-    /// # Returns
-    ///
-    /// A string representing the key combination.
-    pub fn format_key(mods: KeyModifiers, code: KeyCode) -> String {
-        use KeyCode::*;
-        let base = match code {
-            Enter => "Enter".to_string(),
-            Delete => "Delete".to_string(),
-            Esc => "Esc".to_string(),
-            Tab => "Tab".to_string(),
-            BackTab => "BackTab".to_string(),
-            Up => "Up".to_string(),
-            Down => "Down".to_string(),
-            Left => "Left".to_string(),
-            Right => "Right".to_string(),
-            PageUp => "PageUp".to_string(),
-            PageDown => "PageDown".to_string(),
-            Char('/') => "/".to_string(),
-            Char(c) => c.to_string(),
-            _ => format!("{:?}", code),
+    pub fn format_key(modifiers: KeyModifiers, code: KeyCode) -> String {
+        let mut prefixes = Vec::new();
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            prefixes.push("Ctrl");
+        }
+        if modifiers.contains(KeyModifiers::ALT) {
+            prefixes.push("Alt");
+        }
+        if modifiers.contains(KeyModifiers::SHIFT) {
+            prefixes.push("Shift");
+        }
+        let code = match code {
+            KeyCode::Enter => "Enter".to_owned(),
+            KeyCode::Delete => "Delete".to_owned(),
+            KeyCode::Esc => "Esc".to_owned(),
+            KeyCode::Tab => "Tab".to_owned(),
+            KeyCode::BackTab => "BackTab".to_owned(),
+            KeyCode::Up => "Up".to_owned(),
+            KeyCode::Down => "Down".to_owned(),
+            KeyCode::Left => "Left".to_owned(),
+            KeyCode::Right => "Right".to_owned(),
+            KeyCode::PageUp => "PageUp".to_owned(),
+            KeyCode::PageDown => "PageDown".to_owned(),
+            KeyCode::Char(character) => character.to_string(),
+            other => format!("{other:?}"),
         };
-        if mods.contains(KeyModifiers::CONTROL) {
-            format!("Ctrl+{}", base)
-        } else if mods.is_empty() {
-            base
+        if prefixes.is_empty() {
+            code
         } else {
-            // Future: format other modifiers when supported
-            base
+            format!("{}+{code}", prefixes.join("+"))
         }
     }
 }
@@ -307,84 +182,88 @@ impl Default for Keymap {
     }
 }
 
-fn parse_key(spec: &str) -> Option<(KeyModifiers, KeyCode)> {
-    use KeyCode::*;
-    let s = spec.trim();
-    let mut rest = s;
-    let mut mods = KeyModifiers::NONE;
-    if let Some(after) = s.strip_prefix("Ctrl+") {
-        mods |= KeyModifiers::CONTROL;
-        rest = after;
+fn parse_key(specification: &str) -> Option<(KeyModifiers, KeyCode)> {
+    let mut modifiers = KeyModifiers::NONE;
+    let mut remaining = specification.trim();
+    while let Some((prefix, rest)) = remaining.split_once('+') {
+        match prefix {
+            "Ctrl" => modifiers |= KeyModifiers::CONTROL,
+            "Alt" => modifiers |= KeyModifiers::ALT,
+            "Shift" => modifiers |= KeyModifiers::SHIFT,
+            _ => break,
+        }
+        remaining = rest;
     }
-    // Future: Alt+ / Shift+
-    let code = match rest {
-        "Enter" => Enter,
-        "Delete" => Delete,
-        "/" => Char('/'),
-        "Esc" | "Escape" => Esc,
-        "Tab" => Tab,
-        "BackTab" => BackTab,
-        "Up" => Up,
-        "Down" => Down,
-        "Left" => Left,
-        "Right" => Right,
+    let code = match remaining {
+        "Enter" => KeyCode::Enter,
+        "Delete" => KeyCode::Delete,
+        "Esc" | "Escape" => KeyCode::Esc,
+        "Tab" => KeyCode::Tab,
+        "BackTab" => KeyCode::BackTab,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        value if value.chars().count() == 1 => KeyCode::Char(value.chars().next()?),
+        _ => return None,
+    };
+    Some((modifiers, code))
+}
+
+fn invalid_line<T>(line: usize, reason: &str) -> std::io::Result<T> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("configuration line {line}: {reason}"),
+    ))
+}
+
+fn parse_action(value: &str) -> Option<KeyAction> {
+    use KeyAction::*;
+    Some(match value.trim() {
+        "Quit" => Quit,
+        "OpenFilterMenu" => OpenFilterMenu,
+        "OpenHelp" => OpenHelp,
+        "StartSearch" => StartSearch,
+        "NewUser" => NewUser,
+        "DeleteSelection" => DeleteSelection,
+        "SwitchTab" => SwitchTab,
+        "ToggleUsersFocus" => ToggleUsersFocus,
+        "ToggleGroupsFocus" => ToggleGroupsFocus,
+        "ToggleKeybindsPane" => ToggleKeybindsPane,
+        "EnterAction" => EnterAction,
+        "MoveUp" => MoveUp,
+        "MoveDown" => MoveDown,
+        "MoveLeftPage" => MoveLeftPage,
+        "MoveRightPage" => MoveRightPage,
         "PageUp" => PageUp,
         "PageDown" => PageDown,
-        _ => {
-            let chars: Vec<char> = rest.chars().collect();
-            if chars.len() == 1 {
-                KeyCode::Char(chars[0])
-            } else {
-                return None;
-            }
-        }
-    };
-    Some((mods, code))
+        "Ignore" => Ignore,
+        _ => return None,
+    })
 }
 
-fn parse_action(s: &str) -> Option<KeyAction> {
-    match s.trim() {
-        "Quit" => Some(KeyAction::Quit),
-        "OpenFilterMenu" => Some(KeyAction::OpenFilterMenu),
-        "OpenHelp" => Some(KeyAction::OpenHelp),
-        "StartSearch" => Some(KeyAction::StartSearch),
-        "NewUser" => Some(KeyAction::NewUser),
-        "DeleteSelection" => Some(KeyAction::DeleteSelection),
-        "SwitchTab" => Some(KeyAction::SwitchTab),
-        "ToggleUsersFocus" => Some(KeyAction::ToggleUsersFocus),
-        "ToggleGroupsFocus" => Some(KeyAction::ToggleGroupsFocus),
-        "ToggleKeybindsPane" => Some(KeyAction::ToggleKeybindsPane),
-        "EnterAction" => Some(KeyAction::EnterAction),
-        "MoveUp" => Some(KeyAction::MoveUp),
-        "MoveDown" => Some(KeyAction::MoveDown),
-        "MoveLeftPage" => Some(KeyAction::MoveLeftPage),
-        "MoveRightPage" => Some(KeyAction::MoveRightPage),
-        "PageUp" => Some(KeyAction::PageUp),
-        "PageDown" => Some(KeyAction::PageDown),
-        "Ignore" => Some(KeyAction::Ignore),
-        _ => None,
-    }
-}
-
-pub fn format_action(a: KeyAction) -> &'static str {
-    match a {
-        KeyAction::Quit => "Quit",
-        KeyAction::OpenFilterMenu => "OpenFilterMenu",
-        KeyAction::OpenHelp => "OpenHelp",
-        KeyAction::StartSearch => "StartSearch",
-        KeyAction::NewUser => "NewUser",
-        KeyAction::DeleteSelection => "DeleteSelection",
-        KeyAction::SwitchTab => "SwitchTab",
-        KeyAction::ToggleUsersFocus => "ToggleUsersFocus",
-        KeyAction::ToggleGroupsFocus => "ToggleGroupsFocus",
-        KeyAction::ToggleKeybindsPane => "ToggleKeybindsPane",
-        KeyAction::EnterAction => "EnterAction",
-        KeyAction::MoveUp => "MoveUp",
-        KeyAction::MoveDown => "MoveDown",
-        KeyAction::MoveLeftPage => "MoveLeftPage",
-        KeyAction::MoveRightPage => "MoveRightPage",
-        KeyAction::PageUp => "PageUp",
-        KeyAction::PageDown => "PageDown",
-        KeyAction::Ignore => "Ignore",
+pub fn format_action(action: KeyAction) -> &'static str {
+    use KeyAction::*;
+    match action {
+        Quit => "Quit",
+        OpenFilterMenu => "OpenFilterMenu",
+        OpenHelp => "OpenHelp",
+        StartSearch => "StartSearch",
+        NewUser => "NewUser",
+        DeleteSelection => "DeleteSelection",
+        SwitchTab => "SwitchTab",
+        ToggleUsersFocus => "ToggleUsersFocus",
+        ToggleGroupsFocus => "ToggleGroupsFocus",
+        ToggleKeybindsPane => "ToggleKeybindsPane",
+        EnterAction => "EnterAction",
+        MoveUp => "MoveUp",
+        MoveDown => "MoveDown",
+        PageUp => "PageUp",
+        PageDown => "PageDown",
+        MoveLeftPage => "MoveLeftPage",
+        MoveRightPage => "MoveRightPage",
+        Ignore => "Ignore",
     }
 }

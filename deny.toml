@@ -1,0 +1,28 @@
+[graph]
+all-features = true
+no-default-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Reviewed transitive exception: RUSTSEC-2024-0436 (`paste`) is reachable only
+# through Ratatui's macro support; no compatible locked-graph replacement is
+# available. Owner: Maintainers. Review expiry: 2027-01-31.
+# `cargo audit` separately reports the non-ignored lru IterMut and
+# target-specific dev anyhow warnings; both must be re-evaluated at that review.
+ignore = ["RUSTSEC-2024-0436"]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
