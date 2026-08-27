@@ -7,3 +7,5 @@ RELEASE*.md
 plans/archive/
 /.pi-subagents/
 /dev/COMMIT/
+plans/handoffs/
+plans/reviews/
