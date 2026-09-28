@@ -57,3 +57,27 @@ fn fixture_identity_never_assumes_root_when_it_returns_an_error() {
     assert!(identity.0.is_err());
     assert_ne!(Uid(0), Uid(1));
 }
+
+#[test]
+fn config_dir_option_is_the_only_config_root() {
+    use usrgrp_manager::app::{
+        AppState, FixedConfigRootProvider, SystemClock, SystemDiagnosticProvider,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = AppState::with_dependencies(
+        Arc::new(SystemAdapter::new()),
+        AccountSnapshot::empty(),
+        Arc::new(SystemClock),
+        Arc::new(SystemDiagnosticProvider),
+        Arc::new(FixedConfigRootProvider(dir.path().to_path_buf())),
+    );
+    app.load_configuration();
+    assert_eq!(
+        app.configuration_write_path("theme.conf"),
+        dir.path().join("theme.conf").to_string_lossy()
+    );
+    for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+        assert!(dir.path().join(name).is_file(), "{name} not created");
+    }
+    assert!(app.diagnostics.config_messages.is_empty());
+}

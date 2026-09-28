@@ -10,7 +10,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use crate::{
     app::{
         ActiveTab, AppState, GroupsFocus, InputMode, ModalState, ModifyField, PendingAction,
-        SecretInput, UsersFocus, filterconf::FiltersConfig, keymap::KeyAction,
+        RunOptions, SecretInput, UsersFocus, filterconf::FiltersConfig, keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
     search::apply_filters_and_search,
@@ -21,7 +21,15 @@ use crate::{
 /// Drive the TUI.  Construction and refresh are explicit effects; rendering is
 /// immutable and does not touch the host.
 pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
-    let mut app = AppState::load_system();
+    run_app_with(terminal, RunOptions::default())
+}
+
+/// Drive the TUI with command-line options (config root, dry run, log file).
+pub fn run_app_with(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    options: RunOptions,
+) -> Result<()> {
+    let mut app = AppState::load_system_with(options);
     loop {
         terminal.draw(|frame| ui::render(frame, &app))?;
         if event::poll(std::time::Duration::from_millis(100))?
@@ -701,12 +709,7 @@ fn handle_password_input(
                         },
                         record,
                     ),
-                    Err(error) => open_modal(
-                        app,
-                        ModalState::Info {
-                            message: classified_error_message(&error),
-                        },
-                    ),
+                    Err(error) => show_error(app, &error),
                 }
             }
         }
@@ -1073,12 +1076,7 @@ fn handle_user_add(
                         PasswordRecord::new(username, SecretString::new(password.take()))
                     }) {
                         Ok(record) => start_password_action(app, action, record),
-                        Err(error) => open_modal(
-                            app,
-                            ModalState::Info {
-                                message: classified_error_message(&error),
-                            },
-                        ),
+                        Err(error) => show_error(app, &error),
                     }
                 }
             }
@@ -1141,12 +1139,7 @@ fn start_pending_action(app: &mut AppState, action: PendingAction) {
         Ok(request) => prepare_request(app, request),
         Err(error) => {
             app.clear_pending_operation();
-            open_modal(
-                app,
-                ModalState::Info {
-                    message: classified_error_message(&error),
-                },
-            )
+            show_error(app, &error);
         }
     }
 }
@@ -1156,25 +1149,26 @@ fn prepare_request(app: &mut AppState, request: OperationRequest) {
         Ok(plan) => {
             let prepared = crate::app::PreparedOperation { plan };
             let preview = prepared.preview();
+            app.log_event("prepared", &preview.join("; "));
             app.last_preview = preview.clone();
             app.pending_operation = Some(prepared);
+            let action = if app.dry_run {
+                "Dry run: preview only, nothing will be executed"
+            } else {
+                "Apply the exact prepared operation"
+            };
             open_modal(
                 app,
                 ModalState::OperationConfirm {
                     selected: 1,
-                    action: "Apply the exact prepared operation".to_owned(),
+                    action: action.to_owned(),
                     preview,
                 },
             );
         }
         Err(error) => {
             app.clear_pending_operation();
-            open_modal(
-                app,
-                ModalState::Info {
-                    message: classified_error_message(&error),
-                },
-            );
+            show_error(app, &error);
         }
     }
 }
@@ -1189,9 +1183,23 @@ fn execute_pending_plan(app: &mut AppState) {
         );
         return;
     };
+    let description = prepared.preview().join("; ");
+    if app.dry_run {
+        // The adapter is never consulted, so no sudo prompt and no command.
+        app.clear_pending_operation();
+        app.log_event("dry-run", &description);
+        open_modal(
+            app,
+            ModalState::Info {
+                message: "Dry run: nothing was executed.".to_owned(),
+            },
+        );
+        return;
+    }
     match app.adapter.execute_prepared_operation(&prepared.plan) {
         Ok(report) => {
             let message = report_message(&report);
+            app.log_event("executed", &format!("{description} => {message}"));
             app.last_report = Some(report);
             app.pending_operation = None;
             app.refresh_accounts();
@@ -1208,12 +1216,7 @@ fn execute_pending_plan(app: &mut AppState) {
         }
         Err(error) => {
             app.clear_pending_operation();
-            open_modal(
-                app,
-                ModalState::Info {
-                    message: classified_error_message(&error),
-                },
-            );
+            show_error(app, &error);
         }
     }
 }
@@ -1413,6 +1416,13 @@ fn classified_error_message(error: &CoreError) -> String {
     format!("{code}: {error}")
 }
 
+/// Show a classified error and append it to the operation log.
+fn show_error(app: &mut AppState, error: &CoreError) {
+    let message = classified_error_message(error);
+    app.log_event("error", &message);
+    open_modal(app, ModalState::Info { message });
+}
+
 fn save_filters(app: &mut AppState) {
     let path = app.configuration_write_path("filter.conf");
     if let Err(error) = FiltersConfig::save_from_app(app, &path) {
@@ -1545,6 +1555,124 @@ mod tests {
             request,
             OperationRequest::Composite { ref requests } if requests.len() == 2
         ));
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedLog(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for SharedLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl SharedLog {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    struct FailingLog;
+    impl std::io::Write for FailingLog {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("disk full"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Root identity: without dry run the adapter would call `NoRun::run`
+    /// and panic, so reaching the Info modal proves it was never consulted.
+    fn root_app() -> AppState {
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        AppState::with_adapter(adapter, snapshot)
+    }
+
+    #[test]
+    fn dry_run_shows_preview_then_executes_nothing() {
+        let mut app = root_app();
+        app.dry_run = true;
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        assert!(matches!(
+            app.modal,
+            Some(ModalState::OperationConfirm { ref action, ref preview, .. })
+                if action.starts_with("Dry run") && preview == &["usermod -s /bin/bash alice"]
+        ));
+        execute_pending_plan(&mut app);
+        assert!(matches!(
+            app.modal,
+            Some(ModalState::Info { ref message }) if message.contains("Dry run: nothing was executed")
+        ));
+        assert!(app.pending_operation.is_none());
+        assert!(app.last_report.is_none());
+    }
+
+    #[test]
+    fn log_file_records_prepared_dry_run_and_errors_without_passwords() {
+        let log = SharedLog::default();
+        let mut app = root_app();
+        app.dry_run = true;
+        app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        execute_pending_plan(&mut app);
+        let record = PasswordRecord::new(
+            UserName::new("alice").unwrap(),
+            SecretString::new("fixture-password"),
+        )
+        .unwrap();
+        start_password_action(
+            &mut app,
+            PendingAction::SetPassword {
+                username: "alice".into(),
+                must_change: false,
+            },
+            record,
+        );
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "not-absolute".to_owned(),
+            },
+        );
+        let text = log.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].ends_with("prepared: usermod -s /bin/bash alice"));
+        assert!(lines[1].ends_with("dry-run: usermod -s /bin/bash alice"));
+        assert!(lines[2].contains("prepared: ") && lines[2].contains("chpasswd"));
+        assert!(lines[3].contains("error: E-VALIDATION"));
+        assert_eq!(lines.len(), 4);
+        assert!(!text.contains("fixture-password"));
+    }
+
+    #[test]
+    fn log_write_failure_disables_log_and_records_reason() {
+        let mut app = AppState::new();
+        app.set_logger(crate::app::Logger::from_writer(Box::new(FailingLog)));
+        app.log_event("error", "first");
+        app.log_event("error", "second");
+        assert_eq!(app.diagnostics.config_messages.len(), 1);
+        assert!(app.diagnostics.config_messages[0].contains("log file disabled"));
     }
 
     fn fixture_snapshot() -> AccountSnapshot {

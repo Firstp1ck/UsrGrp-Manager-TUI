@@ -23,6 +23,22 @@ cargo build --locked --release
 
 Running as root is supported but unnecessary. For non-root write actions, the configured sudo policy must permit `sudo -v` followed by `sudo -n`; otherwise the action fails closed.
 
+Command-line options:
+
+| Option | Effect |
+| --- | --- |
+| `--config-dir <PATH>` | Read and write `theme.conf`, `filter.conf`, and `keybinds.conf` in `PATH` only. The default search order below is skipped. Missing files are created there. |
+| `--dry-run` | Every change still shows its exact command preview, but confirming it only reports "Dry run: nothing was executed." No sudo prompt appears and no command runs. |
+| `--log-file <PATH>` | Append one line per prepared operation, executed operation (with its result summary), and error to `PATH`. The file is created with mode 0600 and symlinks are refused. Lines contain the same redacted previews the UI shows, never passwords. |
+| `-h`, `--help` | Print usage and exit. |
+| `-V`, `--version` | Print the version and exit. |
+
+Path options also accept `--option=PATH`. An unknown or repeated option prints usage to stderr and exits with status 2 before the terminal is touched. So does a `--config-dir` that is an existing non-directory, or a `--log-file` that cannot be opened.
+
+```bash
+./target/release/usrgrp-manager --dry-run --log-file /tmp/ugm.log
+```
+
 ## Configuration
 
 The application reads `theme.conf`, `filter.conf`, and `keybinds.conf` from `$XDG_CONFIG_HOME/UsrGrpManager`, then `~/.config/UsrGrpManager`, then `~/UsrGrpManager`.

@@ -5,7 +5,10 @@
 //! rendering or tests.
 pub mod filterconf;
 pub mod keymap;
+pub mod logger;
 pub mod update;
+
+pub use logger::Logger;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -553,6 +556,26 @@ impl ConfigRootProvider for SystemConfigRootProvider {
     }
 }
 
+/// Single config root chosen with `--config-dir`. The default search order
+/// is not consulted, so reads and writes both use this directory.
+pub struct FixedConfigRootProvider(pub PathBuf);
+impl ConfigRootProvider for FixedConfigRootProvider {
+    fn roots(&self) -> Vec<PathBuf> {
+        vec![self.0.clone()]
+    }
+}
+
+/// Startup options from the command line. The default is the plain TUI.
+#[derive(Default)]
+pub struct RunOptions {
+    /// Replace the default config search roots with this one directory.
+    pub config_dir: Option<PathBuf>,
+    /// Show every prepared preview but never execute it.
+    pub dry_run: bool,
+    /// Already-opened operation log.
+    pub logger: Option<Logger>,
+}
+
 /// Injectable bounded diagnostics effect. Renderers only consume its result.
 pub trait DiagnosticProvider: Send + Sync {
     fn refresh(&self, snapshot: &AccountSnapshot, now: SystemTime) -> CachedDiagnostics;
@@ -764,6 +787,10 @@ pub struct AppState {
     /// non-cloneable capability exists only while converting a password modal
     /// into its one exact trusted operation.
     pending_password: Option<OneShotPassword>,
+    /// `--dry-run`: confirmed plans are reported but never handed to the adapter.
+    pub dry_run: bool,
+    /// `--log-file`: redacted operation and error log. Dropped after a write failure.
+    logger: Option<Logger>,
 }
 
 impl AppState {
@@ -837,6 +864,8 @@ impl AppState {
             last_report: None,
             pending_operation: None,
             pending_password: None,
+            dry_run: false,
+            logger: None,
         };
         app.sort_and_filter();
         app
@@ -844,7 +873,23 @@ impl AppState {
 
     /// Production construction with explicit account/config effects.
     pub fn load_system() -> Self {
-        let mut app = Self::new();
+        Self::load_system_with(RunOptions::default())
+    }
+
+    /// Production construction honoring command-line options.
+    pub fn load_system_with(options: RunOptions) -> Self {
+        let mut app = match options.config_dir {
+            Some(dir) => Self::with_dependencies(
+                Arc::new(sys::SystemAdapter::new()),
+                AccountSnapshot::empty(),
+                Arc::new(SystemClock),
+                Arc::new(SystemDiagnosticProvider),
+                Arc::new(FixedConfigRootProvider(dir)),
+            ),
+            None => Self::new(),
+        };
+        app.dry_run = options.dry_run;
+        app.logger = options.logger;
         app.refresh_accounts();
         app.current_username = sys::current_username().unwrap_or_else(|| "unknown".to_owned());
         app.load_configuration();
@@ -911,12 +956,15 @@ impl AppState {
 
     /// Retain only a small amount of non-secret configuration diagnostics.
     pub fn record_config_message(&mut self, source: &str, error: &std::io::Error) {
+        self.record_diagnostic_message(format!("{source} configuration: {error}"));
+    }
+
+    fn record_diagnostic_message(&mut self, mut message: String) {
         const MAX_CONFIG_MESSAGES: usize = 3;
         const MAX_CONFIG_MESSAGE_BYTES: usize = 256;
         if self.diagnostics.config_messages.len() >= MAX_CONFIG_MESSAGES {
             return;
         }
-        let mut message = format!("{source} configuration: {error}");
         if message.len() > MAX_CONFIG_MESSAGE_BYTES {
             let mut end = MAX_CONFIG_MESSAGE_BYTES;
             while !message.is_char_boundary(end) {
@@ -1060,6 +1108,29 @@ impl AppState {
         self.pending_password.take().map(OneShotPassword::take)
     }
 
+    /// Attach an operation log (`--log-file`).
+    pub fn set_logger(&mut self, logger: Logger) {
+        self.logger = Some(logger);
+    }
+
+    /// Append one redacted event to the operation log, if one is open. A
+    /// failed write closes the log and records why, so later events are not
+    /// silently lost without notice.
+    pub fn log_event(&mut self, kind: &str, message: &str) {
+        let Some(logger) = self.logger.as_mut() else {
+            return;
+        };
+        let seconds = self
+            .clock
+            .now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        if let Err(error) = logger.write_event(seconds, kind, message) {
+            self.logger = None;
+            self.record_diagnostic_message(format!("log file disabled: {error}"));
+        }
+    }
+
     pub fn clear_pending_operation(&mut self) {
         self.pending_operation = None;
         self.pending_password = None;
@@ -1108,6 +1179,7 @@ pub fn config_file_write_path(name: &str) -> String {
 }
 
 pub use update::run_app as run;
+pub use update::run_app_with as run_with;
 
 /// Mirror the W3 default fail-closed policy in presentation only. Trusted
 /// preparation remains the enforcement point and supports explicit injected
