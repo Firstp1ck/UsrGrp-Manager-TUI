@@ -40,6 +40,9 @@ impl Keymap {
         use KeyModifiers as Modifiers;
         let entries = [
             ((Modifiers::NONE, Char('q')), Quit),
+            // The event loop quits on Ctrl+C in every mode anyway; binding it
+            // here lists it in the keybindings panel.
+            ((Modifiers::CONTROL, Char('c')), Quit),
             // Esc in the main view clears the active tab's search. `Ignore`
             // stays valid in keybinds.conf but is no longer bound by default.
             ((Modifiers::NONE, Esc), ClearSearch),
@@ -356,6 +359,21 @@ mod tests {
                 .unwrap()
                 .resolve(&key(KeyCode::Char('r'))),
             Some(KeyAction::Refresh)
+        );
+    }
+
+    #[test]
+    fn ctrl_c_quits_by_default_and_in_the_example_config() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(Keymap::default().resolve(&ctrl_c), Some(KeyAction::Quit));
+        assert_eq!(
+            Keymap::format_key(KeyModifiers::CONTROL, KeyCode::Char('c')),
+            "Ctrl+c"
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&ctrl_c),
+            Some(KeyAction::Quit)
         );
     }
 

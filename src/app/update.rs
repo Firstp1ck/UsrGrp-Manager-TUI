@@ -51,9 +51,17 @@ pub fn run_app_with(
 /// for page keys and the preview review; the next loop iteration redraws at
 /// that size. Mouse capture
 /// is not enabled, so mouse, focus, and paste events are ignored.
+///
+/// Ctrl+C quits from every mode whatever keybinds.conf says, because raw
+/// mode turns off the terminal's own interrupt. A prepared operation has
+/// not run at that point, so it is dropped.
 fn handle_event(app: &mut AppState, event: Event) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            if is_interrupt(key) {
+                app.clear_pending_operation();
+                return true;
+            }
             if matches!(app.input_mode, InputMode::Normal)
                 && matches!(app.keymap.resolve(&key), Some(KeyAction::Quit))
             {
@@ -156,7 +164,7 @@ fn handle_search_key(app: &mut AppState, key: KeyEvent) {
             query.pop();
         }),
         KeyCode::Char(character)
-            if !character.is_control() && app.query(app.search_tab()).len() < 256 =>
+            if is_typed(key, character) && app.query(app.search_tab()).len() < 256 =>
         {
             app.edit_search(|query| query.push(character))
         }
@@ -805,7 +813,7 @@ fn handle_text_input(
             value.pop();
             *error = live_error(value);
         }
-        KeyCode::Char(character) if !character.is_control() => {
+        KeyCode::Char(character) if is_typed(key, character) => {
             if has_room(value.chars().count(), field.max_chars(), error) {
                 value.push(character);
                 *error = live_error(value);
@@ -952,7 +960,7 @@ fn candidate_key(
                 }
             }
             KeyCode::Char(character)
-                if !character.is_control()
+                if is_typed(key, character)
                     && dialog.filter.chars().count() < MAX_CANDIDATE_FILTER =>
             {
                 dialog.filter.push(character);
@@ -1065,7 +1073,7 @@ fn handle_password_input(
             }
             _ => {}
         },
-        KeyCode::Char(character) if !character.is_control() && *selected < 2 => {
+        KeyCode::Char(character) if is_typed(key, character) && *selected < 2 => {
             let field = if *selected == 0 { password } else { confirm };
             if has_room(field.char_count(), MAX_PASSWORD_CHARS, error) {
                 field.push(character);
@@ -1247,7 +1255,7 @@ fn handle_group_add(
             name.pop();
             *error = live_name_error(GroupName::new(&*name));
         }
-        KeyCode::Char(character) if !character.is_control() => {
+        KeyCode::Char(character) if is_typed(key, character) => {
             if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
                 name.push(character);
                 *error = live_name_error(GroupName::new(&*name));
@@ -1371,7 +1379,7 @@ fn handle_group_rename(
             name.pop();
             *error = live_name_error(GroupName::new(&*name));
         }
-        KeyCode::Char(character) if !character.is_control() => {
+        KeyCode::Char(character) if is_typed(key, character) => {
             if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
                 name.push(character);
                 *error = live_name_error(GroupName::new(&*name));
@@ -1506,7 +1514,7 @@ fn handle_user_add(
             }
             _ => {}
         },
-        KeyCode::Char(character) if !character.is_control() && *selected == 0 => {
+        KeyCode::Char(character) if is_typed(key, character) && *selected == 0 => {
             if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
                 name.push(character);
                 *name_touched = true;
@@ -1514,7 +1522,7 @@ fn handle_user_add(
             }
         }
         KeyCode::Char(character)
-            if !character.is_control() && (*selected == 1 || *selected == 2) =>
+            if is_typed(key, character) && (*selected == 1 || *selected == 2) =>
         {
             let field = if *selected == 1 {
                 &mut *password
@@ -1684,7 +1692,7 @@ fn handle_sudo_prompt(
         KeyCode::Backspace => {
             password.pop();
         }
-        KeyCode::Char(character) if !character.is_control() && password.len() < 1024 => {
+        KeyCode::Char(character) if is_typed(key, character) && password.len() < 1024 => {
             password.push(character)
         }
         KeyCode::Enter => {
@@ -2100,6 +2108,20 @@ struct PasswordFields<'a> {
     password: &'a mut SecretInput,
     confirm: &'a mut SecretInput,
     reveal: &'a mut bool,
+}
+
+/// Ctrl+C, the fixed quit key.
+fn is_interrupt(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
+}
+
+/// Whether `character` is text to insert: printable and typed without Ctrl
+/// or Alt, so chords such as Ctrl+X never add their letter to a field.
+fn is_typed(key: KeyEvent, character: char) -> bool {
+    !character.is_control()
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
 /// Ctrl+R, which shows or hides the typed passwords of a form.
@@ -5919,5 +5941,83 @@ mod tests {
         assert_eq!(strength("abcdefgh1234"), "ok");
         assert_eq!(strength("abcdefgh12!"), "ok");
         assert_eq!(strength("abcdefgh12!?"), "strong");
+    }
+
+    fn ctrl_c() -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_a_dialog_and_from_search() {
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::GroupAddInput {
+                name: String::new(),
+                error: None,
+            },
+        );
+        assert!(handle_event(&mut app, ctrl_c()));
+        assert_eq!(text_value(&app), Some(""), "Ctrl+C is not typed");
+
+        let mut app = user_app();
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.input_mode, InputMode::SearchUsers);
+        assert!(handle_event(&mut app, ctrl_c()));
+        assert_eq!(app.users_query, "");
+    }
+
+    #[test]
+    fn ctrl_c_drops_a_prepared_operation_before_quitting() {
+        let mut app = user_app();
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        assert!(app.pending_operation.is_some());
+        assert!(handle_event(&mut app, ctrl_c()));
+        assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
+    fn ctrl_and_alt_chords_are_not_typed_into_search_or_fields() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Char('/'));
+        ctrl(&mut app, 'x');
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.users_query, "");
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.users_query, "x");
+
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::GroupAddInput {
+                name: String::new(),
+                error: None,
+            },
+        );
+        ctrl(&mut app, 'x');
+        assert_eq!(text_value(&app), Some(""));
+    }
+
+    #[test]
+    fn ctrl_r_still_reveals_passwords_and_other_chords_are_not_typed() {
+        let mut app = root_app();
+        open_menu_password_form(&mut app);
+        ctrl(&mut app, 'x');
+        assert_eq!(password_counts(&app), (0, 0));
+        ctrl(&mut app, 'r');
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ChangePassword { reveal: true, .. })
+        ));
+        assert_eq!(password_counts(&app), (0, 0));
     }
 }
