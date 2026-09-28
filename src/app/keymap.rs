@@ -11,6 +11,7 @@ pub enum KeyAction {
     OpenHelp,
     StartSearch,
     ClearSearch,
+    Refresh,
     NewUser,
     DeleteSelection,
     SwitchTab,
@@ -44,6 +45,7 @@ impl Keymap {
             ((Modifiers::NONE, Esc), ClearSearch),
             ((Modifiers::NONE, Char('f')), OpenFilterMenu),
             ((Modifiers::NONE, Char('/')), StartSearch),
+            ((Modifiers::NONE, Char('r')), Refresh),
             ((Modifiers::NONE, Char('n')), NewUser),
             ((Modifiers::NONE, Char('?')), OpenHelp),
             ((Modifiers::NONE, Delete), DeleteSelection),
@@ -233,6 +235,7 @@ fn parse_action(value: &str) -> Option<KeyAction> {
         "OpenHelp" => OpenHelp,
         "StartSearch" => StartSearch,
         "ClearSearch" => ClearSearch,
+        "Refresh" => Refresh,
         "NewUser" => NewUser,
         "DeleteSelection" => DeleteSelection,
         "SwitchTab" => SwitchTab,
@@ -259,6 +262,7 @@ pub fn format_action(action: KeyAction) -> &'static str {
         OpenHelp => "OpenHelp",
         StartSearch => "StartSearch",
         ClearSearch => "ClearSearch",
+        Refresh => "Refresh",
         NewUser => "NewUser",
         DeleteSelection => "DeleteSelection",
         SwitchTab => "SwitchTab",
@@ -335,6 +339,23 @@ mod tests {
         assert_eq!(
             Keymap::from_file(path).unwrap().resolve(&key(KeyCode::Esc)),
             Some(KeyAction::ClearSearch)
+        );
+    }
+
+    #[test]
+    fn r_refreshes_by_default_and_in_the_example_config() {
+        assert_eq!(
+            Keymap::default().resolve(&key(KeyCode::Char('r'))),
+            Some(KeyAction::Refresh)
+        );
+        assert_eq!(parse_action("Refresh"), Some(KeyAction::Refresh));
+        assert_eq!(format_action(KeyAction::Refresh), "Refresh");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path)
+                .unwrap()
+                .resolve(&key(KeyCode::Char('r'))),
+            Some(KeyAction::Refresh)
         );
     }
 

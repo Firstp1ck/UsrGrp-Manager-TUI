@@ -83,6 +83,7 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
         Some(KeyAction::OpenFilterMenu) => open_modal(app, ModalState::FilterMenu { selected: 0 }),
         Some(KeyAction::StartSearch) => app.start_search(),
         Some(KeyAction::ClearSearch) => app.clear_search(),
+        Some(KeyAction::Refresh) => app.refresh_accounts(),
         Some(KeyAction::NewUser) => match app.active_tab {
             ActiveTab::Users => open_modal(
                 app,
@@ -3429,6 +3430,118 @@ mod tests {
             Arc::new(NoDiagnostics),
             Arc::new(NoConfigRoots),
         )
+    }
+
+    /// Account source whose next result a test can swap: `None` fails the
+    /// refresh the way an unreadable /etc/passwd would.
+    struct SwappableSource(std::sync::Mutex<Option<AccountSnapshot>>);
+    impl AccountDataSource for SwappableSource {
+        fn refresh(&self) -> CoreResult<AccountSnapshot> {
+            self.0
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(crate::error::CoreError::Refresh {
+                    operation: "passwd",
+                    kind: std::io::ErrorKind::PermissionDenied,
+                })
+        }
+    }
+
+    /// Wall clock a test can move forward, in seconds since the UNIX epoch.
+    struct SteppingClock(std::sync::atomic::AtomicU64);
+    impl crate::app::Clock for SteppingClock {
+        fn now(&self) -> std::time::SystemTime {
+            std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    #[test]
+    fn utc_time_label_formats_the_time_of_day() {
+        use crate::app::utc_time_label;
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(utc_time_label(UNIX_EPOCH), "00:00:00 UTC");
+        assert_eq!(
+            utc_time_label(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            "22:13:20 UTC"
+        );
+        assert_eq!(
+            utc_time_label(UNIX_EPOCH + Duration::from_secs(86_399)),
+            "23:59:59 UTC"
+        );
+        assert_eq!(
+            utc_time_label(UNIX_EPOCH - Duration::from_secs(5)),
+            "00:00:00 UTC"
+        );
+    }
+
+    #[test]
+    fn r_refreshes_accounts_and_the_status_bar_shows_when() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(100),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let snapshot = |users: Vec<AccountUser>| AccountSnapshot {
+            users,
+            groups: vec![AccountGroup {
+                gid: Gid(100),
+                name: GroupName::new("staff").unwrap(),
+                members: vec![],
+            }],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let started = snapshot(vec![user(1000, "alice")]);
+        // bob was added in another terminal after the app started.
+        let current = snapshot(vec![user(1000, "alice"), user(1001, "bob")]);
+        let source = Arc::new(SwappableSource(std::sync::Mutex::new(Some(
+            current.clone(),
+        ))));
+        let clock = Arc::new(SteppingClock(AtomicU64::new(1_700_000_000)));
+        let adapter = Arc::new(SystemAdapter::from_components(
+            source.clone(),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = AppState::with_dependencies(
+            adapter,
+            started,
+            clock.clone(),
+            Arc::new(NoDiagnostics),
+            Arc::new(NoConfigRoots),
+        );
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(ui::components::refresh_label(&app), "not refreshed");
+
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.users.len(), 2);
+        assert_eq!(app.last_refresh_label, "22:13:20 UTC");
+        assert!(rendered(&app).contains("refreshed 22:13:20 UTC"));
+
+        // A failed refresh keeps the data and says since when it is stale.
+        *source.0.lock().unwrap() = None;
+        clock.0.store(1_700_003_661, Ordering::SeqCst);
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.users.len(), 2);
+        assert_eq!(app.last_refresh_label, "22:13:20 UTC");
+        assert_eq!(
+            ui::components::refresh_label(&app),
+            "STALE since 22:13:20 UTC: could not refresh passwd: permission denied"
+        );
+
+        *source.0.lock().unwrap() = Some(current);
+        press(&mut app, KeyCode::Char('r'));
+        assert!(app.diagnostics.stale_reason.is_none());
+        assert_eq!(
+            ui::components::refresh_label(&app),
+            "refreshed 23:14:21 UTC"
+        );
     }
 
     /// alice (primary group `alice`) is already in `dev`; bob and carol are not.

@@ -605,6 +605,21 @@ pub struct GroupDiagnostics {
     pub members_truncated: bool,
 }
 
+/// Format the time of day of `time` as `HH:MM:SS UTC`. Times before the
+/// UNIX epoch show as midnight.
+pub fn utc_time_label(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+        % 86_400;
+    format!(
+        "{:02}:{:02}:{:02} UTC",
+        seconds / 3_600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 /// Injectable clock for deterministic diagnostics and config-root tests.
 pub trait Clock: Send + Sync {
     fn now(&self) -> SystemTime;
@@ -985,6 +1000,10 @@ pub struct AppState {
     pub adapter: Arc<sys::SystemAdapter>,
     pub account_snapshot: Option<AccountSnapshot>,
     pub diagnostics: CachedDiagnostics,
+    /// Time of the last successful account refresh as `HH:MM:SS UTC`, empty
+    /// until one succeeds. A failed refresh keeps the previous value, so the
+    /// status bar can say since when the shown data is stale.
+    pub last_refresh_label: String,
     clock: Arc<dyn Clock>,
     diagnostic_provider: Arc<dyn DiagnosticProvider>,
     config_root_provider: Arc<dyn ConfigRootProvider>,
@@ -1071,6 +1090,7 @@ impl AppState {
             adapter,
             account_snapshot: Some(snapshot),
             diagnostics: CachedDiagnostics::default(),
+            last_refresh_label: String::new(),
             clock,
             diagnostic_provider,
             config_root_provider,
@@ -1118,6 +1138,7 @@ impl AppState {
                 self.refresh_diagnostics(&snapshot);
                 self.apply_snapshot(snapshot);
                 self.diagnostics.stale_reason = None;
+                self.last_refresh_label = utc_time_label(self.clock.now());
             }
             sys::SnapshotState::Stale { prior, error } => {
                 self.refresh_diagnostics(&prior);

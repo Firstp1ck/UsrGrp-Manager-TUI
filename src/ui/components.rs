@@ -28,12 +28,20 @@ pub fn search_title(name: &str, query: &str, editing: bool, shown: usize, total:
     title
 }
 
+/// When the account data was last refreshed, and why it is stale if the
+/// last refresh failed: `refreshed 12:03:15 UTC` or
+/// `STALE since 12:03:15 UTC: <reason>`.
+pub fn refresh_label(app: &AppState) -> String {
+    let time = app.last_refresh_label.as_str();
+    match (&app.diagnostics.stale_reason, time.is_empty()) {
+        (Some(reason), true) => format!("STALE: {reason}"),
+        (Some(reason), false) => format!("STALE since {time}: {reason}"),
+        (None, true) => "not refreshed".to_owned(),
+        (None, false) => format!("refreshed {time}"),
+    }
+}
+
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
-    let stale = app
-        .diagnostics
-        .stale_reason
-        .as_ref()
-        .map_or("fresh", |_| "STALE");
     let config = match app.diagnostics.config_messages.len() {
         0 => String::new(),
         1 => " config: 1 error (see ? help)".to_owned(),
@@ -45,12 +53,12 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
         InputMode::Normal | InputMode::Modal => "",
     };
     let text = format!(
-        "{mode}users:{} groups:{} data:{} shadow:{}{}",
+        "{mode}users:{} groups:{} shadow:{}{} {}",
         app.users.len(),
         app.groups.len(),
-        stale,
         app.diagnostics.shadow.availability_label(),
-        config
+        config,
+        refresh_label(app)
     );
     frame.render_widget(
         Paragraph::new(text).style(
