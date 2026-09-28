@@ -118,8 +118,18 @@ pub fn render_modal_frame(
     footer: &str,
 ) {
     let width = area.width.saturating_sub(8).min(76);
-    let rows = wrapped_rows(&body, width.saturating_sub(2));
-    let body_rows = u16::try_from(rows.iter().sum::<usize>()).unwrap_or(u16::MAX);
+    let wrapped: Vec<Vec<Line<'static>>> = body
+        .iter()
+        .map(|line| wrap_line(line, usize::from(width.saturating_sub(2))))
+        .collect();
+    let row_counts = wrapped.iter().map(Vec::len).collect::<Vec<_>>();
+    let cursor = body.iter().position(|line| {
+        line.spans
+            .iter()
+            .any(|span| span.content.contains(CURSOR_MARKER))
+    });
+    let body: Vec<Line<'static>> = wrapped.into_iter().flatten().collect();
+    let body_rows = u16::try_from(body.len()).unwrap_or(u16::MAX);
     let height = body_rows
         .saturating_add(3)
         .min(MAX_MODAL_HEIGHT)
@@ -144,11 +154,13 @@ pub fn render_modal_frame(
         height: 1,
         ..inner
     };
-    let scroll = cursor_scroll(&body, &rows, usize::from(body_area.height));
+    let scroll = cursor.map_or(0, |cursor| {
+        let end: usize = row_counts[..=cursor].iter().sum();
+        end.saturating_sub(usize::from(body_area.height))
+    });
+    // The body is already wrapped, so each Line is exactly one screen row.
     frame.render_widget(
-        Paragraph::new(body)
-            .wrap(Wrap { trim: false })
-            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
+        Paragraph::new(body).scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
         body_area,
     );
     frame.render_widget(
@@ -157,25 +169,40 @@ pub fn render_modal_frame(
     );
 }
 
-/// Screen rows each body line takes once wrapped to `width` columns.
-fn wrapped_rows(body: &[Line<'_>], width: u16) -> Vec<usize> {
-    let width = usize::from(width.max(1));
-    body.iter()
-        .map(|line| line.width().div_ceil(width).max(1))
-        .collect()
-}
-
-/// First visible row so the cursor line ends up inside `visible` rows.
-fn cursor_scroll(body: &[Line<'_>], rows: &[usize], visible: usize) -> usize {
-    let Some(cursor) = body.iter().position(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.contains(CURSOR_MARKER))
-    }) else {
-        return 0;
+/// Break one body line into rows of at most `width` columns, splitting at
+/// any character. Each piece keeps its span's style, and every row keeps the
+/// line's style and alignment. A line that fits comes back unchanged as a
+/// single row, and an empty line stays one empty row.
+fn wrap_line(line: &Line<'_>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let row = |spans: Vec<Span<'static>>| Line {
+        spans,
+        style: line.style,
+        alignment: line.alignment,
     };
-    let end: usize = rows[..=cursor].iter().sum();
-    end.saturating_sub(visible)
+    let mut rows = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in &line.spans {
+        let mut piece = String::new();
+        for grapheme in span.styled_graphemes(Style::default()) {
+            let columns = Span::raw(grapheme.symbol).width();
+            if used > 0 && used + columns > width {
+                if !piece.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut piece), span.style));
+                }
+                rows.push(row(std::mem::take(&mut spans)));
+                used = 0;
+            }
+            piece.push_str(grapheme.symbol);
+            used += columns;
+        }
+        if !piece.is_empty() {
+            spans.push(Span::styled(piece, span.style));
+        }
+    }
+    rows.push(row(spans));
+    rows
 }
 
 /// Split newline-separated modal text into body lines.

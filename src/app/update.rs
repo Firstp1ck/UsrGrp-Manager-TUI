@@ -2547,9 +2547,82 @@ mod tests {
         let mut app = user_app();
         press(&mut app, KeyCode::Char('n'));
         assert!(matches!(app.modal(), Some(ModalState::UserAddInput { .. })));
-        let screen = rendered_at(&app, 80, 14);
-        assert!(screen.contains("Submit"));
-        assert!(screen.contains("Enter on Submit  Esc back"));
+        let rows = rendered_rows(&app, 80, 14);
+        assert!(rows.iter().any(|row| row.contains("│▶ Username:")));
+        assert!(rows.iter().any(|row| row.contains("│  Submit")));
+    }
+
+    /// Screen rows of a TestBackend render, one string per row.
+    fn rendered_rows(app: &AppState, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::render(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn narrow_dialog_shows_every_character_of_a_wrapped_value_at_30x24() {
+        let mut app = user_app();
+        let value = "aaaaaaaaaaa bbbbbbbbbbb ccccccccccc";
+        open_modal(
+            &mut app,
+            ModalState::ModifyTextInput {
+                field: ModifyField::Fullname,
+                value: value.to_owned(),
+                error: None,
+            },
+        );
+        let rows = rendered_rows(&app, 30, 24);
+        // The dialog is 22 columns wide at x = 4, so its body is x = 5..25.
+        let body: Vec<String> = rows
+            .iter()
+            .map(|row| row.chars().skip(5).take(20).collect())
+            .collect();
+        let start = body
+            .iter()
+            .position(|row| row.starts_with("aaaaaaaaaaa"))
+            .expect("first row of the value");
+        assert_eq!(body[start], "aaaaaaaaaaa bbbbbbbb");
+        assert_eq!(body[start + 1].trim_end(), "bbb ccccccccccc");
+        assert!(rows[start + 2].contains("type to edit"));
+    }
+
+    #[test]
+    fn cursor_row_below_a_wrapped_line_stays_visible() {
+        let app = user_app();
+        let body = vec![
+            ratatui::text::Line::from("aaaaaaaaaaa bbbbbbbbbbb ccccccccccc"),
+            ratatui::text::Line::from("  one"),
+            ratatui::text::Line::from("▶ two"),
+        ];
+        // 30x6: the dialog has four interior rows, so three body rows for
+        // four wrapped rows; the body scrolls by one to show the cursor.
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(30, 6)).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::components::render_modal_frame(
+                    frame,
+                    frame.area(),
+                    &app,
+                    "Pick",
+                    body,
+                    "footer",
+                )
+            })
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("▶ two"));
+        assert!(screen.contains("  one"));
+        assert!(screen.contains("footer"));
     }
 
     #[test]
