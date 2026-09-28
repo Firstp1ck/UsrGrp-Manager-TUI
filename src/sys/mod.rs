@@ -524,7 +524,7 @@ impl SystemAdapter {
                 let gecos = Gecos::new(gecos)?;
                 let user = mutable_user_target(&snapshot, &username, generation)?;
                 let desired = OperationCheck::account(
-                    "user GECOS matches request",
+                    "user full name matches request",
                     AccountCondition::UserGecos {
                         uid: user.uid,
                         gecos: Some(gecos.clone()),

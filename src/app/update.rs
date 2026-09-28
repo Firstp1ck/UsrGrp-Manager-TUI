@@ -1818,7 +1818,9 @@ fn run_pending_plan(app: &mut AppState, attempts: u8) {
     match app.adapter.execute_prepared_operation(&prepared.plan) {
         Ok(report) => {
             let message = report_message(&report);
-            app.log_event("executed", &format!("{steps} => {message}"));
+            // The log keeps the internal step ids; the dialog shows plain words.
+            let logged = format_report(&report, |id| id);
+            app.log_event("executed", &format!("{steps} => {logged}"));
             if let Some(failed) = &report.failed {
                 // A long preview can push the failure past the line cap, so
                 // the classified error also gets a line of its own.
@@ -2038,9 +2040,39 @@ fn report_title(report: &crate::sys::OperationReport) -> &'static str {
     }
 }
 
+/// Plain-word name of a step id from src/sys. Step ids are internal (tests
+/// and the log key on them), so the result dialog shows this label instead.
+/// Unknown ids fall back to the id itself.
+fn step_label(id: &str) -> &str {
+    plain_step_label(id).unwrap_or(id)
+}
+
+fn plain_step_label(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "change user GECOS" => "set full name",
+        "change user shell" => "change shell",
+        "rename user" => "rename user",
+        "add user to group" => "add to group",
+        "remove user from group" => "remove from group",
+        "set user password" => "set password",
+        "expire user password" => "force password change",
+        "create user" => "create user",
+        "delete user" => "delete user",
+        "create group" => "create group",
+        "delete group" => "delete group",
+        "rename group" => "rename group",
+        _ => return None,
+    })
+}
+
 /// Result lines after the description: step counts, the failed step, and
 /// whether the account files confirm the outcome.
 fn report_message(report: &crate::sys::OperationReport) -> String {
+    format_report(report, step_label)
+}
+
+/// `report_message` with the failed step named by `label`.
+fn format_report(report: &crate::sys::OperationReport, label: fn(&str) -> &str) -> String {
     let completed = report.completed.len();
     let mut message = format!(
         "{completed} {} completed, {} skipped",
@@ -2050,7 +2082,7 @@ fn report_message(report: &crate::sys::OperationReport) -> String {
     if let Some(failed) = &report.failed {
         message.push_str(&format!(
             "\nFailed at {}: {}",
-            failed.id,
+            label(&failed.id),
             classified_error_message(&failed.error)
         ));
     }
@@ -2537,6 +2569,84 @@ mod tests {
             _ => panic!("expected the result dialog"),
         }
         assert!(rendered(&app).contains("Failed"));
+    }
+
+    #[test]
+    fn failed_full_name_change_names_the_step_in_plain_words() {
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(FailRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeFullname {
+                username: "alice".to_owned(),
+                new_fullname: "Alice Liddell".to_owned(),
+            },
+        );
+        execute_pending_plan(&mut app);
+        match app.modal() {
+            Some(ModalState::Info { title, message }) => {
+                assert_eq!(title.as_deref(), Some("Failed"), "{message}");
+                let failure = message
+                    .lines()
+                    .find(|line| line.starts_with("Failed at "))
+                    .expect("failure line");
+                assert!(
+                    failure.starts_with("Failed at set full name: "),
+                    "{failure}"
+                );
+                assert!(message.contains("full name"));
+                assert!(!message.contains("GECOS"), "{message}");
+            }
+            _ => panic!("expected the result dialog"),
+        }
+        let text = rendered(&app);
+        assert!(text.contains("full name"));
+        assert!(!text.contains("GECOS"));
+    }
+
+    #[test]
+    fn every_planned_step_id_has_a_plain_label() {
+        let source = include_str!("../sys/mod.rs");
+        let mut ids = Vec::new();
+        for (index, _) in source.match_indices("PlannedStep::new(") {
+            let rest = &source[index..];
+            // The id is the first string literal of the call; a conditional
+            // id (`if .. { "a" } else { "b" }`) has one literal per branch
+            // before the first `CommandSpec`/variable argument.
+            let args_end = rest
+                .find("CommandSpec::")
+                .into_iter()
+                .chain(rest.find(",\n"))
+                .chain(rest.find(", "))
+                .min()
+                .unwrap_or(rest.len());
+            let mut args = &rest[..args_end];
+            while let Some(start) = args.find('"') {
+                let tail = &args[start + 1..];
+                let end = tail.find('"').expect("closed string literal");
+                ids.push(&tail[..end]);
+                args = &tail[end + 1..];
+            }
+        }
+        assert!(ids.len() >= 11, "found {ids:?}");
+        for id in [
+            "change user GECOS",
+            "add user to group",
+            "remove user from group",
+        ] {
+            assert!(ids.contains(&id), "{id} missing from {ids:?}");
+        }
+        for id in ids {
+            let label = plain_step_label(id);
+            assert!(label.is_some(), "step id {id:?} has no plain-word label");
+            assert!(!label.unwrap().contains("GECOS"), "{id}");
+        }
+        assert_eq!(step_label("some future step"), "some future step");
     }
 
     #[test]
