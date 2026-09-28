@@ -218,13 +218,20 @@ pub fn apply_filters_and_search(app: &mut AppState) {
                 .is_some_and(|exists| !exists)
         });
     }
-    if (chips.locked || chips.no_password || chips.expired)
+    let mut shadow_filter_skipped = None;
+    if chips.any_shadow()
         && let ShadowState::Known(statuses) = &app.diagnostics.shadow
     {
         // Do not claim a complete status filter when any visible account is
         // unknown to shadow.  The UI keeps the selected filter visible and
-        // reports shadow availability separately.
-        if users.iter().all(|user| statuses.contains_key(&user.name)) {
+        // titles report how many users lacked a record.
+        let without_record = users
+            .iter()
+            .filter(|user| !statuses.contains_key(&user.name))
+            .count();
+        if without_record > 0 {
+            shadow_filter_skipped = Some(without_record);
+        } else {
             if chips.locked {
                 users.retain(|user| statuses[&user.name].locked);
             }
@@ -252,6 +259,7 @@ pub fn apply_filters_and_search(app: &mut AppState) {
         });
     }
     app.users = users;
+    app.shadow_filter_skipped = shadow_filter_skipped;
     app.selected_user_index = selected_user
         .and_then(|uid| app.users.iter().position(|user| user.uid == uid))
         .unwrap_or(0)

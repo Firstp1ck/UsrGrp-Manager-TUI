@@ -549,31 +549,57 @@ fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Enter | KeyCode::Char(' ') => {
-            match app.active_tab {
-                ActiveTab::Users => match *selected {
-                    0 => app.users_filter_chips = Default::default(),
-                    1 => app.users_filter_chips.human_only = !app.users_filter_chips.human_only,
-                    2 => app.users_filter_chips.system_only = !app.users_filter_chips.system_only,
-                    3 => app.users_filter_chips.inactive = !app.users_filter_chips.inactive,
-                    4 => app.users_filter_chips.no_home = !app.users_filter_chips.no_home,
-                    5 => app.users_filter_chips.locked = !app.users_filter_chips.locked,
-                    6 => app.users_filter_chips.no_password = !app.users_filter_chips.no_password,
-                    7 => app.users_filter_chips.expired = !app.users_filter_chips.expired,
-                    _ => {}
-                },
+            let changed = match app.active_tab {
+                ActiveTab::Users => toggle_user_filter(app, *selected),
                 ActiveTab::Groups => {
                     app.groups_filter = match *selected {
                         0 => None,
                         1 => Some(crate::app::GroupsFilter::OnlyUserGids),
                         _ => Some(crate::app::GroupsFilter::OnlySystemGids),
-                    }
+                    };
+                    true
                 }
+            };
+            if changed {
+                app.sort_and_filter();
+                save_filters(app);
             }
-            app.sort_and_filter();
-            save_filters(app);
         }
         _ => {}
     }
+}
+
+/// Apply Enter/Space on row `selected` of the users filter menu. Returns
+/// false when the row is disabled: the shadow chips while shadow data is
+/// unavailable.
+fn toggle_user_filter(app: &mut AppState, selected: usize) -> bool {
+    let shadow_known = matches!(app.diagnostics.shadow, crate::search::ShadowState::Known(_));
+    let chips = &mut app.users_filter_chips;
+    match selected {
+        0 => {
+            *chips = Default::default();
+            app.users_filter = None;
+        }
+        // Human and system users exclude each other: turning one on turns the other off.
+        1 => {
+            let human = !app.human_filter_on();
+            let system = !human && app.system_filter_on();
+            app.set_uid_range_filters(human, system);
+        }
+        2 => {
+            let system = !app.system_filter_on();
+            let human = !system && app.human_filter_on();
+            app.set_uid_range_filters(human, system);
+        }
+        3 => chips.inactive = !chips.inactive,
+        4 => chips.no_home = !chips.no_home,
+        5..=7 if !shadow_known => return false,
+        5 => chips.locked = !chips.locked,
+        6 => chips.no_password = !chips.no_password,
+        7 => chips.expired = !chips.expired,
+        _ => return false,
+    }
+    true
 }
 
 fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
@@ -2915,7 +2941,10 @@ mod tests {
         press(&mut app, KeyCode::Char('f'));
         press(&mut app, KeyCode::Char('k'));
         let screen = rendered_at(&app, 80, 16);
-        assert!(screen.contains("▶ Expired (shadow)"));
+        assert!(
+            screen
+                .contains("▶ [-] Expired (shadow unavailable: shadow data has not been refreshed)")
+        );
         assert!(screen.contains("Backspace back  Esc close"));
     }
 
@@ -3008,7 +3037,7 @@ mod tests {
         press(&mut app, KeyCode::Char('f'));
         press(&mut app, KeyCode::Char('k'));
         let screen = rendered_at(&app, 80, 9);
-        assert!(screen.contains("▶ Expired (shadow)"));
+        assert!(screen.contains("▶ [-] Expired (shadow unavailable"));
         assert!(screen.contains("Backspace back  Esc close"));
 
         app.close_modals();
@@ -3064,6 +3093,144 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.users_query, "");
         assert_eq!(user_names(&app), ["alice", "bob", "carol"]);
+    }
+
+    /// `membership_app` with filter.conf saved under a tempdir, never the repo.
+    fn filter_app(config: &tempfile::TempDir) -> AppState {
+        let mut app = membership_app();
+        app.config_root_provider = Arc::new(crate::app::FixedConfigRootProvider(
+            config.path().to_path_buf(),
+        ));
+        app
+    }
+
+    /// Open the filter menu and press Enter on row `row`.
+    fn toggle_filter_row(app: &mut AppState, row: usize) {
+        press(app, KeyCode::Char('f'));
+        for _ in 0..row {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Esc);
+    }
+
+    #[test]
+    fn human_and_system_filters_exclude_each_other() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        toggle_filter_row(&mut app, 1);
+        toggle_filter_row(&mut app, 2);
+        assert!(!app.users_filter_chips.human_only);
+        assert!(app.users_filter_chips.system_only);
+        assert_eq!(app.active_user_filter_labels(), ["system"]);
+        let saved = std::fs::read_to_string(config.path().join("filter.conf")).unwrap();
+        assert!(saved.contains("human_only = false"));
+        assert!(saved.contains("system_only = true"));
+    }
+
+    #[test]
+    fn show_all_clears_chips_and_hand_edited_users_filter() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        app.users_filter = Some(crate::app::UsersFilter::OnlySystemIds);
+        app.users_filter_chips.inactive = true;
+        app.sort_and_filter();
+        assert!(app.users.is_empty());
+        toggle_filter_row(&mut app, 0);
+        assert_eq!(app.users_filter, None);
+        assert!(!app.users_filter_chips.inactive);
+        assert_eq!(user_names(&app), ["alice", "bob", "carol"]);
+
+        app.active_tab = ActiveTab::Groups;
+        app.groups_filter = Some(crate::app::GroupsFilter::OnlySystemGids);
+        toggle_filter_row(&mut app, 0);
+        assert_eq!(app.groups_filter, None);
+    }
+
+    #[test]
+    fn hand_edited_users_filter_shows_as_the_human_chip() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        app.users_filter = Some(crate::app::UsersFilter::OnlyUserIds);
+        assert_eq!(app.active_user_filter_labels(), ["human"]);
+        // Turning "System users" on folds the hand-edited filter away.
+        toggle_filter_row(&mut app, 2);
+        assert_eq!(app.users_filter, None);
+        assert!(!app.human_filter_on());
+        assert!(app.users_filter_chips.system_only);
+    }
+
+    #[test]
+    fn shadow_chips_are_disabled_while_shadow_is_unavailable() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        app.diagnostics.shadow = crate::search::ShadowState::Unavailable {
+            reason: "permission denied".to_owned(),
+        };
+        press(&mut app, KeyCode::Char('f'));
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("[-] Locked (shadow unavailable: permission denied)"))
+        );
+        assert!(rows.iter().any(|row| row.contains("[ ] Human users")));
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.users_filter_chips.locked);
+        assert!(!config.path().join("filter.conf").exists());
+    }
+
+    #[test]
+    fn shadow_filter_skipped_is_counted_and_shown_in_titles() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        let locked = crate::search::ShadowStatus {
+            locked: true,
+            ..Default::default()
+        };
+        app.diagnostics.shadow =
+            crate::search::ShadowState::Known([("alice".to_owned(), locked)].into_iter().collect());
+        toggle_filter_row(&mut app, 5);
+        assert!(app.users_filter_chips.locked);
+        assert_eq!(app.shadow_filter_skipped, Some(2));
+        assert_eq!(user_names(&app), ["alice", "bob", "carol"]);
+        let title = ui::users::users_table_title(&app);
+        assert!(
+            title.ends_with("3 of 3  [locked]  (shadow filter skipped: 2 users without record)"),
+            "{title}"
+        );
+        press(&mut app, KeyCode::Char('f'));
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("shadow filter skipped: 2 users"))
+        );
+        assert!(rows.iter().any(|row| row.contains("[x] Locked (shadow)")));
+    }
+
+    #[test]
+    fn table_titles_list_active_filters_after_the_count() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        toggle_filter_row(&mut app, 1);
+        toggle_filter_row(&mut app, 3);
+        assert_eq!(
+            ui::users::users_table_title(&app),
+            "[Users]  0 of 3  [human, inactive]"
+        );
+        app.active_tab = ActiveTab::Groups;
+        toggle_filter_row(&mut app, 2);
+        assert_eq!(
+            ui::groups::groups_table_title(&app),
+            "[Groups]  0 of 3  [system]"
+        );
+        press(&mut app, KeyCode::Char('f'));
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(rows.iter().any(|row| row.contains("(•) System GIDs")));
+        assert!(rows.iter().any(|row| row.contains("( ) User GIDs")));
     }
 
     #[test]

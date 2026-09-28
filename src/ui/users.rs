@@ -15,26 +15,35 @@ use crate::{
     },
     ui::components::{
         CandidateView, FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
-        candidate_dialog, marker, render_modal_frame, search_title, text_lines, with_error_line,
+        candidate_dialog, marker, push_filter_labels, render_modal_frame, search_title,
+        shadow_skipped_note, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
 
 /// Users table title: focus marker, the search query while it applies, and
-/// how many users are listed out of all loaded (`[Users]  /alice  12 of 45`).
+/// how many users are listed out of all loaded, then the active filters and
+/// any skipped shadow filter
+/// (`[Users]  /alice  12 of 45  [human, locked]`).
 pub fn users_table_title(app: &AppState) -> String {
     let name = if app.users_focus == UsersFocus::UsersList {
         "[Users]"
     } else {
         "Users"
     };
-    search_title(
+    let mut title = search_title(
         name,
         &app.users_query,
         app.input_mode == InputMode::SearchUsers,
         app.users.len(),
         app.users_all.len(),
-    )
+    );
+    push_filter_labels(&mut title, &app.active_user_filter_labels());
+    if let Some(note) = shadow_skipped_note(app) {
+        title.push_str("  ");
+        title.push_str(&note);
+    }
+    title
 }
 
 pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {

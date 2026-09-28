@@ -277,16 +277,94 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
             YES_NO_FOOTER,
         ),
         ModalState::FilterMenu { selected } => {
-            let options = match app.active_tab { crate::app::ActiveTab::Users => vec!["Show all", "Human users", "System users", "Inactive shell", "No home", "Locked (shadow)", "No password (shadow)", "Expired (shadow)"], crate::app::ActiveTab::Groups => vec!["Show all", "User GIDs", "System GIDs"] };
-            (
-                "Filters",
-                options.iter().enumerate().map(|(index, option)| format!("{} {option}", marker(*selected, index))).collect::<Vec<_>>().join("\n"),
+            let body = filter_menu_rows(app)
+                .iter()
+                .enumerate()
+                .map(|(index, row)| format!("{} {row}", marker(*selected, index)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut title = "Filters".to_owned();
+            if app.active_tab == crate::app::ActiveTab::Users
+                && let Some(note) = shadow_skipped_note(app)
+            {
+                title.push_str("  ");
+                title.push_str(&note);
+            }
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                &title,
+                text_lines(body),
                 "↑↓ move  Enter/Space toggle  Backspace back  Esc close",
-            )
+            );
+            return;
         }
         _ => return,
     };
     render_modal_frame(frame, area, app, title, text_lines(body), footer);
+}
+
+/// Filter menu rows for the active tab, without the cursor. User chips read
+/// `[x] Human users`; shadow chips read `[-] Locked (shadow unavailable:
+/// <reason>)` while shadow data is unavailable. The groups menu is a radio:
+/// `(•) User GIDs`.
+pub fn filter_menu_rows(app: &AppState) -> Vec<String> {
+    use crate::app::{ActiveTab, GroupsFilter};
+    use crate::search::ShadowState;
+    match app.active_tab {
+        ActiveTab::Users => {
+            let chips = &app.users_filter_chips;
+            let check = |on: bool, label: &str| format!("[{}] {label}", if on { "x" } else { " " });
+            let shadow = |on: bool, label: &str| match &app.diagnostics.shadow {
+                ShadowState::Known(_) => check(on, &format!("{label} (shadow)")),
+                ShadowState::Unavailable { reason } => {
+                    format!("[-] {label} (shadow unavailable: {reason})")
+                }
+            };
+            vec![
+                "Show all".to_owned(),
+                check(app.human_filter_on(), "Human users"),
+                check(app.system_filter_on(), "System users"),
+                check(chips.inactive, "Inactive shell"),
+                check(chips.no_home, "No home"),
+                shadow(chips.locked, "Locked"),
+                shadow(chips.no_password, "No password"),
+                shadow(chips.expired, "Expired"),
+            ]
+        }
+        ActiveTab::Groups => [
+            (None, "Show all"),
+            (Some(GroupsFilter::OnlyUserGids), "User GIDs"),
+            (Some(GroupsFilter::OnlySystemGids), "System GIDs"),
+        ]
+        .into_iter()
+        .map(|(filter, label)| {
+            let dot = if app.groups_filter == filter {
+                "•"
+            } else {
+                " "
+            };
+            format!("({dot}) {label}")
+        })
+        .collect(),
+    }
+}
+
+/// `(shadow filter skipped: 3 users without record)` when the last filter
+/// pass left the shadow chips unapplied.
+pub fn shadow_skipped_note(app: &AppState) -> Option<String> {
+    app.shadow_filter_skipped.map(|count| {
+        let users = if count == 1 { "user" } else { "users" };
+        format!("(shadow filter skipped: {count} {users} without record)")
+    })
+}
+
+/// Append `  [human, locked]` to a table title when any filter is on.
+pub fn push_filter_labels(title: &mut String, labels: &[&str]) {
+    if !labels.is_empty() {
+        title.push_str(&format!("  [{}]", labels.join(", ")));
+    }
 }
 
 /// Cursor prefix for row `index` of a dialog body.

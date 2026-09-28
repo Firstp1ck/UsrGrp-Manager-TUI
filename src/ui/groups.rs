@@ -8,29 +8,37 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AppState, CandidateList, GroupsFocus, InputMode, ModalState},
+    app::{AppState, CandidateList, GroupsFilter, GroupsFocus, InputMode, ModalState},
     ui::components::{
         CandidateView, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, marker,
-        render_modal_frame, search_title, text_lines, with_error_line,
+        push_filter_labels, render_modal_frame, search_title, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
 
 /// Groups table title: focus marker, the search query while it applies, and
-/// how many groups are listed out of all loaded (`[Groups]  /dev  3 of 89`).
+/// how many groups are listed out of all loaded, then the active filter
+/// (`[Groups]  /dev  3 of 89  [system]`).
 pub fn groups_table_title(app: &AppState) -> String {
     let name = if app.groups_focus == GroupsFocus::GroupsList {
         "[Groups]"
     } else {
         "Groups"
     };
-    search_title(
+    let mut title = search_title(
         name,
         &app.groups_query,
         app.input_mode == InputMode::SearchGroups,
         app.groups.len(),
         app.groups_all.len(),
-    )
+    );
+    let label = match app.groups_filter {
+        None => None,
+        Some(GroupsFilter::OnlyUserGids) => Some("user"),
+        Some(GroupsFilter::OnlySystemGids) => Some("system"),
+    };
+    push_filter_labels(&mut title, label.as_slice());
+    title
 }
 
 pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {

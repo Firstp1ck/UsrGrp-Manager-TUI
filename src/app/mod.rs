@@ -432,6 +432,13 @@ pub struct UsersFilterChips {
     pub expired: bool,
 }
 
+impl UsersFilterChips {
+    /// Whether any chip backed by shadow data (locked, no password, expired) is on.
+    pub fn any_shadow(&self) -> bool {
+        self.locked || self.no_password || self.expired
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum UsersFilter {
     OnlyUserIds,
@@ -963,6 +970,10 @@ pub struct AppState {
     pub users_filter: Option<UsersFilter>,
     pub groups_filter: Option<GroupsFilter>,
     pub users_filter_chips: UsersFilterChips,
+    /// Set by the last filter pass when shadow is known, a shadow chip is on,
+    /// and this many listed users had no shadow record, so the shadow chips
+    /// were not applied.
+    pub shadow_filter_skipped: Option<usize>,
     pub actions_context: Option<ActionsContext>,
     pub show_keybinds: bool,
     /// Adapter-owned authority for refresh, preparation, elevation and execution.
@@ -1049,6 +1060,7 @@ impl AppState {
             users_filter: None,
             groups_filter: None,
             users_filter_chips: UsersFilterChips::default(),
+            shadow_filter_skipped: None,
             actions_context: None,
             show_keybinds: true,
             adapter,
@@ -1180,6 +1192,49 @@ impl AppState {
         self.rebuild_user_group_cache();
         crate::search::apply_filters_and_search(self);
         self.normalize_selections();
+    }
+
+    /// "Human users" is on through its chip or a hand-edited
+    /// `users_filter = OnlyUserIds` in filter.conf.
+    pub fn human_filter_on(&self) -> bool {
+        self.users_filter_chips.human_only || self.users_filter == Some(UsersFilter::OnlyUserIds)
+    }
+
+    /// "System users" is on through its chip or a hand-edited
+    /// `users_filter = OnlySystemIds` in filter.conf.
+    pub fn system_filter_on(&self) -> bool {
+        self.users_filter_chips.system_only || self.users_filter == Some(UsersFilter::OnlySystemIds)
+    }
+
+    /// Set the human/system filters. The chips carry the state from here on,
+    /// so a hand-edited `users_filter` is folded into them and cleared.
+    pub fn set_uid_range_filters(&mut self, human: bool, system: bool) {
+        self.users_filter_chips.human_only = human;
+        self.users_filter_chips.system_only = system;
+        self.users_filter = None;
+    }
+
+    /// Short names of the user filters that narrow the list, in menu order.
+    /// Shadow chips are left out while shadow data is unavailable, because
+    /// they are disabled and not applied.
+    pub fn active_user_filter_labels(&self) -> Vec<&'static str> {
+        let chips = &self.users_filter_chips;
+        let shadow = matches!(
+            self.diagnostics.shadow,
+            crate::search::ShadowState::Known(_)
+        );
+        [
+            (self.human_filter_on(), "human"),
+            (self.system_filter_on(), "system"),
+            (chips.inactive, "inactive"),
+            (chips.no_home, "no home"),
+            (shadow && chips.locked, "locked"),
+            (shadow && chips.no_password, "no password"),
+            (shadow && chips.expired, "expired"),
+        ]
+        .into_iter()
+        .filter_map(|(on, label)| on.then_some(label))
+        .collect()
     }
 
     fn rebuild_user_group_cache(&mut self) {
