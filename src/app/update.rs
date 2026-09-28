@@ -231,7 +231,7 @@ fn move_selection(app: &mut AppState, delta: isize) {
     let state = (app.active_tab, app.users_focus, app.groups_focus);
     let len = match state {
         (ActiveTab::Users, UsersFocus::UsersList, _) => app.users.len(),
-        (ActiveTab::Users, UsersFocus::MemberOf, _) => user_groups(app).len(),
+        (ActiveTab::Users, UsersFocus::MemberOf, _) => app.selected_user_groups().len(),
         (ActiveTab::Groups, _, GroupsFocus::GroupsList) => app.groups.len(),
         (ActiveTab::Groups, _, GroupsFocus::Members) => app
             .groups
@@ -1423,23 +1423,10 @@ fn toggle(values: &mut Vec<usize>, selected: usize) {
     }
 }
 
-fn user_groups(app: &AppState) -> Vec<crate::sys::SystemGroup> {
-    app.users
-        .get(app.selected_user_index)
-        .map_or_else(Vec::new, |user| {
-            app.groups
-                .iter()
-                .filter(|group| {
-                    group.gid == user.primary_gid
-                        || group.members.iter().any(|member| member == &user.name)
-                })
-                .cloned()
-                .collect()
-        })
-}
-
 fn selected_user_group(app: &AppState) -> Option<crate::sys::SystemGroup> {
-    user_groups(app).get(app.selected_user_group_index).cloned()
+    app.selected_user_groups()
+        .get(app.selected_user_group_index)
+        .map(|group| (*group).clone())
 }
 
 #[cfg(test)]
