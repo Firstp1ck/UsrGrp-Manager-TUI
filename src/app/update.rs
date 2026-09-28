@@ -5,7 +5,7 @@
 //! receives runners, or retains sudo credentials.
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 
 use crate::{
     app::{
@@ -31,6 +31,8 @@ pub fn run_app_with(
     options: RunOptions,
 ) -> Result<()> {
     let mut app = AppState::load_system_with(options);
+    let size = terminal.size()?;
+    app.terminal_size = (size.width, size.height);
     loop {
         terminal.draw(|frame| ui::render(frame, &app))?;
         if event::poll(std::time::Duration::from_millis(100))?
@@ -43,9 +45,9 @@ pub fn run_app_with(
 
 /// Dispatch one terminal event. Returns `true` when the app should quit.
 ///
-/// Only key presses reach the key handlers. A resize needs no state change:
-/// the next loop iteration redraws at the new size. Mouse capture is not
-/// enabled, so mouse, focus, and paste events are ignored.
+/// Only key presses reach the key handlers. A resize records the new size
+/// for page keys; the next loop iteration redraws at that size. Mouse capture
+/// is not enabled, so mouse, focus, and paste events are ignored.
 fn handle_event(app: &mut AppState, event: Event) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -57,7 +59,10 @@ fn handle_event(app: &mut AppState, event: Event) -> bool {
             handle_key(app, key);
             false
         }
-        Event::Resize(_, _) => false,
+        Event::Resize(width, height) => {
+            app.terminal_size = (width, height);
+            false
+        }
         _ => false,
     }
 }
@@ -131,10 +136,10 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
         Some(KeyAction::MoveUp) => move_selection(app, -1),
         Some(KeyAction::MoveDown) => move_selection(app, 1),
         Some(KeyAction::PageUp | KeyAction::MoveLeftPage) => {
-            move_selection(app, -(app.rows_per_page as isize))
+            move_selection(app, -(page_size(app) as isize))
         }
         Some(KeyAction::PageDown | KeyAction::MoveRightPage) => {
-            move_selection(app, app.rows_per_page as isize)
+            move_selection(app, page_size(app) as isize)
         }
         Some(KeyAction::Ignore) | None => {}
     }
@@ -260,6 +265,20 @@ fn open_delete(app: &mut AppState) {
         }
         ActiveTab::Groups => open_actions(app),
     }
+}
+
+/// Rows the focused pane shows at the current terminal size, taken from the
+/// same layout the renderer uses.
+fn page_size(app: &AppState) -> usize {
+    let (width, height) = app.terminal_size;
+    let layout = ui::layout::main_layout(Rect::new(0, 0, width, height), app.show_keybinds);
+    let pane = match (app.active_tab, app.users_focus, app.groups_focus) {
+        (ActiveTab::Users, UsersFocus::UsersList, _)
+        | (ActiveTab::Groups, _, GroupsFocus::GroupsList) => layout.table,
+        (ActiveTab::Users, UsersFocus::MemberOf, _)
+        | (ActiveTab::Groups, _, GroupsFocus::Members) => layout.members,
+    };
+    ui::layout::table_rows(pane)
 }
 
 fn move_selection(app: &mut AppState, delta: isize) {
@@ -1877,6 +1896,7 @@ mod tests {
         let before_mode = app.input_mode;
         assert!(!handle_event(&mut app, Event::Resize(80, 24)));
         assert!(!handle_event(&mut app, Event::Resize(20, 5)));
+        assert_eq!(app.terminal_size, (20, 5));
         assert_eq!(app.active_tab, before_tab);
         assert_eq!(app.input_mode, before_mode);
         assert!(app.modal().is_none());
@@ -3184,6 +3204,94 @@ mod tests {
             Arc::new(FixedIdentityProvider::uid(Uid(1000))),
         ));
         isolated_app(adapter, snapshot)
+    }
+
+    /// 50 users `u000`..`u049` in one group; `u000` is also in 40 extra groups.
+    fn paging_app() -> AppState {
+        let users: Vec<AccountUser> = (0..50)
+            .map(|index| AccountUser {
+                uid: Uid(1000 + index),
+                name: UserName::new(format!("u{index:03}")).unwrap(),
+                primary_gid: Gid(100),
+                full_name: None,
+                home_dir: format!("/home/u{index:03}").into(),
+                shell: ShellPath::new("/bin/sh").unwrap(),
+            })
+            .collect();
+        let mut groups = vec![AccountGroup {
+            gid: Gid(100),
+            name: GroupName::new("staff").unwrap(),
+            members: vec![],
+        }];
+        groups.extend((0..40).map(|index| AccountGroup {
+            gid: Gid(3000 + index),
+            name: GroupName::new(format!("g{index:03}")).unwrap(),
+            members: vec![UserName::new("u000").unwrap()],
+        }));
+        let snapshot = AccountSnapshot {
+            users,
+            groups,
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    fn rendered_text(app: &AppState, width: u16, height: u16) -> String {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::render(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn page_down_moves_by_the_rows_the_table_renders() {
+        let mut app = paging_app();
+        app.terminal_size = (100, 40);
+        // 40 rows - 4 header - 1 status bar - 2 borders - 1 column header.
+        let page = 32;
+        let before = rendered_text(&app, 100, 40);
+        assert!(before.contains(&format!("u{:03}", page - 1)));
+        assert!(!before.contains(&format!("u{page:03}")));
+
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_user_index, page);
+        let after = rendered_text(&app, 100, 40);
+        assert!(after.contains(&format!("u{page:03}")));
+        assert!(!after.contains(&format!("u{:03}", page - 1)));
+
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.selected_user_index, 0);
+    }
+
+    #[test]
+    fn page_size_follows_resize_and_the_focused_pane() {
+        let mut app = paging_app();
+        handle_event(&mut app, Event::Resize(100, 20));
+        press(&mut app, KeyCode::PageDown);
+        // 20 rows - 4 header - 1 status bar - 3 table chrome.
+        assert_eq!(app.selected_user_index, 12);
+
+        press(&mut app, KeyCode::PageUp);
+        app.users_focus = UsersFocus::MemberOf;
+        let area = Rect::new(0, 0, 100, 20);
+        let members = ui::layout::main_layout(area, app.show_keybinds).members;
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(
+            app.selected_user_group_index,
+            ui::layout::table_rows(members)
+        );
     }
 
     #[test]

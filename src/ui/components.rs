@@ -24,10 +24,9 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
         " config-error"
     };
     let text = format!(
-        "users:{} groups:{} rows/page:{} data:{} shadow:{}{}",
+        "users:{} groups:{} data:{} shadow:{}{}",
         app.users.len(),
         app.groups.len(),
-        app.rows_per_page,
         stale,
         app.diagnostics.shadow.availability_label(),
         config

@@ -1,11 +1,12 @@
 //! Immutable UI rendering entry point.
 pub mod components;
 pub mod groups;
+pub mod layout;
 pub mod users;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::Style,
     widgets::{Block, Borders, Paragraph},
 };
@@ -22,33 +23,7 @@ pub fn render(frame: &mut Frame, app: &AppState) {
         );
         return;
     }
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Min(4),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
-    let body = if app.show_keybinds && root[1].width >= 90 {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(45),
-                Constraint::Percentage(35),
-                Constraint::Percentage(20),
-            ])
-            .split(root[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(root[1])
-    };
-    let details = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(7), Constraint::Min(5)])
-        .split(body[1]);
+    let layout = layout::main_layout(frame.area(), app.show_keybinds);
     let tabs = match app.active_tab {
         ActiveTab::Users => "[Users]  Groups",
         ActiveTab::Groups => "Users  [Groups]",
@@ -73,24 +48,24 @@ pub fn render(frame: &mut Frame, app: &AppState) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(app.theme.border)),
         ),
-        root[0],
+        layout.header,
     );
     match app.active_tab {
         ActiveTab::Users => {
-            users::render_users_table(frame, body[0], app);
-            users::render_user_details(frame, details[0], app);
-            users::render_user_groups(frame, details[1], app);
+            users::render_users_table(frame, layout.table, app);
+            users::render_user_details(frame, layout.details, app);
+            users::render_user_groups(frame, layout.members, app);
         }
         ActiveTab::Groups => {
-            groups::render_groups_table(frame, body[0], app);
-            groups::render_group_details(frame, details[0], app);
-            groups::render_group_members(frame, details[1], app);
+            groups::render_groups_table(frame, layout.table, app);
+            groups::render_group_details(frame, layout.details, app);
+            groups::render_group_members(frame, layout.members, app);
         }
     }
-    if body.len() == 3 {
-        components::render_keybinds_panel(frame, body[2], app);
+    if let Some(area) = layout.keybinds {
+        components::render_keybinds_panel(frame, area, app);
     }
-    components::render_status_bar(frame, root[2], app);
+    components::render_status_bar(frame, layout.status, app);
     if let Some(modal) = app.modal() {
         render_modal(frame, frame.area(), app, modal);
     }

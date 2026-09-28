@@ -939,7 +939,9 @@ pub struct AppState {
     /// Bounded, precomputed primary and supplementary memberships by user.
     /// Renderers consume this cache instead of scanning every group's members.
     pub user_group_gids: HashMap<String, HashSet<u32>>,
-    pub rows_per_page: usize,
+    /// Last known terminal size (columns, rows). Page keys derive the page
+    /// size from the layout at this size.
+    pub terminal_size: (u16, u16),
     pub _table_state: TableState,
     pub input_mode: InputMode,
     pub search_query: String,
@@ -1026,7 +1028,7 @@ impl AppState {
             selected_user_group_gid: None,
             selected_group_member_name: None,
             user_group_gids: HashMap::new(),
-            rows_per_page: 10,
+            terminal_size: (80, 24),
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
             search_query: String::new(),

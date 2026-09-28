@@ -13,14 +13,11 @@ use crate::{
         CandidateView, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, marker,
         render_modal_frame, text_lines, with_error_line,
     },
+    ui::layout::table_rows,
 };
 
-fn visible_rows(area: Rect) -> usize {
-    usize::from(area.height.saturating_sub(3)).max(1)
-}
-
 pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
-    let per_page = visible_rows(area);
+    let per_page = table_rows(area);
     let start = app.selected_group_index / per_page * per_page;
     let rows = app
         .groups
@@ -110,7 +107,7 @@ pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {
         .groups
         .get(app.selected_group_index)
         .map_or(&[][..], |group| group.members.as_slice());
-    let per_page = visible_rows(area);
+    let per_page = table_rows(area);
     let start = app.selected_group_member_index / per_page * per_page;
     let rows = members
         .iter()
