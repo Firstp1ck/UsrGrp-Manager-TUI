@@ -279,7 +279,19 @@ fn move_selection(app: &mut AppState, delta: isize) {
         (ActiveTab::Groups, _, GroupsFocus::GroupsList) => &mut app.selected_group_index,
         (ActiveTab::Groups, _, GroupsFocus::Members) => &mut app.selected_group_member_index,
     };
+    let before = *selected;
     move_index(selected, len, delta);
+    let parent_changed = *selected != before;
+    // A new parent row has its own child list; start its cursor at the top
+    // so the child pane never points past the end of the new list.
+    if parent_changed {
+        match state {
+            (ActiveTab::Users, UsersFocus::UsersList, _) => app.selected_user_group_index = 0,
+            (ActiveTab::Groups, _, GroupsFocus::GroupsList) => app.selected_group_member_index = 0,
+            (ActiveTab::Users, UsersFocus::MemberOf, _)
+            | (ActiveTab::Groups, _, GroupsFocus::Members) => {}
+        }
+    }
     app.capture_selection_identities();
 }
 
@@ -3129,6 +3141,106 @@ mod tests {
             Arc::new(FixedIdentityProvider::uid(Uid(1000))),
         ));
         isolated_app(adapter, snapshot)
+    }
+
+    /// alice is in three groups (primary `alice`, `dev`, `ops`); bob is only
+    /// in his primary group. Group `dev` has three members, `ops` one.
+    fn stale_child_app() -> AppState {
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(uid),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let group = |gid: u32, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(*member).unwrap())
+                .collect(),
+        };
+        let snapshot = AccountSnapshot {
+            users: vec![
+                user(1000, "alice"),
+                user(1001, "bob"),
+                user(1002, "carol"),
+                user(1003, "dave"),
+            ],
+            groups: vec![
+                group(1000, "alice", &[]),
+                group(1001, "bob", &[]),
+                group(2000, "dev", &["alice", "carol", "dave"]),
+                group(2001, "ops", &["alice"]),
+            ],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    #[test]
+    fn moving_to_another_user_resets_the_member_of_cursor() {
+        let mut app = stale_child_app();
+        app.active_tab = ActiveTab::Users;
+        app.users_focus = UsersFocus::UsersList;
+        app.selected_user_index = app
+            .users
+            .iter()
+            .position(|user| user.name == "alice")
+            .unwrap();
+        app.capture_selection_identities();
+        assert_eq!(app.selected_user_groups().len(), 3);
+        app.selected_user_group_index = 2;
+        app.capture_selection_identities();
+
+        let bob = app
+            .users
+            .iter()
+            .position(|user| user.name == "bob")
+            .unwrap();
+        let delta = bob as isize - app.selected_user_index as isize;
+        move_selection(&mut app, delta);
+
+        assert_eq!(app.users[app.selected_user_index].name, "bob");
+        assert_eq!(app.selected_user_groups().len(), 1);
+        assert_eq!(app.selected_user_group_index, 0);
+        let group = app.selected_user_groups().first().map(|group| group.gid);
+        assert!(group.is_some());
+        assert_eq!(app.selected_user_group_gid, group);
+    }
+
+    #[test]
+    fn moving_to_another_group_resets_the_members_cursor() {
+        let mut app = stale_child_app();
+        app.active_tab = ActiveTab::Groups;
+        app.groups_focus = GroupsFocus::GroupsList;
+        app.selected_group_index = app
+            .groups
+            .iter()
+            .position(|group| group.name == "dev")
+            .unwrap();
+        app.selected_group_member_index = 2;
+        app.capture_selection_identities();
+
+        let ops = app
+            .groups
+            .iter()
+            .position(|group| group.name == "ops")
+            .unwrap();
+        let delta = ops as isize - app.selected_group_index as isize;
+        move_selection(&mut app, delta);
+
+        assert_eq!(app.groups[app.selected_group_index].name, "ops");
+        assert_eq!(app.selected_group_member_index, 0);
+        assert_eq!(app.selected_group_member_name.as_deref(), Some("alice"));
     }
 
     /// Names listed as `[ ] name` / `[x] name` rows in the rendered dialog.
