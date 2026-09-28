@@ -3788,6 +3788,97 @@ mod tests {
         assert!(row.ends_with('…'), "{row}");
     }
 
+    /// Screen position of the first cell of `text`, if rendered.
+    fn find_text(rows: &[String], text: &str) -> Option<(u16, u16)> {
+        rows.iter().enumerate().find_map(|(y, row)| {
+            let byte = row.find(text)?;
+            let x = row[..byte].chars().count();
+            Some((u16::try_from(x).unwrap(), u16::try_from(y).unwrap()))
+        })
+    }
+
+    #[test]
+    fn empty_users_table_names_the_query_and_filters_in_muted_text() {
+        let mut app = single_account_app();
+        app.users_query = "zzz".to_owned();
+        app.sort_and_filter();
+        assert!(app.users.is_empty());
+        let rows = rendered_rows(&app, 100, 30);
+        let (x, y) = find_text(&rows, "No users match /zzz").expect("empty state shown");
+        assert!(
+            x < 50 && (3..29).contains(&y),
+            "inside the users table: {x},{y}"
+        );
+        assert!(find_text(&rows, "No user selected").is_some());
+
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(x, y)].fg,
+            app.theme._muted,
+            "empty state uses the muted color"
+        );
+
+        app.set_uid_range_filters(false, true);
+        app.sort_and_filter();
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(find_text(&rows, "No users match /zzz, filters: system").is_some());
+
+        app.users_query.clear();
+        app.sort_and_filter();
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(find_text(&rows, "No users match filters: system").is_some());
+    }
+
+    #[test]
+    fn empty_snapshot_shows_nothing_loaded_with_the_stale_reason() {
+        let snapshot = AccountSnapshot {
+            users: vec![],
+            groups: vec![],
+            shells: vec![],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.diagnostics.stale_reason = Some("boom".to_owned());
+        let rows = rendered_rows(&app, 100, 30);
+        let (_, loaded) = find_text(&rows, "No users loaded").expect("users empty state");
+        let (_, stale) = find_text(&rows, "STALE: boom").expect("stale reason");
+        assert_eq!(stale, loaded + 1, "stale reason under the empty state");
+
+        app.active_tab = ActiveTab::Groups;
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(find_text(&rows, "No groups loaded").is_some());
+        assert!(find_text(&rows, "No group selected").is_some());
+
+        app.diagnostics.stale_reason = None;
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(find_text(&rows, "No groups loaded").is_some());
+        assert!(rows.iter().all(|row| !row.contains("STALE")));
+    }
+
+    #[test]
+    fn empty_groups_table_and_members_pane_say_why() {
+        let mut app = single_account_app();
+        app.active_tab = ActiveTab::Groups;
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(
+            find_text(&rows, "No members").is_some(),
+            "staff has no members"
+        );
+
+        app.groups_query = "zzz".to_owned();
+        app.groups_filter = Some(crate::app::GroupsFilter::OnlySystemGids);
+        app.sort_and_filter();
+        assert!(app.groups.is_empty());
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(find_text(&rows, "No groups match /zzz, filters: system").is_some());
+    }
+
     #[test]
     fn status_bar_position_follows_the_focused_pane() {
         let mut app = stale_child_app();

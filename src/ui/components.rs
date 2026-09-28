@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -599,6 +599,69 @@ pub fn push_filter_labels(title: &mut String, labels: &[&str]) {
     if !labels.is_empty() {
         title.push_str(&format!("  [{}]", labels.join(", ")));
     }
+}
+
+/// Empty-state text for a table whose loaded rows were all filtered out:
+/// `No users match /alice, filters: locked`. The query and filter parts
+/// are left out when they do not apply.
+pub fn no_match_text(noun: &str, query: &str, filters: &[&str]) -> String {
+    let mut parts = Vec::new();
+    if !query.is_empty() {
+        parts.push(format!("/{query}"));
+    }
+    if !filters.is_empty() {
+        parts.push(format!("filters: {}", filters.join(", ")));
+    }
+    let mut text = format!("No {noun} match");
+    if !parts.is_empty() {
+        text.push(' ');
+        text.push_str(&parts.join(", "));
+    }
+    text
+}
+
+/// Empty-state lines for a table with nothing loaded: `No users loaded`,
+/// then the stale label with its reason when the last refresh failed.
+pub fn nothing_loaded_lines(app: &AppState, noun: &str) -> Vec<String> {
+    let mut lines = vec![format!("No {noun} loaded")];
+    if app.diagnostics.stale_reason.is_some() {
+        lines.push(refresh_label(app));
+    }
+    lines
+}
+
+/// Draw `block` with `lines` centered inside it in the muted color, in
+/// place of a table that has no rows.
+pub fn render_empty_state(
+    frame: &mut Frame,
+    area: Rect,
+    app: &AppState,
+    block: Block<'_>,
+    lines: Vec<String>,
+) {
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let width = usize::from(inner.width.max(1));
+    let height = lines
+        .iter()
+        .map(|line| line.chars().count().div_ceil(width).max(1))
+        .sum::<usize>();
+    let height = u16::try_from(height).unwrap_or(u16::MAX).min(inner.height);
+    // Word wrapping can take more rows than the estimate, so the text keeps
+    // every row below its start.
+    let top = (inner.height - height) / 2;
+    let text_area = Rect {
+        y: inner.y + top,
+        height: inner.height - top,
+        ..inner
+    };
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(app.theme._muted)),
+        text_area,
+    );
 }
 
 /// Cursor prefix for row `index` of a dialog body.

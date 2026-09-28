@@ -11,7 +11,8 @@ use crate::{
     app::{AppState, CandidateList, GroupsFilter, GroupsFocus, InputMode, ModalState},
     ui::components::{
         CandidateView, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, marker,
-        push_filter_labels, render_modal_frame, search_title, text_lines, with_error_line,
+        no_match_text, nothing_loaded_lines, push_filter_labels, render_empty_state,
+        render_modal_frame, search_title, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -32,16 +33,42 @@ pub fn groups_table_title(app: &AppState) -> String {
         app.groups.len(),
         app.groups_all.len(),
     );
-    let label = match app.groups_filter {
-        None => None,
-        Some(GroupsFilter::OnlyUserGids) => Some("user"),
-        Some(GroupsFilter::OnlySystemGids) => Some("system"),
-    };
-    push_filter_labels(&mut title, label.as_slice());
+    push_filter_labels(&mut title, groups_filter_label(app).as_slice());
     title
 }
 
+/// Short name of the active groups filter, if any.
+fn groups_filter_label(app: &AppState) -> Option<&'static str> {
+    match app.groups_filter {
+        None => None,
+        Some(GroupsFilter::OnlyUserGids) => Some("user"),
+        Some(GroupsFilter::OnlySystemGids) => Some("system"),
+    }
+}
+
+/// What the groups table says when it has no rows: nothing was loaded
+/// (with the stale reason), or the search and filter hide every group.
+pub fn groups_empty_lines(app: &AppState) -> Vec<String> {
+    if app.groups_all.is_empty() {
+        nothing_loaded_lines(app, "groups")
+    } else {
+        vec![no_match_text(
+            "groups",
+            &app.groups_query,
+            groups_filter_label(app).as_slice(),
+        )]
+    }
+}
+
 pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
+    let block = Block::default()
+        .title(groups_table_title(app))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border));
+    if app.groups.is_empty() {
+        render_empty_state(frame, area, app, block, groups_empty_lines(app));
+        return;
+    }
     let per_page = table_rows(area);
     let start = app.selected_group_index / per_page * per_page;
     let rows = app
@@ -67,12 +94,7 @@ pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(
         Table::new(rows, [Constraint::Length(8), Constraint::Percentage(100)])
             .header(Row::new(["GID", "GROUP"]).style(Style::default().fg(app.theme.title)))
-            .block(
-                Block::default()
-                    .title(groups_table_title(app))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.border)),
-            ),
+            .block(block),
         area,
     );
 }
@@ -124,10 +146,25 @@ pub fn render_group_details(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {
-    let members = app
-        .groups
-        .get(app.selected_group_index)
-        .map_or(&[][..], |group| group.members.as_slice());
+    let group = app.groups.get(app.selected_group_index);
+    let members = group.map_or(&[][..], |group| group.members.as_slice());
+    let block = Block::default()
+        .title(if app.groups_focus == GroupsFocus::Members {
+            "[Members]"
+        } else {
+            "Members"
+        })
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border));
+    if members.is_empty() {
+        let text = if group.is_some() {
+            "No members"
+        } else {
+            "No group selected"
+        };
+        render_empty_state(frame, area, app, block, vec![text.to_owned()]);
+        return;
+    }
     let per_page = table_rows(area);
     let start = app.selected_group_member_index / per_page * per_page;
     let rows = members
@@ -148,16 +185,7 @@ pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(
         Table::new(rows, [Constraint::Percentage(100)])
             .header(Row::new(["MEMBER"]).style(Style::default().fg(app.theme.title)))
-            .block(
-                Block::default()
-                    .title(if app.groups_focus == GroupsFocus::Members {
-                        "[Members]"
-                    } else {
-                        "Members"
-                    })
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.border)),
-            ),
+            .block(block),
         area,
     );
 }

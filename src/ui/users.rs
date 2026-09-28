@@ -15,8 +15,9 @@ use crate::{
     },
     ui::components::{
         CandidateView, FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
-        candidate_dialog, marker, push_filter_labels, render_modal_frame, search_title,
-        shadow_skipped_note, text_lines, with_error_line,
+        candidate_dialog, marker, no_match_text, nothing_loaded_lines, push_filter_labels,
+        render_empty_state, render_modal_frame, search_title, shadow_skipped_note, text_lines,
+        with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -46,7 +47,29 @@ pub fn users_table_title(app: &AppState) -> String {
     title
 }
 
+/// What the users table says when it has no rows: nothing was loaded
+/// (with the stale reason), or the search and filters hide every user.
+pub fn users_empty_lines(app: &AppState) -> Vec<String> {
+    if app.users_all.is_empty() {
+        nothing_loaded_lines(app, "users")
+    } else {
+        vec![no_match_text(
+            "users",
+            &app.users_query,
+            &app.active_user_filter_labels(),
+        )]
+    }
+}
+
 pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
+    let block = Block::default()
+        .title(users_table_title(app))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border));
+    if app.users.is_empty() {
+        render_empty_state(frame, area, app, block, users_empty_lines(app));
+        return;
+    }
     let per_page = table_rows(area);
     let start = app.selected_user_index / per_page * per_page;
     let rows = app
@@ -87,12 +110,7 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
             Row::new(["UID", "USER", "GID", "HOME", "SHELL"])
                 .style(Style::default().fg(app.theme.title)),
         )
-        .block(
-            Block::default()
-                .title(users_table_title(app))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        ),
+        .block(block),
         area,
     );
 }
@@ -147,6 +165,23 @@ pub fn render_user_details(frame: &mut Frame, area: Rect, app: &AppState) {
 
 pub fn render_user_groups(frame: &mut Frame, area: Rect, app: &AppState) {
     let groups = member_groups(app);
+    let block = Block::default()
+        .title(if app.users_focus == UsersFocus::MemberOf {
+            "[Member of]"
+        } else {
+            "Member of"
+        })
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border));
+    if groups.is_empty() {
+        let text = if app.users.get(app.selected_user_index).is_some() {
+            "No supplementary groups"
+        } else {
+            "No user selected"
+        };
+        render_empty_state(frame, area, app, block, vec![text.to_owned()]);
+        return;
+    }
     let per_page = table_rows(area);
     let start = app.selected_user_group_index / per_page * per_page;
     let rows = groups
@@ -171,16 +206,7 @@ pub fn render_user_groups(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(
         Table::new(rows, [Constraint::Length(7), Constraint::Percentage(100)])
             .header(Row::new(["GID", "GROUP"]).style(Style::default().fg(app.theme.title)))
-            .block(
-                Block::default()
-                    .title(if app.users_focus == UsersFocus::MemberOf {
-                        "[Member of]"
-                    } else {
-                        "Member of"
-                    })
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.border)),
-            ),
+            .block(block),
         area,
     );
 }
