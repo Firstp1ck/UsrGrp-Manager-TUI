@@ -1543,6 +1543,14 @@ impl PreviewReview<'_> {
             *self.seen_all |= shown.end >= self.preview.len();
         }
     }
+
+    /// Apply needs every step reviewed and at least one step on screen now.
+    /// A dialog that shows no command (terminal too small, or below the
+    /// minimum size) never applies, however short the preview; its
+    /// "Terminal too small" line says why.
+    fn allows_apply(&self, terminal: (u16, u16)) -> bool {
+        *self.seen_all && matches!(self.window(terminal, *self.scroll), PreviewWindow::Steps(_))
+    }
 }
 
 /// A resize can bring the last preview step on screen; latch the review then,
@@ -1569,7 +1577,8 @@ fn review_preview_after_resize(app: &mut AppState) {
 }
 
 /// Up/Down (k/j) and PgUp/PgDn scroll the preview; Left/Right, y/n, Enter,
-/// and Esc answer. Apply is refused until every step has been on screen.
+/// and Esc answer. Apply is refused until every step has been on screen,
+/// and whenever the terminal is too small to show any step.
 fn handle_operation_confirm(
     app: &mut AppState,
     selected: &mut usize,
@@ -1597,7 +1606,7 @@ fn handle_operation_confirm(
     match yes_no_answer(selected, key) {
         Answer::Cancel | Answer::Decline => cancel_operation(app),
         // Refused: the dialog stays open and its review line says why.
-        Answer::Confirm if *selected == 0 && !*review.seen_all => {}
+        Answer::Confirm if *selected == 0 && !review.allows_apply(terminal) => {}
         Answer::Confirm if *selected == 0 => execute_pending_plan(app),
         Answer::Confirm => cancel_operation(app),
         Answer::Other => {}
@@ -2445,6 +2454,12 @@ mod tests {
     /// Alice at UID 1000 with `count` extra groups, and a confirmation open
     /// for adding her to all of them: one preview step per group.
     fn app_confirming_group_adds(count: u32) -> AppState {
+        app_confirming_group_adds_at(count, (100, 30))
+    }
+
+    /// [`app_confirming_group_adds`] with the confirmation opened on a
+    /// `terminal` (width, height).
+    fn app_confirming_group_adds_at(count: u32, terminal: (u16, u16)) -> AppState {
         let mut snapshot = fixture_snapshot();
         let groupnames: Vec<String> = (0..count).map(|index| format!("team{index:02}")).collect();
         for (index, name) in (0u32..).zip(&groupnames) {
@@ -2460,7 +2475,7 @@ mod tests {
             Arc::new(FixedIdentityProvider::uid(Uid(1000))),
         ));
         let mut app = isolated_app(adapter, snapshot);
-        app.terminal_size = (100, 30);
+        app.terminal_size = terminal;
         start_pending_action(
             &mut app,
             PendingAction::AddUserToGroups {
@@ -2632,6 +2647,56 @@ mod tests {
         );
         assert!(!text.contains("gpasswd"));
         assert!(rows.iter().any(|row| row.contains("Apply")));
+    }
+
+    #[test]
+    fn short_preview_on_a_too_small_terminal_refuses_apply() {
+        let mut app = app_confirming_group_adds_at(1, (30, 8));
+        // Short previews count as reviewed at once, but no step is drawn.
+        assert_eq!(preview_state(&app), (0, true, 1));
+        let window = match app.modal() {
+            Some(ModalState::OperationConfirm {
+                action, preview, ..
+            }) => ui::components::operation_preview_window((30, 8), action, preview, 0),
+            _ => unreachable!(),
+        };
+        assert!(
+            matches!(window, PreviewWindow::TooSmall { .. }),
+            "{window:?}"
+        );
+
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { selected: 0, .. })
+        ));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { selected: 0, .. })
+        ));
+        assert!(app.pending_operation.is_some());
+        let rows = rendered_rows(&app, 30, 8);
+        let text = dialog_text(&rows, 22);
+        assert!(
+            text.contains("Terminal too small to review the preview"),
+            "{rows:#?}"
+        );
+        assert!(!text.contains("gpasswd"));
+
+        // Below the minimum size nothing is drawn, so Apply is refused too.
+        handle_event(&mut app, Event::Resize(20, 5));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
+
+        // Once the step fits, `y` applies and reaches the sudo prompt.
+        handle_event(&mut app, Event::Resize(100, 30));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.modal(), Some(ModalState::SudoPrompt { .. })));
+        assert!(app.pending_operation.is_some());
     }
 
     #[test]
