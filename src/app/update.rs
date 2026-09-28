@@ -93,6 +93,7 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
                     create_home: true,
                     add_to_wheel: false,
                     password_reentry_required: false,
+                    name_touched: false,
                     error: None,
                 },
             ),
@@ -413,6 +414,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             create_home,
             add_to_wheel,
             password_reentry_required,
+            name_touched,
             error,
         } => handle_user_add(
             app,
@@ -423,6 +425,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             create_home,
             add_to_wheel,
             password_reentry_required,
+            name_touched,
             error,
             key,
         ),
@@ -1141,16 +1144,18 @@ fn handle_user_add(
     create_home: &mut bool,
     add_to_wheel: &mut bool,
     password_reentry_required: &mut bool,
+    name_touched: &mut bool,
     error: &mut Option<String>,
     key: KeyEvent,
 ) {
-    // Edits refresh the message: a bad username stays visible, anything
-    // else is cleared once the user changes the input.
-    let live_error = |name: &str| {
-        if name.is_empty() {
-            None
-        } else {
+    // Edits refresh the message: a bad username, including one emptied
+    // again, stays visible; anything else is cleared once the user changes
+    // the input. An untouched empty name is not an error yet.
+    let live_error = |name: &str, touched: bool| {
+        if touched {
             live_name_error(UserName::new(name))
+        } else {
+            None
         }
     };
     match key.code {
@@ -1162,15 +1167,16 @@ fn handle_user_add(
         KeyCode::Backspace => match *selected {
             0 => {
                 name.pop();
-                *error = live_name_error(UserName::new(&*name));
+                *name_touched = true;
+                *error = live_error(name, *name_touched);
             }
             1 => {
                 password.pop();
-                *error = live_error(name);
+                *error = live_error(name, *name_touched);
             }
             2 => {
                 confirm.pop();
-                *error = live_error(name);
+                *error = live_error(name, *name_touched);
             }
             _ => {}
         },
@@ -1178,7 +1184,8 @@ fn handle_user_add(
             if !character.is_control() && *selected == 0 && name.len() < 32 =>
         {
             name.push(character);
-            *error = live_name_error(UserName::new(&*name));
+            *name_touched = true;
+            *error = live_error(name, *name_touched);
         }
         KeyCode::Char(character)
             if !character.is_control()
@@ -1191,7 +1198,7 @@ fn handle_user_add(
             } else {
                 confirm.push(character)
             }
-            *error = live_error(name);
+            *error = live_error(name, *name_touched);
         }
         KeyCode::Enter if *selected == 5 && *password_reentry_required && password.is_empty() => {
             show_form_error(
@@ -2148,6 +2155,7 @@ mod tests {
                 create_home: true,
                 add_to_wheel: false,
                 password_reentry_required: false,
+                name_touched: false,
                 error: None,
             },
         );
@@ -2195,6 +2203,32 @@ mod tests {
             press(&mut app, KeyCode::Backspace);
         }
         type_text(&mut app, "bob");
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
+    }
+
+    #[test]
+    fn create_user_keeps_empty_username_error_while_editing_passwords() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        // A fresh form, and a password typed before the name, show nothing.
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
+        type_text(&mut app, "a");
+        press(&mut app, KeyCode::Backspace);
+        let empty_name = Some("must contain 1 to 32 bytes");
+        assert_eq!(app.modal().and_then(ModalState::form_error), empty_name);
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "x");
+        assert_eq!(app.modal().and_then(ModalState::form_error), empty_name);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.modal().and_then(ModalState::form_error), empty_name);
+    }
+
+    #[test]
+    fn create_user_untouched_empty_username_is_not_reported_while_typing() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "x");
         assert_eq!(app.modal().and_then(ModalState::form_error), None);
     }
 

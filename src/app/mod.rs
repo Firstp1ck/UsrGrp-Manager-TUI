@@ -361,6 +361,9 @@ pub enum ModalState {
         /// password is typed, submitting is refused, so a failed attempt
         /// cannot be retried as an account without a password.
         password_reentry_required: bool,
+        /// Set by the first edit of the username field. Until then an empty
+        /// name is not reported, so a fresh form opens without an error.
+        name_touched: bool,
         /// Validation problem shown inline under the fields.
         error: Option<String>,
     },
