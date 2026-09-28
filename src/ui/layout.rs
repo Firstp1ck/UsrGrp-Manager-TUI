@@ -13,15 +13,18 @@ const KEYBINDS_MIN_WIDTH: u16 = 90;
 /// Header height: one line of text inside a border.
 const HEADER_ROWS: u16 = 3;
 
-/// Details pane height on the users tab: ten lines inside a border.
-const USER_DETAILS_ROWS: u16 = 12;
+/// Details lines on the users tab when none of them wraps.
+const USER_DETAILS_BASE_ROWS: usize = 10;
 
-/// Details pane height on the groups tab: five lines inside a border.
-const GROUP_DETAILS_ROWS: u16 = 7;
+/// Details lines on the groups tab when none of them wraps.
+const GROUP_DETAILS_BASE_ROWS: usize = 5;
 
-/// Smallest member list: one row inside a border. It wins over the details
-/// pane when the terminal is short.
-const MEMBERS_MIN_ROWS: u16 = 3;
+/// Rows the details pane spends on its border (top and bottom).
+const DETAILS_CHROME_ROWS: u16 = 2;
+
+/// Smallest member list: three rows inside a border. It wins over the
+/// details pane when the terminal is short.
+const MEMBERS_MIN_ROWS: u16 = 5;
 
 /// Rows a table spends on its border (top and bottom) and column header.
 const TABLE_CHROME_ROWS: u16 = 3;
@@ -51,8 +54,10 @@ pub fn below_minimum(area: Rect) -> bool {
 }
 
 /// Split the screen into header, body panes, and status bar. The details
-/// pane has a fixed height per tab and the member list takes the rest.
-pub fn main_layout(area: Rect, tab: ActiveTab, show_keybinds: bool) -> MainLayout {
+/// pane is `details_rows` lines tall inside its border, capped so the member
+/// list keeps [`MEMBERS_MIN_ROWS`]; the member list takes the rest. The pane
+/// widths do not depend on `details_rows`.
+pub fn main_layout(area: Rect, show_keybinds: bool, details_rows: usize) -> MainLayout {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -76,10 +81,14 @@ pub fn main_layout(area: Rect, tab: ActiveTab, show_keybinds: bool) -> MainLayou
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(root[1])
     };
+    let details_height = u16::try_from(details_rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(DETAILS_CHROME_ROWS)
+        .min(body[1].height.saturating_sub(MEMBERS_MIN_ROWS));
     let side = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(details_rows(tab)),
+            Constraint::Length(details_height),
             Constraint::Min(MEMBERS_MIN_ROWS),
         ])
         .split(body[1]);
@@ -93,10 +102,12 @@ pub fn main_layout(area: Rect, tab: ActiveTab, show_keybinds: bool) -> MainLayou
     }
 }
 
-fn details_rows(tab: ActiveTab) -> u16 {
+/// Details lines on `tab` when none of them wraps. Callers that do not
+/// build the details (the page keys) size the layout with this.
+pub fn details_base_rows(tab: ActiveTab) -> usize {
     match tab {
-        ActiveTab::Users => USER_DETAILS_ROWS,
-        ActiveTab::Groups => GROUP_DETAILS_ROWS,
+        ActiveTab::Users => USER_DETAILS_BASE_ROWS,
+        ActiveTab::Groups => GROUP_DETAILS_BASE_ROWS,
     }
 }
 
@@ -113,14 +124,10 @@ mod tests {
     #[test]
     fn keybinds_column_needs_the_toggle_and_width() {
         let wide = Rect::new(0, 0, 100, 40);
-        assert!(main_layout(wide, ActiveTab::Users, true).keybinds.is_some());
+        assert!(main_layout(wide, true, 10).keybinds.is_some());
+        assert!(main_layout(wide, false, 10).keybinds.is_none());
         assert!(
-            main_layout(wide, ActiveTab::Users, false)
-                .keybinds
-                .is_none()
-        );
-        assert!(
-            main_layout(Rect::new(0, 0, 89, 40), ActiveTab::Users, true)
+            main_layout(Rect::new(0, 0, 89, 40), true, 10)
                 .keybinds
                 .is_none()
         );
@@ -128,29 +135,32 @@ mod tests {
 
     #[test]
     fn table_rows_subtract_border_and_header() {
-        let layout = main_layout(Rect::new(0, 0, 100, 40), ActiveTab::Users, true);
+        let layout = main_layout(Rect::new(0, 0, 100, 40), true, 10);
         // 40 rows - 3 header - 1 status = 36 body rows; minus border and header.
         assert_eq!(table_rows(layout.table), 33);
         assert_eq!(table_rows(Rect::new(0, 0, 10, 2)), 1);
     }
 
     #[test]
-    fn details_pane_is_sized_per_tab_and_members_take_the_rest() {
+    fn details_pane_fits_its_rows_and_members_take_the_rest() {
         let area = Rect::new(0, 0, 100, 40);
-        let users = main_layout(area, ActiveTab::Users, false);
+        let users = main_layout(area, false, details_base_rows(ActiveTab::Users));
         assert_eq!(users.details.height, 12);
         assert_eq!(users.members.height, 36 - 12);
-        let groups = main_layout(area, ActiveTab::Groups, false);
+        let groups = main_layout(area, false, details_base_rows(ActiveTab::Groups));
         assert_eq!(groups.details.height, 7);
         assert_eq!(groups.members.height, 36 - 7);
         assert_eq!(groups.table, users.table);
+        let wrapped = main_layout(area, false, 14);
+        assert_eq!(wrapped.details.height, 16);
+        assert_eq!(wrapped.details.width, users.details.width);
     }
 
     #[test]
-    fn short_terminal_keeps_a_member_row() {
+    fn short_terminal_keeps_three_member_rows() {
         // 12 rows - 3 header - 1 status = 8 body rows.
-        let layout = main_layout(Rect::new(0, 0, 100, 12), ActiveTab::Users, false);
-        assert_eq!(layout.members.height, 3);
-        assert_eq!(layout.details.height, 5);
+        let layout = main_layout(Rect::new(0, 0, 100, 12), false, 10);
+        assert_eq!(layout.members.height, 5);
+        assert_eq!(layout.details.height, 3);
     }
 }

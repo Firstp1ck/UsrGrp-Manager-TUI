@@ -280,10 +280,12 @@ fn open_delete(app: &mut AppState) {
 /// same layout the renderer uses.
 fn page_size(app: &AppState) -> usize {
     let (width, height) = app.terminal_size;
+    // The table column does not depend on the details height; the member
+    // pane is sized as if no details line wrapped.
     let layout = ui::layout::main_layout(
         Rect::new(0, 0, width, height),
-        app.active_tab,
         app.show_keybinds,
+        ui::layout::details_base_rows(app.active_tab),
     );
     let pane = match (app.active_tab, app.users_focus, app.groups_focus) {
         (ActiveTab::Users, UsersFocus::UsersList, _)
@@ -4964,7 +4966,12 @@ mod tests {
         press(&mut app, KeyCode::PageUp);
         app.users_focus = UsersFocus::MemberOf;
         let area = Rect::new(0, 0, 100, 20);
-        let members = ui::layout::main_layout(area, app.active_tab, app.show_keybinds).members;
+        let members = ui::layout::main_layout(
+            area,
+            app.show_keybinds,
+            ui::layout::details_base_rows(app.active_tab),
+        )
+        .members;
         press(&mut app, KeyCode::PageDown);
         assert_eq!(
             app.selected_user_group_index,
@@ -5351,6 +5358,103 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
+    /// Rows inside the details pane of a render at `width` x `height`,
+    /// trailing blanks trimmed.
+    fn details_pane_rows(app: &AppState, width: u16, height: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, height);
+        let pane = ui::layout::main_layout(area, app.show_keybinds, 0).details;
+        let (left, inner) = (usize::from(pane.x) + 1, usize::from(pane.width - 2));
+        rendered_rows(app, width, height)
+            .iter()
+            .skip(usize::from(pane.y) + 1)
+            .map(|row| row.chars().collect::<Vec<_>>())
+            .take_while(|cells| cells[left - 1] != '└')
+            .map(|cells| {
+                let row: String = cells[left..left + inner].iter().collect();
+                row.trim_end().to_owned()
+            })
+            .collect()
+    }
+
+    /// `text` without whitespace, so a fact wrapped by character at any
+    /// column still matches the pane rows joined together.
+    fn compact(text: &str) -> String {
+        text.split_whitespace().collect()
+    }
+
+    const USER_FACTS: [&str; 9] = [
+        "User: alice (Alice Liddell)",
+        "UID 1000  GID 1000 (alice)",
+        "Home: /home/alice  exists: yes  perms: 750",
+        "Shell: /bin/zsh  listed: yes  interactive: yes",
+        "Password: locked no  empty no  expired no",
+        "Last change: 2026-03-04  Expires: never",
+        "Sudo group (wheel): member",
+        "SSH keys: 3",
+        "Processes: 12",
+    ];
+
+    #[test]
+    fn details_pane_grows_to_show_every_wrapped_fact() {
+        let mut app = details_app();
+        app.diagnostics = known_diagnostics();
+        app.show_keybinds = true;
+        for (width, height) in [(100, 30), (80, 24)] {
+            let rows = details_pane_rows(&app, width, height);
+            let text = compact(&rows.concat());
+            for fact in USER_FACTS {
+                assert!(
+                    text.contains(&compact(fact)),
+                    "{width}x{height}: missing {fact:?} in\n{}",
+                    rows.join("\n")
+                );
+            }
+            assert!(!text.contains(&compact(ui::components::DETAILS_MORE_MARKER)));
+        }
+
+        app.active_tab = ActiveTab::Groups;
+        let rows = details_pane_rows(&app, 100, 30);
+        let text = compact(&rows.concat());
+        for fact in [
+            "Group: wheel (GID 998, system, protected)",
+            "Members: 0 primary, 2 secondary, 1 orphaned",
+            "Password status of members: 1 locked, 0 empty, 0 expired (shadow known)",
+            "/etc/group changed: 2026-09-01 (27 days ago)",
+        ] {
+            assert!(
+                text.contains(&compact(fact)),
+                "missing {fact:?} in\n{}",
+                rows.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn short_terminal_caps_the_details_and_keeps_three_member_rows() {
+        let mut app = details_app();
+        app.diagnostics = known_diagnostics();
+        app.show_keybinds = true;
+        let rows = details_pane_rows(&app, 100, 14);
+        assert_eq!(rows[0], "User: alice (Alice Liddell)");
+        let text = compact(&rows.concat());
+        assert!(
+            text.ends_with(&compact(ui::components::DETAILS_MORE_MARKER)),
+            "{}",
+            rows.join("\n")
+        );
+
+        let screen = rendered_rows(&app, 100, 14);
+        let (x, top) = find_text(&screen, "┌Member of").expect("member pane");
+        let bottom = (top + 1..14)
+            .find(|&y| screen[usize::from(y)].chars().nth(usize::from(x)) == Some('└'))
+            .expect("member pane bottom border");
+        assert!(
+            bottom - top > 3,
+            "member pane interior rows\n{}",
+            screen.join("\n")
+        );
+    }
+
     #[test]
     fn details_mute_only_missing_diagnostics_never_account_data() {
         use ratatui::style::Color;
@@ -5377,6 +5481,8 @@ mod tests {
             Arc::new(FixedIdentityProvider::uid(Uid(1000))),
         ));
         let mut app = isolated_app(adapter, snapshot);
+        // A 50-column details pane, so the probed values stay on one row.
+        app.show_keybinds = false;
         app.theme.text = Color::Rgb(7, 8, 9);
         app.theme.muted = Color::Rgb(10, 11, 12);
         let rows = rendered_rows(&app, 100, 30);
@@ -5394,7 +5500,7 @@ mod tests {
         // Shadow data is unavailable in this fixture.
         assert_eq!(fg("Password: unavailable", 10), muted, "missing shadow");
         assert_eq!(fg("Password: unavailable", 0), text, "password label");
-        assert_eq!(fg("exists: unavailable", 8), muted, "missing home check");
+        assert_eq!(fg("exists: unav", 8), muted, "missing home check");
     }
 
     #[test]

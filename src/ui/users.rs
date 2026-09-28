@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Row, Table},
 };
 
 use crate::{
@@ -18,9 +18,9 @@ use crate::{
     ui::components::{
         CandidateView, DetailLine, DetailPart, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER,
         PASSWORD_FORM_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, char_budget,
-        details_lines, details_plain_text, input_cursor, marker, no_match_text,
-        nothing_loaded_lines, push_filter_labels, render_empty_state, render_modal_frame,
-        row_style, search_title, shadow_skipped_note, text_lines, with_error_line,
+        details_plain_text, input_cursor, marker, no_match_text, nothing_loaded_lines,
+        push_filter_labels, render_empty_state, render_modal_frame, row_style, search_title,
+        shadow_skipped_note, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -112,22 +112,13 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 }
 
-pub fn render_user_details(frame: &mut Frame, area: Rect, app: &AppState) {
-    let lines = app.users.get(app.selected_user_index).map_or_else(
+/// Details pane lines for the selected user, or a placeholder when
+/// there is none.
+pub fn selected_user_details(app: &AppState) -> Vec<DetailLine> {
+    app.users.get(app.selected_user_index).map_or_else(
         || vec![vec![DetailPart::Text("No user selected.".to_owned())]],
         |user| user_details(app, user),
-    );
-    frame.render_widget(
-        Paragraph::new(details_lines(app, &lines))
-            .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .title("Details")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.border)),
-            ),
-        area,
-    );
+    )
 }
 
 /// Details pane text for `user`, one fact per line.

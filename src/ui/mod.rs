@@ -18,20 +18,31 @@ pub fn render(frame: &mut Frame, app: &AppState) {
         );
         return;
     }
-    let layout = layout::main_layout(frame.area(), app.active_tab, app.show_keybinds);
+    let (details_title, details) = match app.active_tab {
+        ActiveTab::Users => ("Details", users::selected_user_details(app)),
+        ActiveTab::Groups => ("Group details", groups::selected_group_details(app)),
+    };
+    let details = components::details_lines(app, &details);
+    // The pane widths do not depend on the details height: take the inner
+    // width from a first pass, wrap, then size the pane from the row count.
+    let details_width = layout::main_layout(frame.area(), app.show_keybinds, 0)
+        .details
+        .width
+        .saturating_sub(2);
+    let details_rows = components::wrap_details(&details, usize::from(details_width));
+    let layout = layout::main_layout(frame.area(), app.show_keybinds, details_rows.len());
     components::render_header(frame, layout.header, app);
     match app.active_tab {
         ActiveTab::Users => {
             users::render_users_table(frame, layout.table, app);
-            users::render_user_details(frame, layout.details, app);
             users::render_user_groups(frame, layout.members, app);
         }
         ActiveTab::Groups => {
             groups::render_groups_table(frame, layout.table, app);
-            groups::render_group_details(frame, layout.details, app);
             groups::render_group_members(frame, layout.members, app);
         }
     }
+    components::render_details(frame, layout.details, app, details_title, details_rows);
     if let Some(area) = layout.keybinds {
         components::render_keybinds_panel(frame, area, app);
     }

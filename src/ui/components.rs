@@ -784,6 +784,50 @@ pub fn details_plain_text(lines: &[DetailLine]) -> String {
         .join("\n")
 }
 
+/// Details pane lines wrapped by character to `width` columns, one entry per
+/// screen row, so the pane can be sized from the exact row count.
+pub fn wrap_details<'a>(lines: &'a [Line<'_>], width: usize) -> Vec<Line<'a>> {
+    lines
+        .iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect()
+}
+
+/// Last row of a details pane too short for its content.
+pub const DETAILS_MORE_MARKER: &str = "… more below, enlarge the terminal";
+
+/// Draw a details pane from rows already wrapped to its inner width. When
+/// the pane is shorter than the rows, the first rows are shown and the last
+/// visible rows say that more is hidden.
+pub fn render_details(
+    frame: &mut Frame,
+    area: Rect,
+    app: &AppState,
+    title: &str,
+    mut rows: Vec<Line<'_>>,
+) {
+    let block = Block::default()
+        .title(title.to_owned())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border));
+    let inner = block.inner(area);
+    let visible = usize::from(inner.height);
+    if rows.len() > visible {
+        let muted = Style::default().fg(app.theme.muted);
+        let marker = Line::raw(DETAILS_MORE_MARKER);
+        let marker_rows = wrap_line(&marker, usize::from(inner.width));
+        let keep = visible.saturating_sub(marker_rows.len());
+        rows.truncate(keep);
+        rows.extend(
+            marker_rows
+                .iter()
+                .take(visible - keep)
+                .map(|row| Line::styled(row.to_string(), muted)),
+        );
+    }
+    frame.render_widget(Paragraph::new(rows).block(block), area);
+}
+
 /// Append a form's inline validation message as the last body line, in red.
 pub fn with_error_line<'a>(mut lines: Vec<Line<'a>>, error: Option<&str>) -> Vec<Line<'a>> {
     if let Some(error) = error {
