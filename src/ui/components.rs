@@ -403,54 +403,104 @@ fn modal_body_rows(area_height: u16) -> usize {
     )
 }
 
+/// What an operation confirmation shows of its preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewWindow {
+    /// The terminal is below the minimum size, so no dialog is drawn.
+    Hidden,
+    /// Not even the tallest step fits beside the action and the choices.
+    /// No step is drawn; the dialog asks for `need_rows` terminal rows.
+    TooSmall { need_rows: usize },
+    /// These preview lines are drawn in full.
+    Steps(std::ops::Range<usize>),
+}
+
+impl PreviewWindow {
+    /// The last of `len` steps is on screen.
+    pub fn shows_last(&self, len: usize) -> bool {
+        matches!(self, Self::Steps(shown) if shown.end >= len)
+    }
+}
+
+/// Apply/Cancel row of an operation confirmation.
+fn confirm_choices(selected: usize) -> String {
+    format!(
+        "{} Apply   {} Cancel",
+        marker(selected, 0),
+        marker(selected, 1)
+    )
+}
+
+/// `Terminal too small to review the preview (need 13 rows)`; when no
+/// height would do at this width, it asks for a wider terminal instead.
+pub fn preview_too_small_message(need_rows: usize) -> String {
+    if need_rows <= usize::from(MAX_MODAL_HEIGHT) {
+        format!("Terminal too small to review the preview (need {need_rows} rows)")
+    } else {
+        "Terminal too small to review the preview (need a wider terminal)".to_owned()
+    }
+}
+
 /// Preview lines an operation confirmation shows on a terminal of
 /// `terminal` (width, height), starting at `scroll`.
 ///
 /// This is the one place that decides how many steps fit: the renderer draws
 /// exactly this range and the key handler scrolls by it and marks the
-/// preview seen when the range reaches the last step. The start is clamped
-/// so the last page is full, and at least one line is always shown so every
-/// step can be reached on any terminal. Wrapped lines count by their rows.
+/// preview seen when the range reaches the last step. Rows are budgeted for
+/// the action, the two blank lines, the review line of long previews, and
+/// the choices (the frame's borders and footer are outside the body), and
+/// only steps whose every wrapped row fits are counted, so the dialog frame
+/// never has to scroll the body. The start is clamped so the last page is
+/// full. When the tallest step cannot fit, no step is shown at all.
 pub fn operation_preview_window(
     terminal: (u16, u16),
     action: &str,
     preview: &[String],
     scroll: usize,
-) -> std::ops::Range<usize> {
+) -> PreviewWindow {
     let (width, height) = terminal;
+    if crate::ui::layout::below_minimum(Rect::new(0, 0, width, height)) {
+        return PreviewWindow::Hidden;
+    }
     let inner = usize::from(modal_width(width).saturating_sub(2));
     let rows = |text: &str| wrap_line(&Line::raw(text), inner).len();
     // Action, blank, blank before the choices, and the choices; long
-    // previews also keep a row for the review line.
-    let mut fixed = rows(action) + 3;
+    // previews also keep rows for the review line.
+    let mut fixed = rows(action) + 2 + rows(&confirm_choices(0));
     if preview.len() > PREVIEW_SEEN_IMMEDIATELY {
         fixed += rows(PREVIEW_REFUSAL);
     }
-    let available = modal_body_rows(height).saturating_sub(fixed);
-    let fits = |used: usize, next: usize, any: bool| !any || used + next <= available;
+    let tallest = preview.iter().map(|line| rows(line)).max().unwrap_or(0);
+    let body = modal_body_rows(height);
+    if fixed + tallest > body {
+        return PreviewWindow::TooSmall {
+            need_rows: fixed + tallest + usize::from(MODAL_CHROME_ROWS),
+        };
+    }
+    // Every step fits on its own, so each page holds at least one.
+    let available = body - fixed;
     let mut last_start = preview.len();
     let mut used = 0;
     for (index, line) in preview.iter().enumerate().rev() {
-        let next = rows(line);
-        if !fits(used, next, used > 0) {
+        used += rows(line);
+        if used > available {
             break;
         }
-        used += next;
         last_start = index;
     }
     let start = scroll.min(last_start);
     let mut end = start;
     used = 0;
     for line in &preview[start..] {
-        let next = rows(line);
-        if !fits(used, next, end > start) {
+        used += rows(line);
+        if used > available {
             break;
         }
-        used += next;
         end += 1;
     }
-    start..end
+    PreviewWindow::Steps(start..end)
 }
+
 /// Marks the highlighted row in every dialog body.
 pub const CURSOR_MARKER: &str = "▶";
 
@@ -658,7 +708,15 @@ fn render_operation_confirm(
     preview: &[String],
 ) {
     let (selected, scroll, seen_all) = state;
-    let shown = operation_preview_window((area.width, area.height), action, preview, scroll);
+    let window = operation_preview_window((area.width, area.height), action, preview, scroll);
+    let shown = match window {
+        PreviewWindow::Hidden => return,
+        PreviewWindow::TooSmall { need_rows } => {
+            render_preview_too_small(frame, area, app, selected, preview.len(), need_rows);
+            return;
+        }
+        PreviewWindow::Steps(shown) => shown,
+    };
     let title = if preview.is_empty() {
         "Confirm".to_owned()
     } else {
@@ -683,17 +741,40 @@ fn render_operation_confirm(
             Line::styled(PREVIEW_REFUSAL, Style::default().fg(Color::Yellow))
         });
     }
-    body.push(Line::raw(format!(
-        "{} Apply   {} Cancel",
-        marker(selected, 0),
-        marker(selected, 1)
-    )));
+    body.push(Line::raw(confirm_choices(selected)));
     let footer = if shown.len() < preview.len() {
         PREVIEW_FOOTER
     } else {
         YES_NO_FOOTER
     };
     render_modal_frame(frame, area, app, &title, body, footer);
+}
+
+/// Confirmation on a terminal where no complete step fits: the size it
+/// needs and the choices, with no partial command.
+fn render_preview_too_small(
+    frame: &mut Frame,
+    area: Rect,
+    app: &AppState,
+    selected: usize,
+    steps: usize,
+    need_rows: usize,
+) {
+    let message = preview_too_small_message(need_rows);
+    let inner = usize::from(modal_width(area.width).saturating_sub(2));
+    let rows = |text: &str| wrap_line(&Line::raw(text), inner).len();
+    let choices = confirm_choices(selected);
+    let mut body = vec![Line::styled(
+        message.clone(),
+        Style::default().fg(Color::Yellow),
+    )];
+    // A blank line only when it does not push the choices out of view.
+    if rows(&message) + 1 + rows(&choices) <= modal_body_rows(area.height) {
+        body.push(Line::default());
+    }
+    body.push(Line::raw(choices));
+    let title = format!("Confirm ({steps} steps)");
+    render_modal_frame(frame, area, app, &title, body, YES_NO_FOOTER);
 }
 
 /// Help modal text. Recorded configuration problems follow the key summary

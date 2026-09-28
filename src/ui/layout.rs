@@ -29,6 +29,15 @@ pub struct MainLayout {
     pub status: Rect,
 }
 
+/// Smallest terminal the main view and dialogs are drawn on.
+const MIN_WIDTH: u16 = 30;
+const MIN_HEIGHT: u16 = 8;
+
+/// Below the minimum size only a resize hint is drawn: no panes, no dialog.
+pub fn below_minimum(area: Rect) -> bool {
+    area.width < MIN_WIDTH || area.height < MIN_HEIGHT
+}
+
 /// Split the screen into header, body panes, and status bar.
 pub fn main_layout(area: Rect, show_keybinds: bool) -> MainLayout {
     let root = Layout::default()

@@ -11,7 +11,7 @@ use crate::app::{ActiveTab, AppState, ModalState};
 /// Render a frame from cached state only.  No renderer takes `&mut AppState` or
 /// performs filesystem/process I/O.
 pub fn render(frame: &mut Frame, app: &AppState) {
-    if frame.area().width < 30 || frame.area().height < 8 {
+    if layout::below_minimum(frame.area()) {
         frame.render_widget(
             Paragraph::new("terminal too small; resize to at least 30x8"),
             frame.area(),

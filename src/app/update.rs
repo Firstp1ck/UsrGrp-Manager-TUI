@@ -4,6 +4,7 @@
 //! application only displays redacted plans/reports; it never chooses commands,
 //! receives runners, or retains sudo credentials.
 
+use crate::ui::components::PreviewWindow;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 
@@ -47,7 +48,8 @@ pub fn run_app_with(
 /// Dispatch one terminal event. Returns `true` when the app should quit.
 ///
 /// Only key presses reach the key handlers. A resize records the new size
-/// for page keys; the next loop iteration redraws at that size. Mouse capture
+/// for page keys and the preview review; the next loop iteration redraws at
+/// that size. Mouse capture
 /// is not enabled, so mouse, focus, and paste events are ignored.
 fn handle_event(app: &mut AppState, event: Event) -> bool {
     match event {
@@ -62,6 +64,7 @@ fn handle_event(app: &mut AppState, event: Event) -> bool {
         }
         Event::Resize(width, height) => {
             app.terminal_size = (width, height);
+            review_preview_after_resize(app);
             false
         }
         _ => false,
@@ -1517,22 +1520,42 @@ struct PreviewReview<'a> {
 }
 
 impl PreviewReview<'_> {
-    /// Preview lines on screen at `scroll`, from the renderer's own math.
-    fn window(&self, app: &AppState, scroll: usize) -> std::ops::Range<usize> {
-        ui::components::operation_preview_window(
-            app.terminal_size,
-            self.action,
-            self.preview,
-            scroll,
-        )
+    /// What the renderer shows at `scroll` on `terminal`, from its own math.
+    fn window(&self, terminal: (u16, u16), scroll: usize) -> PreviewWindow {
+        ui::components::operation_preview_window(terminal, self.action, self.preview, scroll)
     }
 
     /// Show the lines from `scroll` on and remember when the last step has
-    /// been on screen.
-    fn show(&mut self, app: &AppState, scroll: usize) {
-        let shown = self.window(app, scroll);
-        *self.scroll = shown.start;
-        *self.seen_all |= shown.end >= self.preview.len();
+    /// been on screen. When no complete step is drawn (terminal too small or
+    /// below the minimum), neither the position nor the review moves.
+    fn show(&mut self, terminal: (u16, u16), scroll: usize) {
+        if let PreviewWindow::Steps(shown) = self.window(terminal, scroll) {
+            *self.scroll = shown.start;
+            *self.seen_all |= shown.end >= self.preview.len();
+        }
+    }
+}
+
+/// A resize can bring the last preview step on screen; latch the review then,
+/// since the renderer already reports every step shown.
+fn review_preview_after_resize(app: &mut AppState) {
+    let terminal = app.terminal_size;
+    if let Some(ModalState::OperationConfirm {
+        action,
+        preview,
+        scroll,
+        seen_all,
+        ..
+    }) = app.modal_mut()
+    {
+        let current = *scroll;
+        PreviewReview {
+            action,
+            preview,
+            scroll,
+            seen_all,
+        }
+        .show(terminal, current);
     }
 }
 
@@ -1544,8 +1567,12 @@ fn handle_operation_confirm(
     mut review: PreviewReview<'_>,
     key: KeyEvent,
 ) {
-    let page = review.window(app, *review.scroll).len().max(1);
+    let terminal = app.terminal_size;
     let scroll = *review.scroll;
+    let page = match review.window(terminal, scroll) {
+        PreviewWindow::Steps(shown) => shown.len().max(1),
+        PreviewWindow::Hidden | PreviewWindow::TooSmall { .. } => 1,
+    };
     let target = match key.code {
         KeyCode::Up | KeyCode::Char('k') => Some(scroll.saturating_sub(1)),
         KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_add(1)),
@@ -1553,9 +1580,8 @@ fn handle_operation_confirm(
         KeyCode::PageDown => Some(scroll.saturating_add(page)),
         _ => None,
     };
-    // Without a scroll key, re-check the current view: a resize may have
-    // brought the last step on screen.
-    review.show(app, target.unwrap_or(scroll));
+    // Without a scroll key, re-check the current view.
+    review.show(terminal, target.unwrap_or(scroll));
     if target.is_some() {
         return;
     }
@@ -1651,10 +1677,9 @@ fn prepare_request(app: &mut AppState, request: OperationRequest) -> CoreResult<
             } else {
                 "Apply the exact prepared operation"
             };
-            let shown =
-                ui::components::operation_preview_window(app.terminal_size, action, &preview, 0);
             let seen_all = preview.len() <= ui::components::PREVIEW_SEEN_IMMEDIATELY
-                || shown.end >= preview.len();
+                || ui::components::operation_preview_window(app.terminal_size, action, &preview, 0)
+                    .shows_last(preview.len());
             open_modal(
                 app,
                 ModalState::OperationConfirm {
@@ -2527,20 +2552,110 @@ mod tests {
             }) => ui::components::operation_preview_window((40, 12), action, preview, scroll),
             _ => unreachable!(),
         };
+        let PreviewWindow::Steps(window) = window else {
+            panic!("expected steps at 40x12, got {window:?}");
+        };
         assert!(!window.is_empty());
         let rows = rendered_rows(&app, 40, 12);
         let title = format!("steps {}-{} of 20", window.start + 1, window.end);
         assert!(rows.iter().any(|row| row.contains(&title)), "{rows:#?}");
+        // The body is not scrolled: the action's first row is still drawn.
+        assert!(rows.iter().any(|row| row.contains("Apply the exact")));
         for index in window.clone() {
-            let step = format!("team{index:02}");
+            let step = format!("gpasswd -a alice team{index:02}");
             assert!(rows.iter().any(|row| row.contains(&step)), "{step} missing");
         }
-        assert!(rows.iter().any(|row| row.contains("Apply")));
+        assert!(rows.iter().any(|row| row.contains("Apply   ")));
         // Paging to the end on this terminal marks the preview seen.
         for _ in 0..20 {
             press(&mut app, KeyCode::PageDown);
         }
         assert!(preview_state(&app).1);
+    }
+
+    /// Interior text of a dialog `width` columns wide centred on a screen
+    /// of `rows`, row after row, so a message wrapped across rows reads as
+    /// one string.
+    fn dialog_text(rows: &[String], width: usize) -> String {
+        let screen = rows[0].chars().count();
+        let left = (screen - width) / 2 + 1;
+        rows.iter()
+            .flat_map(|row| row.chars().skip(left).take(width - 2))
+            .collect()
+    }
+
+    #[test]
+    fn preview_too_small_for_one_step_is_never_reviewed() {
+        let mut app = app_confirming_group_adds(20);
+        app.terminal_size = (30, 8);
+        let action = "Apply the exact prepared operation";
+        let window = match app.modal() {
+            Some(ModalState::OperationConfirm { preview, .. }) => {
+                ui::components::operation_preview_window((30, 8), action, preview, 0)
+            }
+            _ => unreachable!(),
+        };
+        // 30 columns leave 20 per row: action 2 rows, blanks 2, review line
+        // 3, choices 1, one step 2 rows, plus borders and footer.
+        assert_eq!(window, PreviewWindow::TooSmall { need_rows: 13 });
+        for _ in 0..40 {
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::PageDown);
+        }
+        assert_eq!(preview_state(&app), (0, false, 20));
+        press(&mut app, KeyCode::Char('y'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm {
+                selected: 0,
+                seen_all: false,
+                ..
+            })
+        ));
+        assert!(app.pending_operation.is_some());
+        let rows = rendered_rows(&app, 30, 8);
+        // 30 columns: the dialog is 22 wide.
+        let text = dialog_text(&rows, 22);
+        assert!(
+            text.contains("Terminal too small to review the preview (need 13 rows)"),
+            "{rows:#?}"
+        );
+        assert!(!text.contains("gpasswd"));
+        assert!(rows.iter().any(|row| row.contains("Apply")));
+    }
+
+    #[test]
+    fn resize_that_shows_the_last_step_latches_the_review() {
+        let mut app = app_confirming_group_adds(20);
+        handle_event(&mut app, Event::Resize(100, 12));
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(preview_state(&app), (7, false, 20));
+        handle_event(&mut app, Event::Resize(100, 30));
+        assert_eq!(preview_state(&app), (7, true, 20));
+        assert!(rendered_at(&app, 100, 30).contains("All 20 steps shown."));
+        handle_event(&mut app, Event::Resize(100, 12));
+        assert_eq!(preview_state(&app), (7, true, 20));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.modal(), Some(ModalState::SudoPrompt { .. })));
+    }
+
+    #[test]
+    fn preview_below_the_minimum_terminal_size_is_not_reviewed() {
+        let mut app = app_confirming_group_adds(20);
+        handle_event(&mut app, Event::Resize(20, 5));
+        assert!(rendered_at(&app, 20, 5).contains("terminal too small"));
+        for _ in 0..40 {
+            press(&mut app, KeyCode::PageDown);
+        }
+        assert_eq!(preview_state(&app), (0, false, 20));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
     }
 
     /// Actions > Modify > Modify details > Shell > Enter: the confirm dialog
