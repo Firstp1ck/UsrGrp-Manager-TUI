@@ -50,16 +50,34 @@ pub fn refresh_label(app: &AppState) -> String {
 /// Separator between status bar segments.
 const STATUS_SEPARATOR: &str = " · ";
 
-/// Status bar segments, most important first, and how many leading ones
-/// must stay (search mode and the refresh or stale label). The bar shows
-/// them left to right and drops trailing segments that do not fit.
-pub fn status_segments(app: &AppState) -> (Vec<String>, usize) {
+/// Smallest form of a stale label the status bar keeps: `STALE: …`.
+const STALE_MARKER: &str = "STALE: …";
+
+/// Status bar content before it is fitted to a width.
+pub struct StatusSegments {
+    /// Segments, most important first, shown left to right.
+    pub segments: Vec<String>,
+    /// How many leading segments always stay (search mode and the refresh
+    /// or stale label).
+    pub essential: usize,
+    /// Segment that may be shortened down to `STALE_MARKER` (the stale
+    /// label). It gets the width the other kept segments leave over.
+    pub shrinkable: Option<usize>,
+}
+
+/// Status bar segments for the current state.
+pub fn status_segments(app: &AppState) -> StatusSegments {
     let mut segments = Vec::new();
     match app.input_mode {
         InputMode::SearchUsers => segments.push("SEARCH(users)".to_owned()),
         InputMode::SearchGroups => segments.push("SEARCH(groups)".to_owned()),
         InputMode::Normal | InputMode::Modal => {}
     }
+    let shrinkable = app
+        .diagnostics
+        .stale_reason
+        .is_some()
+        .then_some(segments.len());
     segments.push(refresh_label(app));
     let essential = segments.len();
     let users = app.users.len();
@@ -108,7 +126,11 @@ pub fn status_segments(app: &AppState) -> (Vec<String>, usize) {
         "shadow {}",
         app.diagnostics.shadow.availability_label()
     ));
-    (segments, essential)
+    StatusSegments {
+        segments,
+        essential,
+        shrinkable,
+    }
 }
 
 /// `users 12/45`: one-based selected row and row count, `users 0/0` when empty.
@@ -121,33 +143,51 @@ fn position(name: &str, selected: usize, len: usize) -> String {
     format!("{name} {row}/{len}")
 }
 
-/// Join `segments` with separators, keeping as many leading segments as fit
-/// in `width` columns. The first `essential` segments are always kept and
-/// the one that overflows is shortened with `…`.
-pub fn fit_status_line(segments: &[String], essential: usize, width: usize) -> String {
-    let mut line = String::new();
-    for (index, segment) in segments.iter().enumerate() {
-        let separator = if line.is_empty() {
-            ""
-        } else {
-            STATUS_SEPARATOR
-        };
-        let needed = text_width(&line) + text_width(separator) + text_width(segment);
-        if needed <= width {
-            line.push_str(separator);
-            line.push_str(segment);
-            continue;
-        }
-        if index < essential {
-            let room = width.saturating_sub(text_width(&line) + text_width(separator));
-            if room > 0 {
-                line.push_str(separator);
-                line.push_str(&truncate_to_width(segment, room));
+/// Join the segments with separators in at most `width` columns.
+///
+/// The shrinkable segment is counted at its `STALE: …` size while deciding
+/// how many segments fit, so a long stale reason never pushes the others
+/// out. Trailing segments beyond the essential ones are dropped only when
+/// they do not fit next to that marker. The shrinkable segment then gets
+/// the width left over and ends in `…` when cut.
+pub fn fit_status_line(status: &StatusSegments, width: usize) -> String {
+    let segments = &status.segments;
+    let widths: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let full = text_width(segment);
+            if status.shrinkable == Some(index) {
+                full.min(text_width(STALE_MARKER))
+            } else {
+                full
             }
-        }
-        break;
+        })
+        .collect();
+    let line_width = |count: usize| {
+        widths[..count].iter().sum::<usize>()
+            + text_width(STATUS_SEPARATOR) * count.saturating_sub(1)
+    };
+    let essential = status.essential.min(segments.len());
+    let mut kept = segments.len();
+    while kept > essential && line_width(kept) > width {
+        kept -= 1;
     }
-    line
+    let mut leftover = width.saturating_sub(line_width(kept));
+    let parts: Vec<String> = segments[..kept]
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            if status.shrinkable == Some(index) {
+                let room = widths[index] + leftover;
+                leftover = 0;
+                truncate_to_width(segment, room)
+            } else {
+                segment.clone()
+            }
+        })
+        .collect();
+    truncate_to_width(&parts.join(STATUS_SEPARATOR), width)
 }
 
 /// Display width of `text` in terminal columns.
@@ -178,8 +218,7 @@ fn truncate_to_width(text: &str, width: usize) -> String {
 }
 
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
-    let (segments, essential) = status_segments(app);
-    let text = fit_status_line(&segments, essential, usize::from(area.width));
+    let text = fit_status_line(&status_segments(app), usize::from(area.width));
     frame.render_widget(
         Paragraph::new(text).style(
             Style::default()

@@ -3785,7 +3785,18 @@ mod tests {
         app.diagnostics.stale_reason = Some("x".repeat(100));
         let row = status_row(&app, 30, 12);
         assert!(row.starts_with("STALE: xxx"), "{row}");
-        assert!(row.ends_with('…'), "{row}");
+        assert!(row.contains("… · users 1/1"), "{row}");
+        assert_eq!(row.chars().count(), 30);
+
+        // With room to spare, every other field stays and the reason takes
+        // the width that is left.
+        let row = status_row(&app, 100, 12);
+        assert!(row.starts_with("STALE: xxx"), "{row}");
+        assert!(
+            row.ends_with("… · users 1/1 · groups 1 · shadow unavailable"),
+            "{row}"
+        );
+        assert!(!row.contains(&"x".repeat(100)), "{row}");
     }
 
     /// Screen position of the first cell of `text`, if rendered.
