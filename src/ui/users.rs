@@ -4,11 +4,15 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
 use crate::{
-    app::{AppState, ModalState, ModifyField, UsersFocus},
+    app::{
+        AppState, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, ModalState, ModifyField,
+        UsersFocus,
+    },
     ui::components::{
         FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, marker,
         render_modal_frame, text_lines, with_error_line,
@@ -240,22 +244,17 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             ),
             FORM_FOOTER,
         ),
-        ModalState::DeleteConfirm {
-            selected,
-            allowed,
-            delete_home,
-        } => (
-            "Confirm delete",
-            format!(
-                "Delete selected user?\n{} [{}] also delete home\n{} Yes   {} No\n{}",
-                marker(*selected, 2),
-                if *delete_home { "x" } else { " " },
-                marker(*selected, 0),
-                marker(*selected, 1),
-                if *allowed { "" } else { "Root is immutable." }
-            ),
-            "←→ choose  y/n  Space home  Enter confirm  Esc cancel",
-        ),
+        ModalState::DeleteConfirm { .. } => {
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                "Confirm delete",
+                delete_confirm_body(modal),
+                "↑↓ row  ←→ choose  Space tick  y/n  Enter confirm  Esc cancel",
+            );
+            return;
+        }
         ModalState::ConfirmRemoveUserFromGroup {
             selected,
             group_name,
@@ -297,6 +296,52 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
     };
     let body = with_error_line(text_lines(body), modal.form_error());
     render_modal_frame(frame, area, app, title, body, footer);
+}
+
+/// Body of the user delete dialog: who is deleted, what happens to the
+/// home, warnings in red, then the checkbox and the Yes/No row.
+fn delete_confirm_body(modal: &ModalState) -> Vec<Line<'static>> {
+    let ModalState::DeleteConfirm {
+        selected,
+        allowed,
+        delete_home,
+        username,
+        uid,
+        home,
+        is_self,
+        process_count,
+    } = modal
+    else {
+        return Vec::new();
+    };
+    let mut lines = text_lines(format!(
+        "Delete user {username} (UID {uid})?\nHome: {home}{}",
+        if *delete_home { " will be removed" } else { "" }
+    ));
+    lines = with_error_line(lines, is_self.then_some("This is your own account."));
+    let processes = process_count.filter(|count| *count > 0).map(|count| {
+        if count == 1 {
+            "1 running process belongs to this user.".to_owned()
+        } else {
+            format!("{count} running processes belong to this user.")
+        }
+    });
+    lines = with_error_line(lines, processes.as_deref());
+    let yes = marker(*selected, DELETE_ROW_YES);
+    let no = marker(*selected, DELETE_ROW_NO);
+    let buttons = if *allowed {
+        format!("{yes} Yes   {no} No")
+    } else {
+        format!(
+            "{yes} Cannot delete: root and system accounts (UID below 1000) are protected.\n{no} No"
+        )
+    };
+    lines.extend(text_lines(format!(
+        "\n{} [{}] also delete home\n{buttons}",
+        marker(*selected, DELETE_ROW_HOME),
+        if *delete_home { "x" } else { " " },
+    )));
+    lines
 }
 
 const MAX_MODAL_CANDIDATES: usize = 1024;

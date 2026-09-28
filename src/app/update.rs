@@ -9,8 +9,9 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     app::{
-        ActiveTab, AppState, GroupsFocus, InputMode, ModalState, ModifyField, PendingAction,
-        RunOptions, SecretInput, UsersFocus, filterconf::FiltersConfig, keymap::KeyAction,
+        ActiveTab, AppState, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, GroupsFocus,
+        InputMode, ModalState, ModifyField, PendingAction, RunOptions, SecretInput, UsersFocus,
+        filterconf::FiltersConfig, keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
     search::apply_filters_and_search,
@@ -210,14 +211,21 @@ fn open_delete(app: &mut AppState) {
     match app.active_tab {
         ActiveTab::Users if matches!(app.users_focus, UsersFocus::UsersList) => {
             if let Some(user) = app.users.get(app.selected_user_index) {
-                open_modal(
-                    app,
-                    ModalState::DeleteConfirm {
-                        selected: 1,
-                        allowed: !crate::app::is_default_protected_user(user),
-                        delete_home: false,
-                    },
-                );
+                let modal = ModalState::DeleteConfirm {
+                    selected: DELETE_ROW_NO,
+                    allowed: !crate::app::is_default_protected_user(user),
+                    delete_home: false,
+                    username: user.name.clone(),
+                    uid: user.uid,
+                    home: user.home_dir.clone(),
+                    is_self: user.name == app.current_username,
+                    process_count: app
+                        .diagnostics
+                        .homes
+                        .get(&user.name)
+                        .and_then(|home| home.process_count),
+                };
+                open_modal(app, modal);
             }
         }
         ActiveTab::Users => {
@@ -371,7 +379,9 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected,
             allowed,
             delete_home,
-        } => handle_user_delete(app, selected, allowed, delete_home, key),
+            username,
+            ..
+        } => handle_user_delete(app, selected, *allowed, username, delete_home, key),
         ModalState::ConfirmRemoveUserFromGroup {
             selected,
             group_name,
@@ -821,29 +831,54 @@ fn handle_password_input(
 fn handle_user_delete(
     app: &mut AppState,
     selected: &mut usize,
-    allowed: &mut bool,
+    allowed: bool,
+    username: &str,
     delete_home: &mut bool,
     key: KeyEvent,
 ) {
-    if key.code == KeyCode::Char(' ') {
-        *delete_home = !*delete_home;
+    match key.code {
+        KeyCode::Char(' ') => {
+            if *selected == DELETE_ROW_HOME {
+                *delete_home = !*delete_home;
+            }
+            return;
+        }
+        KeyCode::Enter if *selected == DELETE_ROW_HOME => return,
+        _ => {}
+    }
+    if list_step(key).is_some() {
+        // Two visual rows: the checkbox and the Yes/No line. Moving down to
+        // the buttons lands on No, never on Yes.
+        *selected = if *selected == DELETE_ROW_HOME {
+            DELETE_ROW_NO
+        } else {
+            DELETE_ROW_HOME
+        };
         return;
     }
-    match yes_no_answer(selected, key) {
+    // `yes_no_answer` counts Yes as 0 and No as 1. From the checkbox a
+    // horizontal move toggles 0 to 1, so it also lands on No.
+    let before = usize::from(*selected == DELETE_ROW_NO);
+    let mut choice = before;
+    let answer = yes_no_answer(&mut choice, key);
+    if choice != before || !matches!(answer, Answer::Other) {
+        *selected = if choice == 0 {
+            DELETE_ROW_YES
+        } else {
+            DELETE_ROW_NO
+        };
+    }
+    match answer {
         Answer::Cancel | Answer::Decline => back(app),
         // Enter on No closes the dialog, like `n`, even for protected users.
-        Answer::Confirm if *selected != 0 => back(app),
-        Answer::Confirm if *allowed => {
-            if let Some(user) = app.users.get(app.selected_user_index) {
-                start_pending_action(
-                    app,
-                    PendingAction::DeleteUser {
-                        username: user.name.clone(),
-                        delete_home: *delete_home,
-                    },
-                )
-            }
-        }
+        Answer::Confirm if *selected == DELETE_ROW_NO => back(app),
+        Answer::Confirm if allowed => start_pending_action(
+            app,
+            PendingAction::DeleteUser {
+                username: username.to_owned(),
+                delete_home: *delete_home,
+            },
+        ),
         Answer::Confirm => open_modal(
             app,
             ModalState::Info {
@@ -2406,7 +2441,10 @@ mod tests {
         press(&mut app, KeyCode::Delete);
         assert!(matches!(
             app.modal(),
-            Some(ModalState::DeleteConfirm { selected: 1, .. })
+            Some(ModalState::DeleteConfirm {
+                selected: DELETE_ROW_NO,
+                ..
+            })
         ));
         press(&mut app, KeyCode::Char('n'));
         assert!(app.modal().is_none());
@@ -2437,7 +2475,10 @@ mod tests {
         press(&mut app, KeyCode::Delete);
         assert!(matches!(
             app.modal(),
-            Some(ModalState::DeleteConfirm { selected: 1, .. })
+            Some(ModalState::DeleteConfirm {
+                selected: DELETE_ROW_NO,
+                ..
+            })
         ));
         press(&mut app, KeyCode::Enter);
         assert!(app.modal().is_none());
@@ -2461,14 +2502,7 @@ mod tests {
 
         // Only the dialog closes; the menu under it stays.
         open_modal(&mut app, ModalState::Actions { selected: 0 });
-        open_modal(
-            &mut app,
-            ModalState::DeleteConfirm {
-                selected: 1,
-                allowed: true,
-                delete_home: false,
-            },
-        );
+        open_modal(&mut app, delete_dialog(true));
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.modal(), Some(ModalState::Actions { .. })));
         assert_eq!(app.modal_depth(), 1);
@@ -2477,11 +2511,7 @@ mod tests {
     #[test]
     fn protected_user_delete_explains_only_on_yes() {
         let mut app = root_app();
-        let protected = || ModalState::DeleteConfirm {
-            selected: 1,
-            allowed: false,
-            delete_home: false,
-        };
+        let protected = || delete_dialog(false);
         open_modal(&mut app, protected());
         press(&mut app, KeyCode::Enter);
         assert!(app.modal().is_none());
@@ -2504,21 +2534,170 @@ mod tests {
             Some(ModalState::DeleteConfirm { selected, .. }) => *selected,
             _ => panic!("expected the delete dialog"),
         };
-        assert_eq!(selected(&app), 1);
+        assert_eq!(selected(&app), DELETE_ROW_NO);
         for (code, expected) in [
-            (KeyCode::Char('h'), 0),
-            (KeyCode::Char('l'), 1),
-            (KeyCode::Tab, 0),
-            (KeyCode::Right, 1),
-            (KeyCode::Left, 0),
+            (KeyCode::Char('h'), DELETE_ROW_YES),
+            (KeyCode::Char('l'), DELETE_ROW_NO),
+            (KeyCode::Tab, DELETE_ROW_YES),
+            (KeyCode::Right, DELETE_ROW_NO),
+            (KeyCode::Left, DELETE_ROW_YES),
         ] {
             press(&mut app, code);
             assert_eq!(selected(&app), expected);
         }
-        // Up/Down and j/k are list keys, not yes/no keys.
+        // In a plain yes/no dialog, Up/Down and j/k are list keys, not
+        // yes/no keys.
+        app.close_modals();
+        open_modal(
+            &mut app,
+            ModalState::GroupDeleteConfirm {
+                selected: 0,
+                target_gid: Some(1000),
+            },
+        );
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Down);
-        assert_eq!(selected(&app), 0);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupDeleteConfirm { selected: 0, .. })
+        ));
+    }
+
+    /// A user delete dialog for alice with the cursor on No.
+    fn delete_dialog(allowed: bool) -> ModalState {
+        ModalState::DeleteConfirm {
+            selected: DELETE_ROW_NO,
+            allowed,
+            delete_home: false,
+            username: "alice".to_owned(),
+            uid: 1000,
+            home: "/home/alice".to_owned(),
+            is_self: false,
+            process_count: None,
+        }
+    }
+
+    #[test]
+    fn delete_dialog_cursor_reaches_the_home_checkbox() {
+        let mut app = root_app();
+        app.dry_run = true;
+        press(&mut app, KeyCode::Delete);
+        let state = |app: &AppState| match app.modal() {
+            Some(ModalState::DeleteConfirm {
+                selected,
+                delete_home,
+                ..
+            }) => (*selected, *delete_home),
+            _ => panic!("expected the delete dialog"),
+        };
+        // Space does nothing on the buttons.
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(state(&app), (DELETE_ROW_NO, false));
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(state(&app), (DELETE_ROW_YES, false));
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(state(&app), (DELETE_ROW_HOME, false));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(state(&app), (DELETE_ROW_HOME, true));
+        assert!(rendered(&app).contains("Home: /home/alice will be removed"));
+        // Enter on the checkbox neither toggles nor answers.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(state(&app), (DELETE_ROW_HOME, true));
+
+        // Moving back to the buttons lands on No, both vertically and
+        // horizontally.
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(state(&app), (DELETE_ROW_NO, true));
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(state(&app), (DELETE_ROW_NO, true));
+
+        // `y` answers from any row and keeps the checkbox choice.
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
+        assert!(
+            app.last_preview
+                .iter()
+                .any(|step| step.contains("userdel") && step.contains("-r"))
+        );
+    }
+
+    /// Diagnostics reporting a fixed number of processes for every user.
+    struct ProcessDiagnostics(usize);
+    impl crate::app::DiagnosticProvider for ProcessDiagnostics {
+        fn refresh(
+            &self,
+            snapshot: &AccountSnapshot,
+            _: std::time::SystemTime,
+        ) -> crate::app::CachedDiagnostics {
+            let mut diagnostics = crate::app::CachedDiagnostics::default();
+            for user in &snapshot.users {
+                diagnostics.homes.insert(
+                    user.name.as_str().to_owned(),
+                    crate::app::HomeDiagnostics {
+                        process_count: Some(self.0),
+                        ..crate::app::HomeDiagnostics::default()
+                    },
+                );
+            }
+            diagnostics
+        }
+    }
+
+    #[test]
+    fn delete_dialog_names_the_user_and_warns() {
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = AppState::with_dependencies(
+            adapter,
+            snapshot,
+            Arc::new(FixedClock),
+            Arc::new(ProcessDiagnostics(3)),
+            Arc::new(NoConfigRoots),
+        );
+        app.refresh_accounts();
+        app.current_username = "alice".to_owned();
+        press(&mut app, KeyCode::Delete);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::DeleteConfirm {
+                is_self: true,
+                process_count: Some(3),
+                ..
+            })
+        ));
+        let screen = rendered(&app);
+        assert!(screen.contains("Delete user alice (UID 1000)?"));
+        assert!(screen.contains("Home: /home/alice"));
+        assert!(!screen.contains("will be removed"));
+        assert!(screen.contains("This is your own account."));
+        assert!(screen.contains("3 running processes belong to this user."));
+        assert!(screen.contains("▶ No"));
+
+        // Another user's account with no processes carries no warnings.
+        app.close_modals();
+        open_modal(&mut app, delete_dialog(true));
+        let screen = rendered(&app);
+        assert!(screen.contains("Delete user alice (UID 1000)?"));
+        assert!(!screen.contains("your own account"));
+        assert!(!screen.contains("running process"));
+
+        // Protected accounts show why in place of Yes.
+        app.close_modals();
+        open_modal(&mut app, delete_dialog(false));
+        let screen = rendered(&app);
+        assert!(screen.contains("Cannot delete: root and system accounts"));
+        assert!(!screen.contains(" Yes "));
     }
 
     #[test]
@@ -2732,14 +2911,7 @@ mod tests {
         let mut app = user_app();
         let cases = [
             (ModalState::Actions { selected: 0 }, "Backspace back"),
-            (
-                ModalState::DeleteConfirm {
-                    selected: 1,
-                    allowed: true,
-                    delete_home: false,
-                },
-                "y/n",
-            ),
+            (delete_dialog(true), "y/n"),
             (
                 ModalState::GroupDeleteConfirm {
                     selected: 1,

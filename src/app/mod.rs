@@ -279,10 +279,19 @@ pub enum ModalState {
         /// Validation problem shown inline under the fields.
         error: Option<String>,
     },
+    /// Rows: [`DELETE_ROW_HOME`], [`DELETE_ROW_YES`], [`DELETE_ROW_NO`].
+    /// Everything shown is captured when the dialog opens.
     DeleteConfirm {
         selected: usize,
         allowed: bool,
         delete_home: bool,
+        username: String,
+        uid: u32,
+        home: String,
+        /// The target is the account running this program.
+        is_self: bool,
+        /// Running processes owned by the target, from the last refresh.
+        process_count: Option<usize>,
     },
     ModifyPasswordMenu {
         selected: usize,
@@ -384,6 +393,13 @@ impl ModalState {
         }
     }
 }
+
+/// "Also delete home" checkbox row of the user delete dialog.
+pub const DELETE_ROW_HOME: usize = 0;
+/// Yes button of the user delete dialog.
+pub const DELETE_ROW_YES: usize = 1;
+/// No button of the user delete dialog, where the cursor starts.
+pub const DELETE_ROW_NO: usize = 2;
 
 #[derive(Clone, Debug)]
 pub enum ModifyField {
@@ -546,6 +562,9 @@ pub struct HomeDiagnostics {
     pub exists: Option<bool>,
     pub permissions: Option<String>,
     pub authorized_key_count: Option<usize>,
+    /// Processes whose real UID is this account's. None when /proc could
+    /// not be read completely.
+    pub process_count: Option<usize>,
 }
 
 /// Cached group facts used by the details pane. Counts are bounded by the
@@ -630,6 +649,7 @@ impl DiagnosticProvider for SystemDiagnosticProvider {
             ..CachedDiagnostics::default()
         };
         let mut remaining_bytes = MAX_TOTAL_DIAGNOSTIC_BYTES;
+        let process_counts = read_process_counts(std::path::Path::new("/proc"));
         for user in snapshot.users.iter().take(MAX_USERS) {
             let metadata = std::fs::metadata(&user.home_dir);
             let (exists, permissions) = match metadata {
@@ -659,6 +679,9 @@ impl DiagnosticProvider for SystemDiagnosticProvider {
                     exists,
                     permissions,
                     authorized_key_count,
+                    process_count: process_counts
+                        .as_ref()
+                        .map(|counts| counts.get(&user.uid.0).copied().unwrap_or(0)),
                 },
             );
             if remaining_bytes == 0 {
@@ -712,6 +735,62 @@ impl DiagnosticProvider for SystemDiagnosticProvider {
             .map(|duration| duration.as_secs() / 86_400);
         diagnostics
     }
+}
+
+/// Most `/proc` entries scanned for process counts.
+const MAX_PROC_ENTRIES: usize = 65_536;
+/// Most bytes read from one `/proc/<pid>/status` file.
+const MAX_PROC_STATUS_BYTES: u64 = 4096;
+
+/// Count processes per real UID from `<proc_root>/<pid>/status`. Returns
+/// None when the directory cannot be listed, has more than
+/// [`MAX_PROC_ENTRIES`] entries, or a status file cannot be opened for any
+/// reason other than its process having exited, so a partial count is never
+/// reported as complete.
+fn read_process_counts(proc_root: &std::path::Path) -> Option<HashMap<u32, usize>> {
+    let mut counts = HashMap::new();
+    let mut entries = std::fs::read_dir(proc_root).ok()?;
+    for entry in entries.by_ref().take(MAX_PROC_ENTRIES) {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let file = match File::open(entry.path().join("status")) {
+            Ok(file) => file,
+            // The process exited after the directory was listed.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        let mut bytes = Vec::new();
+        if file
+            .take(MAX_PROC_STATUS_BYTES)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            // Reading a status file of a process that just exited fails.
+            continue;
+        }
+        if let Some(uid) = status_real_uid(&String::from_utf8_lossy(&bytes)) {
+            *counts.entry(uid).or_default() += 1;
+        }
+    }
+    if entries.next().is_some() {
+        return None;
+    }
+    Some(counts)
+}
+
+/// Real UID from the `Uid:` line of a `/proc/<pid>/status` file.
+fn status_real_uid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|ids| ids.split_whitespace().next())
+        .and_then(|uid| uid.parse().ok())
 }
 
 fn read_authorized_key_count(path: &std::path::Path, limit: usize) -> Option<(usize, usize)> {
@@ -1311,4 +1390,50 @@ pub fn is_default_elevation_group(name: &str) -> bool {
 
 pub fn sudo_group_name() -> String {
     std::env::var("UGM_SUDO_GROUP").unwrap_or_else(|_| "wheel".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_process_counts, status_real_uid};
+
+    fn write_status(root: &std::path::Path, pid: &str, status: &str) {
+        let dir = root.join(pid);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("status"), status).unwrap();
+    }
+
+    #[test]
+    fn status_real_uid_reads_the_first_uid_field() {
+        assert_eq!(
+            status_real_uid("Name:\tbash\nUid:\t1000\t0\t0\t0\nGid:\t1000\n"),
+            Some(1000)
+        );
+        assert_eq!(status_real_uid("Name:\tbash\n"), None);
+        assert_eq!(status_real_uid("Uid:\tnope\n"), None);
+    }
+
+    /// A fake /proc tree in a temporary directory; the host /proc is never read.
+    #[test]
+    fn process_counts_group_pid_directories_by_real_uid() {
+        let root = tempfile::tempdir().unwrap();
+        write_status(root.path(), "1", "Name:\tinit\nUid:\t0\t0\t0\t0\n");
+        write_status(
+            root.path(),
+            "20",
+            "Name:\tsh\nUid:\t1000\t1000\t1000\t1000\n",
+        );
+        write_status(root.path(), "21", "Name:\tvim\nUid:\t1000\t0\t0\t0\n");
+        // Not a process directory.
+        write_status(root.path(), "self", "Uid:\t1000\t1000\t1000\t1000\n");
+        std::fs::write(root.path().join("uptime"), "1.0 1.0\n").unwrap();
+        // A process that exited after the listing has no status file.
+        std::fs::create_dir(root.path().join("30")).unwrap();
+
+        let counts = read_process_counts(root.path()).unwrap();
+        assert_eq!(counts.get(&1000), Some(&2));
+        assert_eq!(counts.get(&0), Some(&1));
+        assert_eq!(counts.len(), 2);
+
+        assert!(read_process_counts(&root.path().join("missing")).is_none());
+    }
 }
