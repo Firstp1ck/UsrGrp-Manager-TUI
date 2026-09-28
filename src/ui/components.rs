@@ -794,7 +794,7 @@ pub fn wrap_details<'a>(lines: &'a [Line<'_>], width: usize) -> Vec<Line<'a>> {
 }
 
 /// Last row of a details pane too short for its content.
-pub const DETAILS_MORE_MARKER: &str = "… more below, enlarge the terminal";
+pub const DETAILS_MORE_MARKER: &str = "… more, enlarge terminal";
 
 /// Draw a details pane from rows already wrapped to its inner width. When
 /// the pane is shorter than the rows, the first rows are shown and the last

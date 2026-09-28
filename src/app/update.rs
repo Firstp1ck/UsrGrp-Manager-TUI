@@ -280,12 +280,23 @@ fn open_delete(app: &mut AppState) {
 /// same layout the renderer uses.
 fn page_size(app: &AppState) -> usize {
     let (width, height) = app.terminal_size;
-    // The table column does not depend on the details height; the member
-    // pane is sized as if no details line wrapped.
-    let layout = ui::layout::main_layout(
-        Rect::new(0, 0, width, height),
+    let area = Rect::new(0, 0, width, height);
+    // Same two passes as the renderer: the member pane is what is left
+    // under the details wrapped at the pane's inner width.
+    let details_width = ui::layout::main_layout(
+        area,
+        app.active_tab,
         app.show_keybinds,
         ui::layout::details_base_rows(app.active_tab),
+    )
+    .details
+    .width
+    .saturating_sub(2);
+    let layout = ui::layout::main_layout(
+        area,
+        app.active_tab,
+        app.show_keybinds,
+        ui::details_rows(app, details_width),
     );
     let pane = match (app.active_tab, app.users_focus, app.groups_focus) {
         (ActiveTab::Users, UsersFocus::UsersList, _)
@@ -4966,10 +4977,15 @@ mod tests {
         press(&mut app, KeyCode::PageUp);
         app.users_focus = UsersFocus::MemberOf;
         let area = Rect::new(0, 0, 100, 20);
+        let details_width = ui::layout::main_layout(area, app.active_tab, app.show_keybinds, 0)
+            .details
+            .width
+            - 2;
         let members = ui::layout::main_layout(
             area,
+            app.active_tab,
             app.show_keybinds,
-            ui::layout::details_base_rows(app.active_tab),
+            ui::details_rows(&app, details_width),
         )
         .members;
         press(&mut app, KeyCode::PageDown);
@@ -5170,6 +5186,11 @@ mod tests {
     /// alice (Alice Liddell) with primary group `alice` and a listed zsh,
     /// in `wheel`; bob logs in with nologin and is in no group.
     fn details_app() -> AppState {
+        details_app_with(Vec::new())
+    }
+
+    /// [`details_app`] with `extra` groups added to the snapshot.
+    fn details_app_with(extra: Vec<AccountGroup>) -> AppState {
         let user = |uid, name: &str, gid, full_name: Option<&str>, shell: &str| AccountUser {
             uid: Uid(uid),
             name: UserName::new(name).unwrap(),
@@ -5191,10 +5212,14 @@ mod tests {
                 user(1000, "alice", 1000, Some("Alice Liddell"), "/bin/zsh"),
                 user(1001, "bob", 1001, None, "/usr/sbin/nologin"),
             ],
-            groups: vec![
-                group(998, "wheel", &["alice", "ghost"]),
-                group(1000, "alice", &[]),
-            ],
+            groups: [
+                vec![
+                    group(998, "wheel", &["alice", "ghost"]),
+                    group(1000, "alice", &[]),
+                ],
+                extra,
+            ]
+            .concat(),
             shells: vec![
                 ShellPath::new("/bin/sh").unwrap(),
                 ShellPath::new("/bin/zsh").unwrap(),
@@ -5362,7 +5387,7 @@ mod tests {
     /// trailing blanks trimmed.
     fn details_pane_rows(app: &AppState, width: u16, height: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, height);
-        let pane = ui::layout::main_layout(area, app.show_keybinds, 0).details;
+        let pane = ui::layout::main_layout(area, app.active_tab, app.show_keybinds, 0).details;
         let (left, inner) = (usize::from(pane.x) + 1, usize::from(pane.width - 2));
         rendered_rows(app, width, height)
             .iter()
@@ -5429,6 +5454,70 @@ mod tests {
         }
     }
 
+    /// Data rows the member pane titled `title` shows: the non-blank rows
+    /// between its column header and its bottom border.
+    fn member_pane_rows(screen: &[String], title: &str) -> usize {
+        let (x, top) = find_text(screen, &format!("┌{title}")).expect("member pane");
+        let (x, top) = (usize::from(x), usize::from(top));
+        let top_row: Vec<char> = screen[top].chars().collect();
+        let right = (x + 1..top_row.len())
+            .find(|&column| top_row[column] == '┐')
+            .expect("member pane right border");
+        let bottom = (top + 1..screen.len())
+            .find(|&y| screen[y].chars().nth(x) == Some('└'))
+            .expect("member pane bottom border");
+        (top + 2..bottom)
+            .filter(|&y| {
+                let row: String = screen[y].chars().skip(x + 1).take(right - x - 1).collect();
+                !row.trim().is_empty()
+            })
+            .count()
+    }
+
+    #[test]
+    fn page_down_in_the_member_panes_moves_by_the_rendered_rows() {
+        // alice is in 25 more groups; `crowd` has 25 members.
+        let mut extra: Vec<AccountGroup> = (0..25)
+            .map(|index| AccountGroup {
+                gid: Gid(5000 + index),
+                name: GroupName::new(format!("g{index:02}")).unwrap(),
+                members: vec![UserName::new("alice").unwrap()],
+            })
+            .collect();
+        extra.push(AccountGroup {
+            gid: Gid(4000),
+            name: GroupName::new("crowd").unwrap(),
+            members: (0..25)
+                .map(|index| UserName::new(format!("m{index:02}")).unwrap())
+                .collect(),
+        });
+        let mut app = details_app_with(extra);
+        app.diagnostics = known_diagnostics();
+        app.show_keybinds = true;
+        app.terminal_size = (100, 30);
+
+        app.users_focus = UsersFocus::MemberOf;
+        assert!(app.selected_user_groups().len() > 20);
+        let shown = member_pane_rows(&rendered_rows(&app, 100, 30), "[Member of]");
+        // The wrapped details leave fewer rows than the unwrapped base height.
+        assert_eq!(shown, 8);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_user_group_index, shown);
+
+        app.active_tab = ActiveTab::Groups;
+        app.groups_focus = GroupsFocus::Members;
+        app.selected_group_index = app
+            .groups
+            .iter()
+            .position(|group| group.name == "crowd")
+            .expect("crowd group");
+        app.selected_group_member_index = 0;
+        let shown = member_pane_rows(&rendered_rows(&app, 100, 30), "[Members]");
+        assert!(shown > 0);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_group_member_index, shown);
+    }
+
     #[test]
     fn short_terminal_caps_the_details_and_keeps_three_member_rows() {
         let mut app = details_app();
@@ -5436,9 +5525,10 @@ mod tests {
         app.show_keybinds = true;
         let rows = details_pane_rows(&app, 100, 14);
         assert_eq!(rows[0], "User: alice (Alice Liddell)");
-        let text = compact(&rows.concat());
-        assert!(
-            text.ends_with(&compact(ui::components::DETAILS_MORE_MARKER)),
+        // The marker fits the 33-column pane on one row.
+        assert_eq!(
+            rows.last().map(String::as_str),
+            Some(ui::components::DETAILS_MORE_MARKER),
             "{}",
             rows.join("\n")
         );
