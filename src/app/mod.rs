@@ -279,9 +279,13 @@ pub enum ModalState {
     ModifyShell {
         selected: usize,
         offset: usize,
+        /// Shells from `/etc/shells`, led by the user's current shell when
+        /// that one is not listed there.
         shells: Vec<String>,
-        /// Index of the user's shell in `shells` when it is listed there.
+        /// Index of the user's current shell in `shells`.
         current: Option<usize>,
+        /// The current shell was prepended because `/etc/shells` lacks it.
+        current_unlisted: bool,
     },
     /// Opens with the current username or full name filled in.
     ModifyTextInput {
@@ -580,13 +584,14 @@ impl SecretInput {
     pub fn char_count(&self) -> usize {
         self.value.chars().count()
     }
-    /// One `*` per character, or the typed text when `reveal` is set.
-    pub fn display(&self, reveal: bool) -> String {
-        if reveal {
+    /// One `*` per character, or the typed text when `reveal` is set. The
+    /// copy is zeroized on drop; borrow it for the render, never re-format it.
+    pub fn display(&self, reveal: bool) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(if reveal {
             self.value.clone()
         } else {
             "*".repeat(self.char_count())
-        }
+        })
     }
     /// Rough strength hint: `weak` under 8 characters, `strong` from 12
     /// characters with letters, digits, and symbols, otherwise `ok`.

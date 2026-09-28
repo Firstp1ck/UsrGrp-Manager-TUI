@@ -727,7 +727,7 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                     )
                 }
                 _ => {
-                    let shells: Vec<String> =
+                    let mut shells: Vec<String> =
                         app.account_snapshot
                             .as_ref()
                             .map_or_else(Vec::new, |snapshot| {
@@ -737,8 +737,16 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                                     .map(|shell| shell.as_str().to_owned())
                                     .collect()
                             });
-                    let current =
+                    let mut current =
                         user.and_then(|user| shells.iter().position(|shell| *shell == user.shell));
+                    // A shell missing from /etc/shells is still the current
+                    // one: list it first so the picker starts on it.
+                    let current_unlisted =
+                        current.is_none() && user.is_some_and(|user| !user.shell.is_empty());
+                    if let Some(user) = user.filter(|_| current_unlisted) {
+                        shells.insert(0, user.shell.clone());
+                        current = Some(0);
+                    }
                     open_modal(
                         app,
                         ModalState::ModifyShell {
@@ -746,6 +754,7 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                             offset: 0,
                             shells,
                             current,
+                            current_unlisted,
                         },
                     );
                 }
@@ -5024,6 +5033,56 @@ mod tests {
         let screen = rendered(&app);
         assert!(screen.contains("▶ /bin/sh (current)"));
         assert!(!screen.contains("/bin/bash (current)"));
+    }
+
+    #[test]
+    fn shell_picker_lists_an_unlisted_current_shell_first() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.users[0].shell = ShellPath::new("/usr/sbin/nologin").unwrap();
+        snapshot.shells = vec![ShellPath::new("/bin/bash").unwrap()];
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        open_details_row(&mut app, 2);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyShell {
+                selected: 0,
+                current: Some(0),
+                current_unlisted: true,
+                shells,
+                ..
+            }) if shells == &["/usr/sbin/nologin", "/bin/bash"]
+        ));
+        let screen = rendered(&app);
+        assert!(screen.contains("▶ /usr/sbin/nologin (current, not in /etc/shells)"));
+        assert!(!screen.contains("/bin/bash (current"));
+    }
+
+    #[test]
+    fn text_cursor_of_a_full_length_name_stays_visible_at_30x10() {
+        let mut app = user_app();
+        open_details_row(&mut app, 1);
+        type_text(&mut app, &"b".repeat(251));
+        assert_eq!(text_value(&app).map(str::len), Some(256));
+        let rows = rendered_rows(&app, 30, 10);
+        assert!(
+            rows.iter().any(|row| row.contains('▏')),
+            "cursor row scrolled out: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn revealed_password_is_a_zeroizing_copy() {
+        let mut input = SecretInput::default();
+        "abc".chars().for_each(|character| input.push(character));
+        let shown: zeroize::Zeroizing<String> = input.display(true);
+        assert_eq!(shown.as_str(), "abc");
+        let _: zeroize::Zeroizing<String> = input.display(false);
+        assert_eq!(input.display(false).as_str(), "***");
     }
 
     #[test]

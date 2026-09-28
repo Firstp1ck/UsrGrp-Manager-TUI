@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
@@ -256,13 +256,16 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             selected,
             shells,
             current,
+            current_unlisted,
             ..
         } => {
             let labels: Vec<String> = shells
                 .iter()
                 .enumerate()
                 .map(|(index, shell)| {
-                    if Some(index) == *current {
+                    if Some(index) == *current && *current_unlisted {
+                        format!("{shell} (current, not in /etc/shells)")
+                    } else if Some(index) == *current {
                         format!("{shell} (current)")
                     } else {
                         shell.clone()
@@ -319,22 +322,23 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             must_change,
             reveal,
             ..
-        } => (
-            "Set password",
-            format!(
-                "{}\n{} [{}] Must change next login\n{} Submit",
-                password_rows(
-                    *selected,
-                    (0, "New password", password),
-                    (1, "Confirm", confirm),
-                    *reveal
-                ),
+        } => {
+            let (shown, shown_confirm) = (password.display(*reveal), confirm.display(*reveal));
+            let mut body = password_rows(
+                *selected,
+                (0, "New password", password, &shown),
+                (1, "Confirm", confirm, &shown_confirm),
+            );
+            body.extend(text_lines(format!(
+                "{} [{}] Must change next login\n{} Submit",
                 marker(*selected, 2),
                 if *must_change { "x" } else { " " },
                 marker(*selected, 3)
-            ),
-            PASSWORD_FORM_FOOTER,
-        ),
+            )));
+            let body = with_error_line(body, modal.form_error());
+            render_modal_frame(frame, area, app, "Set password", body, PASSWORD_FORM_FOOTER);
+            return;
+        }
         ModalState::DeleteConfirm { .. } => {
             render_modal_frame(
                 frame,
@@ -367,27 +371,31 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             add_to_wheel,
             reveal,
             ..
-        } => (
-            "Create user",
-            format!(
-                "{} Username: {name}{}  {}\n{}\n{} [{}] Create home\n{} [{}] Add to sudo group\n{} Submit",
+        } => {
+            let (shown, shown_confirm) = (password.display(*reveal), confirm.display(*reveal));
+            let mut body = text_lines(format!(
+                "{} Username: {name}{}  {}",
                 marker(*selected, 0),
                 input_cursor(*selected, 0),
                 char_budget(name, MAX_NAME_CHARS),
-                password_rows(
-                    *selected,
-                    (1, "Password", password),
-                    (2, "Confirm", confirm),
-                    *reveal
-                ),
+            ));
+            body.extend(password_rows(
+                *selected,
+                (1, "Password", password, &shown),
+                (2, "Confirm", confirm, &shown_confirm),
+            ));
+            body.extend(text_lines(format!(
+                "{} [{}] Create home\n{} [{}] Add to sudo group\n{} Submit",
                 marker(*selected, 3),
                 if *create_home { "x" } else { " " },
                 marker(*selected, 4),
                 if *add_to_wheel { "x" } else { " " },
                 marker(*selected, 5)
-            ),
-            PASSWORD_FORM_FOOTER,
-        ),
+            )));
+            let body = with_error_line(body, modal.form_error());
+            render_modal_frame(frame, area, app, "Create user", body, PASSWORD_FORM_FOOTER);
+            return;
+        }
         _ => return,
     };
     let body = with_error_line(text_lines(body), modal.form_error());
@@ -440,29 +448,28 @@ fn delete_confirm_body(modal: &ModalState) -> Vec<Line<'static>> {
     lines
 }
 
-/// A password field and its confirmation, each `(row, label, input)`:
-/// masked unless `reveal`, the cursor after the focused one, and the
-/// strength hint under the first once something is typed.
-fn password_rows(
+/// A password field and its confirmation, each `(row, label, input,
+/// shown)` where `shown` is [`SecretInput::display`]: the cursor after the
+/// focused one, and the strength hint under the first once something is
+/// typed. `shown` is borrowed into its own span, never copied.
+fn password_rows<'a>(
     selected: usize,
-    first: (usize, &str, &SecretInput),
-    second: (usize, &str, &SecretInput),
-    reveal: bool,
-) -> String {
-    let row = |(index, label, input): (usize, &str, &SecretInput)| {
-        format!(
-            "{} {label}: {}{}",
-            marker(selected, index),
-            input.display(reveal),
-            input_cursor(selected, index)
-        )
+    first: (usize, &str, &SecretInput, &'a str),
+    second: (usize, &str, &SecretInput, &'a str),
+) -> Vec<Line<'a>> {
+    let row = |(index, label, _, shown): (usize, &str, &SecretInput, &'a str)| {
+        Line::from(vec![
+            Span::raw(format!("{} {label}: ", marker(selected, index))),
+            Span::raw(shown),
+            Span::raw(input_cursor(selected, index)),
+        ])
     };
-    let strength = if first.2.is_empty() {
-        String::new()
-    } else {
-        format!("\n    Strength: {}", first.2.strength())
-    };
-    format!("{}{strength}\n{}", row(first), row(second))
+    let mut lines = vec![row(first)];
+    if !first.2.is_empty() {
+        lines.push(Line::raw(format!("    Strength: {}", first.2.strength())));
+    }
+    lines.push(row(second));
+    lines
 }
 
 const MAX_MODAL_CANDIDATES: usize = 1024;

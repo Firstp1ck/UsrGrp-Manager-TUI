@@ -516,21 +516,18 @@ pub fn render_modal_frame(
     area: Rect,
     app: &AppState,
     title: &str,
-    body: Vec<Line<'_>>,
+    lines: Vec<Line<'_>>,
     footer: &str,
 ) {
     let width = modal_width(area.width);
-    let wrapped: Vec<Vec<Line<'static>>> = body
+    let wrapped: Vec<Vec<Line<'_>>> = lines
         .iter()
         .map(|line| wrap_line(line, usize::from(width.saturating_sub(2))))
         .collect();
-    let row_counts = wrapped.iter().map(Vec::len).collect::<Vec<_>>();
-    let cursor = body.iter().position(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.contains(CURSOR_MARKER))
-    });
-    let body: Vec<Line<'static>> = wrapped.into_iter().flatten().collect();
+    // The text cursor wins over the row marker: in a long wrapped value it
+    // sits rows below the marker.
+    let cursor = marker_row(&wrapped, INPUT_CURSOR).or_else(|| marker_row(&wrapped, CURSOR_MARKER));
+    let body: Vec<Line<'_>> = wrapped.into_iter().flatten().collect();
     let body_rows = u16::try_from(body.len()).unwrap_or(u16::MAX);
     let height = body_rows
         .saturating_add(MODAL_CHROME_ROWS)
@@ -556,9 +553,12 @@ pub fn render_modal_frame(
         height: 1,
         ..inner
     };
-    let scroll = cursor.map_or(0, |cursor| {
-        let end: usize = row_counts[..=cursor].iter().sum();
-        end.saturating_sub(usize::from(body_area.height))
+    // Show the rest of the marker's line too, as long as the marker row
+    // itself stays on screen.
+    let scroll = cursor.map_or(0, |(row, line_end)| {
+        line_end
+            .saturating_sub(usize::from(body_area.height))
+            .min(row)
     });
     // The body is already wrapped, so each Line is exactly one screen row.
     frame.render_widget(
@@ -571,36 +571,60 @@ pub fn render_modal_frame(
     );
 }
 
+/// Screen row of the first wrapped line containing `marker`, and the row
+/// just past the end of that line, both counted in the flattened body.
+fn marker_row(wrapped: &[Vec<Line<'_>>], marker: &str) -> Option<(usize, usize)> {
+    let mut start = 0;
+    for rows in wrapped {
+        let hit = rows
+            .iter()
+            .position(|row| row.spans.iter().any(|span| span.content.contains(marker)));
+        if let Some(offset) = hit {
+            return Some((start + offset, start + rows.len()));
+        }
+        start += rows.len();
+    }
+    None
+}
+
 /// Break one body line into rows of at most `width` columns, splitting at
 /// any character. Each piece keeps its span's style, and every row keeps the
 /// line's style and alignment. A line that fits comes back unchanged as a
 /// single row, and an empty line stays one empty row.
-fn wrap_line(line: &Line<'_>, width: usize) -> Vec<Line<'static>> {
+///
+/// Pieces borrow from `line` instead of copying, so a revealed password
+/// held in a zeroizing buffer is never duplicated into a plain `String`.
+fn wrap_line<'a>(line: &'a Line<'_>, width: usize) -> Vec<Line<'a>> {
     let width = width.max(1);
-    let row = |spans: Vec<Span<'static>>| Line {
+    let row = |spans: Vec<Span<'a>>| Line {
         spans,
         style: line.style,
         alignment: line.alignment,
     };
     let mut rows = Vec::new();
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut spans: Vec<Span<'a>> = Vec::new();
     let mut used = 0;
     for span in &line.spans {
-        let mut piece = String::new();
+        let content: &'a str = span.content.as_ref();
+        let (mut start, mut end) = (0, 0);
         for grapheme in span.styled_graphemes(Style::default()) {
+            // Graphemes are subslices of `content`; control characters
+            // skipped by the iterator stay in the slice and render as nothing.
+            let offset = grapheme.symbol.as_ptr().addr() - content.as_ptr().addr();
             let columns = Span::raw(grapheme.symbol).width();
             if used > 0 && used + columns > width {
-                if !piece.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut piece), span.style));
+                if start < end {
+                    spans.push(Span::styled(&content[start..end], span.style));
                 }
                 rows.push(row(std::mem::take(&mut spans)));
+                start = offset;
                 used = 0;
             }
-            piece.push_str(grapheme.symbol);
+            end = offset + grapheme.symbol.len();
             used += columns;
         }
-        if !piece.is_empty() {
-            spans.push(Span::styled(piece, span.style));
+        if start < end {
+            spans.push(Span::styled(&content[start..end], span.style));
         }
     }
     rows.push(row(spans));
@@ -613,7 +637,7 @@ pub fn text_lines(text: String) -> Vec<Line<'static>> {
 }
 
 /// Append a form's inline validation message as the last body line, in red.
-pub fn with_error_line(mut lines: Vec<Line<'static>>, error: Option<&str>) -> Vec<Line<'static>> {
+pub fn with_error_line<'a>(mut lines: Vec<Line<'a>>, error: Option<&str>) -> Vec<Line<'a>> {
     if let Some(error) = error {
         lines.push(Line::styled(
             error.to_owned(),
@@ -896,9 +920,10 @@ pub fn render_empty_state(
     frame.render_widget(block, area);
     // Wrap by character up front, the way dialog bodies are, so the row
     // count is exact and the text is centered from its real height.
-    let rows: Vec<Line<'static>> = lines
-        .into_iter()
-        .flat_map(|line| wrap_line(&Line::from(line), usize::from(inner.width)))
+    let lines: Vec<Line<'_>> = lines.into_iter().map(Line::from).collect();
+    let rows: Vec<Line<'_>> = lines
+        .iter()
+        .flat_map(|line| wrap_line(line, usize::from(inner.width)))
         .collect();
     let height = u16::try_from(rows.len())
         .unwrap_or(u16::MAX)
