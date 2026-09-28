@@ -2,6 +2,7 @@
 //!
 //! This crate exposes the building blocks of the TUI:
 //! - Application state and update loop (`app`)
+//! - Command-line argument parsing (`cli`)
 //! - Error and result types (`error`)
 //! - In-memory search helpers (`search`)
 //! - System interaction layer for users/groups (`sys`)
@@ -13,6 +14,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod app;
+pub mod cli;
 pub mod config;
 pub mod error;
 pub mod search;
