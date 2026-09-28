@@ -271,3 +271,28 @@ pub fn marker(selected: usize, index: usize) -> &'static str {
         " "
     }
 }
+
+/// Candidate rows shown per page in a multi-select dialog.
+const CANDIDATE_ROWS: usize = 12;
+
+/// The page of a multi-select dialog that holds `selected`, one
+/// `▶ [x] name` row per candidate. `candidates` must be the same list the
+/// key handler indexes (see `AppState::group_member_candidates` and
+/// `AppState::user_group_candidates`).
+pub fn candidate_page(candidates: &[String], selected: usize, checked: &[usize]) -> String {
+    let start = selected / CANDIDATE_ROWS * CANDIDATE_ROWS;
+    candidates
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(CANDIDATE_ROWS)
+        .map(|(index, name)| {
+            format!(
+                "{} [{}] {name}",
+                marker(selected, index),
+                if checked.contains(&index) { "x" } else { " " }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

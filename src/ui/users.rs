@@ -14,8 +14,8 @@ use crate::{
         UsersFocus,
     },
     ui::components::{
-        FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, marker,
-        render_modal_frame, text_lines, with_error_line,
+        FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
+        candidate_page, marker, render_modal_frame, text_lines, with_error_line,
     },
 };
 
@@ -207,7 +207,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             ..
         } => (
             "Add groups",
-            group_candidate_choices(app, true, *selected, selected_multi),
+            candidate_page(&group_candidates(app, true), *selected, selected_multi),
             MULTI_FOOTER,
         ),
         ModalState::ModifyGroupsRemove {
@@ -216,7 +216,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             ..
         } => (
             "Remove groups",
-            group_candidate_choices(app, false, *selected, selected_multi),
+            candidate_page(&group_candidates(app, false), *selected, selected_multi),
             MULTI_FOOTER,
         ),
         ModalState::ModifyPasswordMenu { selected } => (
@@ -347,36 +347,12 @@ fn delete_confirm_body(modal: &ModalState) -> Vec<Line<'static>> {
 const MAX_MODAL_CANDIDATES: usize = 1024;
 const MAX_MODAL_ROWS: usize = 12;
 
-fn group_candidate_choices(
-    app: &AppState,
-    adding: bool,
-    selected: usize,
-    checked: &[usize],
-) -> String {
-    let Some(user) = app.users.get(app.selected_user_index) else {
-        return String::new();
-    };
-    let start = selected / MAX_MODAL_ROWS * MAX_MODAL_ROWS;
-    app.groups_all
-        .iter()
-        .filter(|group| {
-            let member = group.members.iter().any(|name| name == &user.name);
-            group.gid != user.primary_gid && if adding { !member } else { member }
-        })
-        .take(MAX_MODAL_CANDIDATES)
-        .enumerate()
-        .skip(start)
-        .take(MAX_MODAL_ROWS)
-        .map(|(index, group)| {
-            format!(
-                "{} [{}] {}",
-                marker(selected, index),
-                if checked.contains(&index) { "x" } else { " " },
-                group.name
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Candidates for the selected user's add/remove groups dialog, the same
+/// list `handle_user_membership` indexes.
+fn group_candidates(app: &AppState, adding: bool) -> Vec<String> {
+    app.users
+        .get(app.selected_user_index)
+        .map_or_else(Vec::new, |user| app.user_group_candidates(user.uid, adding))
 }
 
 fn choices(options: &[&str], selected: usize) -> String {

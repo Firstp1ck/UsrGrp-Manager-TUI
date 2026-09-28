@@ -677,17 +677,7 @@ fn handle_user_membership(
         back(app);
         return;
     };
-    const MAX_MODAL_CANDIDATES: usize = 1024;
-    let groups: Vec<_> = app
-        .groups_all
-        .iter()
-        .filter(|group| {
-            let member = group.members.iter().any(|member| member == &user.name);
-            group.gid != user.primary_gid && if adding { !member } else { member }
-        })
-        .take(MAX_MODAL_CANDIDATES)
-        .cloned()
-        .collect();
+    let groups = app.user_group_candidates(user.uid, adding);
     if let Some(step) = list_step(key) {
         move_index(selected, groups.len(), step);
         return;
@@ -697,14 +687,11 @@ fn handle_user_membership(
         KeyCode::Char(' ') => toggle(selected_multi, *selected),
         KeyCode::Enter => {
             let names: Vec<_> = if selected_multi.is_empty() {
-                groups
-                    .get(*selected)
-                    .map(|group| vec![group.name.clone()])
-                    .unwrap_or_default()
+                groups.get(*selected).cloned().into_iter().collect()
             } else {
                 selected_multi
                     .iter()
-                    .filter_map(|index| groups.get(*index).map(|group| group.name.clone()))
+                    .filter_map(|index| groups.get(*index).cloned())
                     .collect()
             };
             if !names.is_empty() {
@@ -1125,21 +1112,7 @@ fn handle_group_members(
         back(app);
         return;
     };
-    const MAX_MODAL_CANDIDATES: usize = 1024;
-    let users: Vec<String> = if adding {
-        app.users_all
-            .iter()
-            .filter(|user| !group.members.contains(&user.name))
-            .take(MAX_MODAL_CANDIDATES)
-            .map(|user| user.name.clone())
-            .collect()
-    } else {
-        group
-            .members
-            .into_iter()
-            .take(MAX_MODAL_CANDIDATES)
-            .collect()
-    };
+    let users = app.group_member_candidates(group.gid, adding);
     if let Some(step) = list_step(key) {
         move_index(selected, users.len(), step);
         return;
@@ -2988,6 +2961,94 @@ mod tests {
             Arc::new(NoDiagnostics),
             Arc::new(NoConfigRoots),
         )
+    }
+
+    /// alice (primary group `alice`) is already in `dev`; bob and carol are not.
+    fn membership_app() -> AppState {
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(uid),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let group = |gid: u32, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(*member).unwrap())
+                .collect(),
+        };
+        let snapshot = AccountSnapshot {
+            users: vec![user(1000, "alice"), user(1001, "bob"), user(1002, "carol")],
+            groups: vec![
+                group(1000, "alice", &[]),
+                group(2000, "dev", &["alice"]),
+                group(2001, "ops", &[]),
+            ],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    /// Names listed as `[ ] name` / `[x] name` rows in the rendered dialog.
+    fn rendered_candidates(app: &AppState) -> Vec<String> {
+        rendered_rows(app, 80, 24)
+            .iter()
+            .filter_map(|row| {
+                let start = row.find("[ ] ").or_else(|| row.find("[x] "))? + 4;
+                row[start..].split_whitespace().next().map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn add_members_ticks_the_listed_user() {
+        let mut app = membership_app();
+        app.active_tab = ActiveTab::Groups;
+        open_modal(
+            &mut app,
+            ModalState::GroupModifyAddMembers {
+                selected: 0,
+                offset: 0,
+                target_gid: Some(2000),
+                selected_multi: vec![],
+            },
+        );
+        assert_eq!(rendered_candidates(&app), ["bob", "carol"]);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(rendered_candidates(&app), ["bob", "carol"]);
+        assert!(rendered(&app).contains("[x] bob"));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_some());
+        assert_eq!(app.last_preview, ["gpasswd -a bob dev"]);
+    }
+
+    #[test]
+    fn add_groups_lists_what_the_handler_submits() {
+        let mut app = membership_app();
+        assert_eq!(app.user_group_candidates(1000, true), ["ops"]);
+        assert_eq!(app.user_group_candidates(1000, false), ["dev"]);
+        open_modal(
+            &mut app,
+            ModalState::ModifyGroupsAdd {
+                selected: 0,
+                offset: 0,
+                selected_multi: vec![],
+            },
+        );
+        assert_eq!(rendered_candidates(&app), ["ops"]);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_some());
+        assert_eq!(app.last_preview, ["gpasswd -a alice ops"]);
     }
 
     fn fixture_snapshot() -> AccountSnapshot {

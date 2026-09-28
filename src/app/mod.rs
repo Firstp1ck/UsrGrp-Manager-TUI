@@ -848,6 +848,9 @@ impl PreparedOperation {
     }
 }
 
+/// Most entries an add/remove membership dialog offers.
+pub const MAX_MEMBERSHIP_CANDIDATES: usize = 1024;
+
 /// In-memory application state.  It intentionally stores no sudo credential.
 pub struct AppState {
     pub started_at: Instant,
@@ -1200,6 +1203,68 @@ impl AppState {
                     .filter(|group| group_gids.contains(&group.gid))
                     .collect()
             })
+    }
+
+    /// Users the Groups-tab "Add members" (`adding`) or "Remove members"
+    /// dialog offers for group `gid`, in display order. The renderer and the
+    /// key handler both index this list, so a ticked row is always the name
+    /// that gets submitted. Adding offers users who are not members yet;
+    /// removing offers the current members.
+    pub fn group_member_candidates(&self, gid: u32, adding: bool) -> Vec<String> {
+        let Some(group) = self
+            .groups
+            .iter()
+            .chain(&self.groups_all)
+            .find(|group| group.gid == gid)
+        else {
+            return Vec::new();
+        };
+        if adding {
+            self.users_all
+                .iter()
+                .filter(|user| !group.members.contains(&user.name))
+                .take(MAX_MEMBERSHIP_CANDIDATES)
+                .map(|user| user.name.clone())
+                .collect()
+        } else {
+            group
+                .members
+                .iter()
+                .take(MAX_MEMBERSHIP_CANDIDATES)
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// Groups the Users-tab "Add groups" (`adding`) or "Remove groups" dialog
+    /// offers for user `uid`, in display order. Adding offers groups the user
+    /// is not in; removing offers supplementary memberships. The primary
+    /// group is never offered. Shared by renderer and key handler.
+    pub fn user_group_candidates(&self, uid: u32, adding: bool) -> Vec<String> {
+        // Prefer the selected row so accounts sharing a UID resolve to the
+        // name the user is looking at.
+        let Some(user) = self
+            .users
+            .get(self.selected_user_index)
+            .filter(|user| user.uid == uid)
+            .or_else(|| {
+                self.users
+                    .iter()
+                    .chain(&self.users_all)
+                    .find(|user| user.uid == uid)
+            })
+        else {
+            return Vec::new();
+        };
+        self.groups_all
+            .iter()
+            .filter(|group| {
+                let member = group.members.iter().any(|name| name == &user.name);
+                group.gid != user.primary_gid && if adding { !member } else { member }
+            })
+            .take(MAX_MEMBERSHIP_CANDIDATES)
+            .map(|group| group.name.clone())
+            .collect()
     }
 
     fn config_file_read_path(&self, name: &str) -> Option<String> {
