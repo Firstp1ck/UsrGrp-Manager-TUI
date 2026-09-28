@@ -10,7 +10,13 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::app::{AppState, CandidateList, InputMode, MAX_MEMBERSHIP_CANDIDATES, ModalState};
+use crossterm::event::{KeyCode, KeyModifiers};
+
+use crate::app::keymap::KeyAction;
+use crate::app::{
+    ActiveTab, AppState, CandidateList, GroupsFocus, InputMode, MAX_MEMBERSHIP_CANDIDATES,
+    ModalState, UsersFocus,
+};
 
 /// Build a table title from its name, its search query, and the row count.
 /// The `/query` part is left out when the query is empty and not being
@@ -41,31 +47,214 @@ pub fn refresh_label(app: &AppState) -> String {
     }
 }
 
+/// Separator between status bar segments.
+const STATUS_SEPARATOR: &str = " · ";
+
+/// Status bar segments, most important first, and how many leading ones
+/// must stay (search mode and the refresh or stale label). The bar shows
+/// them left to right and drops trailing segments that do not fit.
+pub fn status_segments(app: &AppState) -> (Vec<String>, usize) {
+    let mut segments = Vec::new();
+    match app.input_mode {
+        InputMode::SearchUsers => segments.push("SEARCH(users)".to_owned()),
+        InputMode::SearchGroups => segments.push("SEARCH(groups)".to_owned()),
+        InputMode::Normal | InputMode::Modal => {}
+    }
+    segments.push(refresh_label(app));
+    let essential = segments.len();
+    let users = app.users.len();
+    let groups = app.groups.len();
+    match app.active_tab {
+        ActiveTab::Users => match app.users_focus {
+            UsersFocus::UsersList => {
+                segments.push(position("users", app.selected_user_index, users));
+                segments.push(format!("groups {groups}"));
+            }
+            UsersFocus::MemberOf => {
+                let member_of = app.selected_user_groups().len();
+                segments.push(position(
+                    "member of",
+                    app.selected_user_group_index,
+                    member_of,
+                ));
+                segments.push(format!("users {users} · groups {groups}"));
+            }
+        },
+        ActiveTab::Groups => match app.groups_focus {
+            GroupsFocus::GroupsList => {
+                segments.push(position("groups", app.selected_group_index, groups));
+                segments.push(format!("users {users}"));
+            }
+            GroupsFocus::Members => {
+                let members = app
+                    .groups
+                    .get(app.selected_group_index)
+                    .map_or(0, |group| group.members.len());
+                segments.push(position(
+                    "members",
+                    app.selected_group_member_index,
+                    members,
+                ));
+                segments.push(format!("users {users} · groups {groups}"));
+            }
+        },
+    }
+    match app.diagnostics.config_messages.len() {
+        0 => {}
+        1 => segments.push("config: 1 error (see ? help)".to_owned()),
+        count => segments.push(format!("config: {count} errors (see ? help)")),
+    }
+    segments.push(format!(
+        "shadow {}",
+        app.diagnostics.shadow.availability_label()
+    ));
+    (segments, essential)
+}
+
+/// `users 12/45`: one-based selected row and row count, `users 0/0` when empty.
+fn position(name: &str, selected: usize, len: usize) -> String {
+    let row = if len == 0 {
+        0
+    } else {
+        selected.min(len - 1) + 1
+    };
+    format!("{name} {row}/{len}")
+}
+
+/// Join `segments` with separators, keeping as many leading segments as fit
+/// in `width` columns. The first `essential` segments are always kept and
+/// the one that overflows is shortened with `…`.
+pub fn fit_status_line(segments: &[String], essential: usize, width: usize) -> String {
+    let mut line = String::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let separator = if line.is_empty() {
+            ""
+        } else {
+            STATUS_SEPARATOR
+        };
+        let needed = text_width(&line) + text_width(separator) + text_width(segment);
+        if needed <= width {
+            line.push_str(separator);
+            line.push_str(segment);
+            continue;
+        }
+        if index < essential {
+            let room = width.saturating_sub(text_width(&line) + text_width(separator));
+            if room > 0 {
+                line.push_str(separator);
+                line.push_str(&truncate_to_width(segment, room));
+            }
+        }
+        break;
+    }
+    line
+}
+
+/// Display width of `text` in terminal columns.
+fn text_width(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
+/// Cut `text` to at most `width` columns, ending in `…` when shortened.
+fn truncate_to_width(text: &str, width: usize) -> String {
+    if text_width(text) <= width {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for character in text.chars() {
+        let mut buffer = [0; 4];
+        let columns = text_width(character.encode_utf8(&mut buffer));
+        if used + columns + 1 > width {
+            break;
+        }
+        out.push(character);
+        used += columns;
+    }
+    if width > 0 {
+        out.push('…');
+    }
+    out
+}
+
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
-    let config = match app.diagnostics.config_messages.len() {
-        0 => String::new(),
-        1 => " config: 1 error (see ? help)".to_owned(),
-        count => format!(" config: {count} errors (see ? help)"),
-    };
-    let mode = match app.input_mode {
-        InputMode::SearchUsers => "SEARCH(users) ",
-        InputMode::SearchGroups => "SEARCH(groups) ",
-        InputMode::Normal | InputMode::Modal => "",
-    };
-    let text = format!(
-        "{mode}users:{} groups:{} shadow:{}{} {}",
-        app.users.len(),
-        app.groups.len(),
-        app.diagnostics.shadow.availability_label(),
-        config,
-        refresh_label(app)
-    );
+    let (segments, essential) = status_segments(app);
+    let text = fit_status_line(&segments, essential, usize::from(area.width));
     frame.render_widget(
         Paragraph::new(text).style(
             Style::default()
                 .fg(app.theme.status_fg)
                 .bg(app.theme.status_bg),
         ),
+        area,
+    );
+}
+
+/// The key bound to `action` as the keybindings panel names it. Shift with
+/// an upper-case letter (`Shift+K`) is preferred, then the fewest modifiers.
+fn key_label(app: &AppState, action: KeyAction) -> Option<String> {
+    app.keymap
+        .all_bindings()
+        .into_iter()
+        .filter(|(_, bound)| *bound == action)
+        .map(|((modifiers, code), _)| {
+            let shifted_upper = modifiers == KeyModifiers::SHIFT
+                && matches!(code, KeyCode::Char(character) if character.is_uppercase());
+            let rank = if shifted_upper {
+                0
+            } else {
+                1 + modifiers.bits().count_ones()
+            };
+            let label = crate::app::keymap::Keymap::format_key(modifiers, code);
+            (rank, label.len(), label)
+        })
+        .min()
+        .map(|(_, _, label)| label)
+}
+
+/// Key hints for the header, most important first.
+pub fn header_hints(app: &AppState) -> Vec<String> {
+    [
+        (KeyAction::OpenHelp, "help"),
+        (KeyAction::StartSearch, "search"),
+        (KeyAction::OpenFilterMenu, "filter"),
+        (KeyAction::ToggleKeybindsPane, "keys"),
+    ]
+    .into_iter()
+    .filter_map(|(action, name)| key_label(app, action).map(|key| format!("{key} {name}")))
+    .collect()
+}
+
+/// One header line: app, user, and tabs on the left, key hints on the right.
+/// Hints that do not fit are dropped from the end.
+pub fn header_line(app: &AppState, width: usize) -> String {
+    let tabs = match app.active_tab {
+        ActiveTab::Users => "[Users]  Groups",
+        ActiveTab::Groups => "Users  [Groups]",
+    };
+    let left = format!("usrgrp-manager ({})   {tabs}", app.current_username);
+    let mut hints = header_hints(app);
+    while !hints.is_empty() {
+        let right = hints.join("  ");
+        let used = text_width(&left) + text_width(&right);
+        if used + 2 <= width {
+            return format!("{left}{}{right}", " ".repeat(width - used));
+        }
+        hints.pop();
+    }
+    left
+}
+
+pub fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
+    let width = usize::from(area.width.saturating_sub(2));
+    frame.render_widget(
+        Paragraph::new(header_line(app, width))
+            .style(Style::default().fg(app.theme.header_fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border)),
+            ),
         area,
     );
 }

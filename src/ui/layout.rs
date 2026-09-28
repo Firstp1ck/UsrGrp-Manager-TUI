@@ -8,6 +8,9 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 /// Minimum width at which the keybindings panel gets its own column.
 const KEYBINDS_MIN_WIDTH: u16 = 90;
 
+/// Header height: one line of text inside a border.
+const HEADER_ROWS: u16 = 3;
+
 /// Rows a table spends on its border (top and bottom) and column header.
 const TABLE_CHROME_ROWS: u16 = 3;
 
@@ -31,7 +34,7 @@ pub fn main_layout(area: Rect, show_keybinds: bool) -> MainLayout {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(HEADER_ROWS),
             Constraint::Min(4),
             Constraint::Length(1),
         ])
@@ -90,8 +93,8 @@ mod tests {
     #[test]
     fn table_rows_subtract_border_and_header() {
         let layout = main_layout(Rect::new(0, 0, 100, 40), true);
-        // 40 rows - 4 header - 1 status = 35 body rows; minus border and header.
-        assert_eq!(table_rows(layout.table), 32);
+        // 40 rows - 3 header - 1 status = 36 body rows; minus border and header.
+        assert_eq!(table_rows(layout.table), 33);
         assert_eq!(table_rows(Rect::new(0, 0, 10, 2)), 1);
     }
 }

@@ -3676,8 +3676,8 @@ mod tests {
     fn page_down_moves_by_the_rows_the_table_renders() {
         let mut app = paging_app();
         app.terminal_size = (100, 40);
-        // 40 rows - 4 header - 1 status bar - 2 borders - 1 column header.
-        let page = 32;
+        // 40 rows - 3 header - 1 status bar - 2 borders - 1 column header.
+        let page = 33;
         let before = rendered_text(&app, 100, 40);
         assert!(before.contains(&format!("u{:03}", page - 1)));
         assert!(!before.contains(&format!("u{page:03}")));
@@ -3697,8 +3697,8 @@ mod tests {
         let mut app = paging_app();
         handle_event(&mut app, Event::Resize(100, 20));
         press(&mut app, KeyCode::PageDown);
-        // 20 rows - 4 header - 1 status bar - 3 table chrome.
-        assert_eq!(app.selected_user_index, 12);
+        // 20 rows - 3 header - 1 status bar - 3 table chrome.
+        assert_eq!(app.selected_user_index, 13);
 
         press(&mut app, KeyCode::PageUp);
         app.users_focus = UsersFocus::MemberOf;
@@ -3709,6 +3709,116 @@ mod tests {
             app.selected_user_group_index,
             ui::layout::table_rows(members)
         );
+    }
+
+    /// One user `alice` in one group `staff`; shadow data unavailable.
+    fn single_account_app() -> AppState {
+        let snapshot = AccountSnapshot {
+            users: vec![AccountUser {
+                uid: Uid(1000),
+                name: UserName::new("alice").unwrap(),
+                primary_gid: Gid(100),
+                full_name: None,
+                home_dir: "/home/alice".into(),
+                shell: ShellPath::new("/bin/sh").unwrap(),
+            }],
+            groups: vec![AccountGroup {
+                gid: Gid(100),
+                name: GroupName::new("staff").unwrap(),
+                members: vec![],
+            }],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    fn status_row(app: &AppState, width: u16, height: u16) -> String {
+        rendered_rows(app, width, height).pop().unwrap()
+    }
+
+    #[test]
+    fn status_bar_shows_the_stale_reason_and_the_header_does_not() {
+        let mut app = single_account_app();
+        app.diagnostics.stale_reason = Some("boom".to_owned());
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(rows[29].contains("STALE: boom"), "{}", rows[29]);
+        assert!(rows[..3].iter().all(|row| !row.contains("STALE")));
+    }
+
+    #[test]
+    fn status_bar_keeps_the_refresh_label_when_narrow() {
+        for width in [30, 80] {
+            let mut app = single_account_app();
+            app.diagnostics
+                .config_messages
+                .push("theme configuration line 3: unknown color".to_owned());
+            app.diagnostics.stale_reason = Some("boom".to_owned());
+            let row = status_row(&app, width, 12);
+            assert!(row.contains("STALE: boom"), "{width}: {row}");
+
+            app.diagnostics.stale_reason = None;
+            app.last_refresh_label = "22:13:20 UTC".to_owned();
+            let row = status_row(&app, width, 12);
+            assert!(row.contains("refreshed 22:13:20 UTC"), "{width}: {row}");
+        }
+        // At 80 columns the config error still fits after the counts.
+        let mut app = single_account_app();
+        app.diagnostics
+            .config_messages
+            .push("theme configuration line 3: unknown color".to_owned());
+        app.last_refresh_label = "22:13:20 UTC".to_owned();
+        assert_eq!(
+            status_row(&app, 80, 12).trim_end(),
+            "refreshed 22:13:20 UTC · users 1/1 · groups 1 · config: 1 error (see ? help)"
+        );
+    }
+
+    #[test]
+    fn long_stale_reason_is_shortened_to_the_status_bar() {
+        let mut app = single_account_app();
+        app.diagnostics.stale_reason = Some("x".repeat(100));
+        let row = status_row(&app, 30, 12);
+        assert!(row.starts_with("STALE: xxx"), "{row}");
+        assert!(row.ends_with('…'), "{row}");
+    }
+
+    #[test]
+    fn status_bar_position_follows_the_focused_pane() {
+        let mut app = stale_child_app();
+        assert!(status_row(&app, 100, 30).contains("users 1/4 · groups 4"));
+        app.selected_user_index = 0; // alice, in three groups
+        app.users_focus = UsersFocus::MemberOf;
+        app.selected_user_group_index = 1;
+        app.capture_selection_identities();
+        assert!(status_row(&app, 100, 30).contains("member of 2/3 · users 4 · groups 4"));
+
+        app.active_tab = ActiveTab::Groups;
+        app.selected_group_index = 2; // dev
+        app.capture_selection_identities();
+        assert!(status_row(&app, 100, 30).contains("groups 3/4 · users 4"));
+        app.groups_focus = GroupsFocus::Members;
+        app.selected_group_member_index = 2;
+        assert!(status_row(&app, 100, 30).contains("members 3/3 · users 4 · groups 4"));
+    }
+
+    #[test]
+    fn header_is_one_line_with_tabs_and_key_hints() {
+        let app = single_account_app();
+        let rows = rendered_rows(&app, 100, 30);
+        let header = &rows[1];
+        assert!(header.contains("usrgrp-manager (unknown)   [Users]  Groups"));
+        assert!(header.contains("? help  / search  f filter  Shift+K keys"));
+        assert!(!rows[..3].iter().any(|row| row.contains("users:")));
+        // Hints that do not fit are dropped from the end.
+        let rows = rendered_rows(&app, 64, 20);
+        assert!(rows[1].contains("? help  / search"), "{}", rows[1]);
+        assert!(!rows[1].contains("filter"));
     }
 
     #[test]
@@ -3955,8 +4065,9 @@ mod tests {
             .iter()
             .find(|row| row.contains("Space tick"))
             .expect("footer row");
-        // Drop the dialog border, the table border behind it, and padding.
-        let footer = footer.trim_end_matches([' ', '│']);
+        // Drop the dialog border, the table border behind it (a side or the
+        // bottom edge, depending on the header height), and padding.
+        let footer = footer.trim_end_matches([' ', '│', '─', '┘']);
         assert!(footer.ends_with("Enter apply row  Esc close"), "{footer:?}");
     }
 

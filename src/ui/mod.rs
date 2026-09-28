@@ -4,12 +4,7 @@ pub mod groups;
 pub mod layout;
 pub mod users;
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::Style,
-    widgets::{Block, Borders, Paragraph},
-};
+use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 
 use crate::app::{ActiveTab, AppState, ModalState};
 
@@ -24,32 +19,7 @@ pub fn render(frame: &mut Frame, app: &AppState) {
         return;
     }
     let layout = layout::main_layout(frame.area(), app.show_keybinds);
-    let tabs = match app.active_tab {
-        ActiveTab::Users => "[Users]  Groups",
-        ActiveTab::Groups => "Users  [Groups]",
-    };
-    let stale = app
-        .diagnostics
-        .stale_reason
-        .as_ref()
-        .map_or(String::new(), |reason| format!("\nSTALE: {reason}"));
-    frame.render_widget(
-        Paragraph::new(format!(
-            "usrgrp-manager ({})  {tabs}\nusers:{} groups:{} shadow:{}{stale}",
-            app.current_username,
-            app.users.len(),
-            app.groups.len(),
-            app.diagnostics.shadow.availability_label()
-        ))
-        .style(Style::default().fg(app.theme.header_fg))
-        .block(
-            Block::default()
-                .title("usrgrp-manager")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        ),
-        layout.header,
-    );
+    components::render_header(frame, layout.header, app);
     match app.active_tab {
         ActiveTab::Users => {
             users::render_users_table(frame, layout.table, app);
