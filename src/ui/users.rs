@@ -216,10 +216,13 @@ fn member_groups(app: &AppState) -> Vec<&crate::sys::SystemGroup> {
 }
 
 pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {
-    let (title, body, footer) = match modal {
+    // The focus row indexes the body's lines: the highlighted choice or the
+    // edited value.
+    let (title, body, focus, footer) = match modal {
         ModalState::Actions { selected } => (
             "Actions",
             choices(&["Modify", "Delete"], *selected),
+            Some(*selected),
             MENU_FOOTER,
         ),
         ModalState::ModifyMenu { selected } => (
@@ -228,11 +231,13 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 &["Add group", "Remove group", "Modify details", "Password"],
                 *selected,
             ),
+            Some(*selected),
             MENU_FOOTER,
         ),
         ModalState::ModifyDetailsMenu { selected } => (
             "Modify details",
             choices(&["Username", "Full name", "Shell"], *selected),
+            Some(*selected),
             MENU_FOOTER,
         ),
         ModalState::ModifyTextInput { field, value, .. } => (
@@ -250,6 +255,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                     char_budget(value, field.max_chars())
                 ),
             },
+            Some(0),
             TEXT_FOOTER,
         ),
         ModalState::ModifyShell {
@@ -257,6 +263,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             shells,
             current,
             current_unlisted,
+            current_label,
             ..
         } => {
             let labels: Vec<String> = shells
@@ -272,9 +279,18 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                     }
                 })
                 .collect();
+            // A current shell that is only a label cannot be chosen, so it
+            // sits above the list as a note.
+            let mut body = String::new();
+            if let Some(label) = current_label {
+                body.push_str(&format!("Current shell: {label}\n"));
+            }
+            let note_rows = usize::from(current_label.is_some());
+            body.push_str(&choices_page(&labels, *selected));
             (
                 "Select shell",
-                choices_page(&labels, *selected),
+                body,
+                Some(note_rows + selected % MAX_MODAL_ROWS),
                 LIST_FOOTER,
             )
         }
@@ -294,7 +310,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         } => {
             let adding = matches!(modal, ModalState::ModifyGroupsAdd { .. });
             let list = group_candidates(app, adding, filter);
-            let (title, body, footer) = candidate_dialog(&CandidateView {
+            let (title, body, focus, footer) = candidate_dialog(&CandidateView {
                 name: if adding {
                     "Add groups"
                 } else {
@@ -307,12 +323,13 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 filtering: *filtering,
             });
             let body = with_error_line(body, modal.form_error());
-            render_modal_frame(frame, area, app, &title, body, footer);
+            render_modal_frame(frame, area, app, &title, body, focus, footer);
             return;
         }
         ModalState::ModifyPasswordMenu { selected } => (
             "Password",
             choices(&["Set/change password", "Expire password"], *selected),
+            Some(*selected),
             MENU_FOOTER,
         ),
         ModalState::ChangePassword {
@@ -335,17 +352,28 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 if *must_change { "x" } else { " " },
                 marker(*selected, 3)
             )));
+            let focus = password_form_focus(*selected, 0, password);
             let body = with_error_line(body, modal.form_error());
-            render_modal_frame(frame, area, app, "Set password", body, PASSWORD_FORM_FOOTER);
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                "Set password",
+                body,
+                Some(focus),
+                PASSWORD_FORM_FOOTER,
+            );
             return;
         }
         ModalState::DeleteConfirm { .. } => {
+            let (body, focus) = delete_confirm_body(modal);
             render_modal_frame(
                 frame,
                 area,
                 app,
                 "Confirm delete",
-                delete_confirm_body(modal),
+                body,
+                focus,
                 "↑↓ row  ←→ choose  Space tick  y/n  Enter confirm  Esc cancel",
             );
             return;
@@ -360,6 +388,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 marker(*selected, 0),
                 marker(*selected, 1)
             ),
+            Some(1),
             YES_NO_FOOTER,
         ),
         ModalState::UserAddInput {
@@ -392,19 +421,29 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 if *add_to_wheel { "x" } else { " " },
                 marker(*selected, 5)
             )));
+            let focus = password_form_focus(*selected, 1, password);
             let body = with_error_line(body, modal.form_error());
-            render_modal_frame(frame, area, app, "Create user", body, PASSWORD_FORM_FOOTER);
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                "Create user",
+                body,
+                Some(focus),
+                PASSWORD_FORM_FOOTER,
+            );
             return;
         }
         _ => return,
     };
     let body = with_error_line(text_lines(body), modal.form_error());
-    render_modal_frame(frame, area, app, title, body, footer);
+    render_modal_frame(frame, area, app, title, body, focus, footer);
 }
 
 /// Body of the user delete dialog: who is deleted, what happens to the
-/// home, warnings in red, then the checkbox and the Yes/No row.
-fn delete_confirm_body(modal: &ModalState) -> Vec<Line<'static>> {
+/// home, warnings in red, then the checkbox and the Yes/No row. Also
+/// returns the line of the highlighted row.
+fn delete_confirm_body(modal: &ModalState) -> (Vec<Line<'static>>, Option<usize>) {
     let ModalState::DeleteConfirm {
         selected,
         allowed,
@@ -416,7 +455,7 @@ fn delete_confirm_body(modal: &ModalState) -> Vec<Line<'static>> {
         process_count,
     } = modal
     else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let mut lines = text_lines(format!(
         "Delete user {username} (UID {uid})?\nHome: {home}{}",
@@ -440,12 +479,31 @@ fn delete_confirm_body(modal: &ModalState) -> Vec<Line<'static>> {
             "{yes} Cannot delete: root and system accounts (UID below 1000) are protected.\n{no} No"
         )
     };
+    // A blank line, the checkbox, then the buttons: Yes and No share a
+    // line unless the refusal puts No on its own.
+    let home_row = lines.len() + 1;
+    let focus = match *selected {
+        DELETE_ROW_HOME => home_row,
+        DELETE_ROW_NO if !*allowed => home_row + 2,
+        _ => home_row + 1,
+    };
     lines.extend(text_lines(format!(
         "\n{} [{}] also delete home\n{buttons}",
         marker(*selected, DELETE_ROW_HOME),
         if *delete_home { "x" } else { " " },
     )));
-    lines
+    (lines, Some(focus))
+}
+
+/// Body line of form row `selected` when the password field is row
+/// `password_row`: rows after it move down one line while its strength
+/// hint is shown (see [`password_rows`]).
+fn password_form_focus(selected: usize, password_row: usize, password: &SecretInput) -> usize {
+    if selected > password_row && !password.is_empty() {
+        selected + 1
+    } else {
+        selected
+    }
 }
 
 /// A password field and its confirmation, each `(row, label, input,

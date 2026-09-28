@@ -740,13 +740,20 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                     let mut current =
                         user.and_then(|user| shells.iter().position(|shell| *shell == user.shell));
                     // A shell missing from /etc/shells is still the current
-                    // one: list it first so the picker starts on it.
-                    let current_unlisted =
-                        current.is_none() && user.is_some_and(|user| !user.shell.is_empty());
-                    if let Some(user) = user.filter(|_| current_unlisted) {
-                        shells.insert(0, user.shell.clone());
-                        current = Some(0);
-                    }
+                    // one: list it first so the picker starts on it. Only a
+                    // path can be chosen; a label such as the empty passwd
+                    // shell's `(default /bin/sh)` is shown as a note instead.
+                    let unlisted = user
+                        .filter(|user| current.is_none() && !user.shell.is_empty())
+                        .map(|user| user.shell.clone());
+                    let (current_unlisted, current_label) = match unlisted {
+                        Some(shell) if shell.starts_with('/') => {
+                            shells.insert(0, shell);
+                            current = Some(0);
+                            (true, None)
+                        }
+                        label => (false, label),
+                    };
                     open_modal(
                         app,
                         ModalState::ModifyShell {
@@ -755,6 +762,7 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                             shells,
                             current,
                             current_unlisted,
+                            current_label,
                         },
                     );
                 }
@@ -3524,6 +3532,7 @@ mod tests {
                     &app,
                     "Pick",
                     body,
+                    Some(2),
                     "footer",
                 )
             })
@@ -5125,6 +5134,69 @@ mod tests {
         let screen = rendered(&app);
         assert!(screen.contains("▶ /usr/sbin/nologin (current, not in /etc/shells)"));
         assert!(!screen.contains("/bin/bash (current"));
+    }
+
+    #[test]
+    fn shell_picker_shows_the_default_shell_label_as_a_note_only() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.users[0].shell = ShellPath::from_observed_passwd("").unwrap();
+        snapshot.shells = vec![
+            ShellPath::new("/bin/bash").unwrap(),
+            ShellPath::new("/bin/zsh").unwrap(),
+        ];
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        assert_eq!(app.users[0].shell, "(default /bin/sh)");
+        open_details_row(&mut app, 2);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyShell {
+                selected: 0,
+                current: None,
+                current_unlisted: false,
+                current_label: Some(label),
+                shells,
+                ..
+            }) if label == "(default /bin/sh)" && shells == &["/bin/bash", "/bin/zsh"]
+        ));
+        let screen = rendered(&app);
+        assert!(screen.contains("Current shell: (default /bin/sh)"));
+        assert!(screen.contains("▶ /bin/bash"));
+        assert!(!screen.contains("(current"));
+        assert!(!screen.contains("▶ (default"));
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_some());
+        assert_eq!(app.last_preview, ["usermod -s /bin/bash alice"]);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
+    }
+
+    #[test]
+    fn typed_cursor_glyph_does_not_hide_the_real_cursor_at_30x10() {
+        let mut app = user_app();
+        open_details_row(&mut app, 1);
+        for _ in 0.."Alice".len() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        assert_eq!(text_value(&app), Some(""));
+        type_text(&mut app, "▏");
+        type_text(&mut app, &"a".repeat(200));
+        let rows = rendered_rows(&app, 30, 10);
+        // The value, cursor, and count wrap to 20-column rows; the last one
+        // is `a▏  201/256`, and the first (with the typed glyph) scrolls away.
+        assert!(
+            rows.iter().any(|row| row.contains("a▏  201/256")),
+            "trailing cursor row scrolled out: {rows:#?}"
+        );
+        assert!(!rows.iter().any(|row| row.contains("▏aaaa")));
+        assert!(rows.iter().any(|row| row.contains("type to edit")));
     }
 
     #[test]

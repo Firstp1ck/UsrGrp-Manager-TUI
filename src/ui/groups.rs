@@ -193,7 +193,9 @@ pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {
-    let (title, body, footer) = match modal {
+    // The focus row indexes the body's lines: the highlighted choice or the
+    // edited value.
+    let (title, body, focus, footer) = match modal {
         ModalState::GroupsActions {
             selected,
             target_gid,
@@ -204,6 +206,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             } else {
                 choices(&["Create", "Delete", "Modify"], *selected)
             },
+            Some(*selected),
             MENU_FOOTER,
         ),
         ModalState::GroupAddInput { name, .. } => (
@@ -212,6 +215,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
                 "Group name:\n{name}{INPUT_CURSOR}  {}",
                 char_budget(name, MAX_NAME_CHARS)
             ),
+            Some(1),
             TEXT_FOOTER,
         ),
         ModalState::GroupDeleteConfirm {
@@ -229,12 +233,14 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
                     marker(*selected, 0),
                     marker(*selected, 1)
                 ),
+                Some(1),
                 YES_NO_FOOTER,
             )
         }
         ModalState::GroupModifyMenu { selected, .. } => (
             "Modify group",
             choices(&["Add members", "Remove members", "Rename"], *selected),
+            Some(*selected),
             MENU_FOOTER,
         ),
         ModalState::GroupRenameInput { name, .. } => (
@@ -243,6 +249,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
                 "New name:\n{name}{INPUT_CURSOR}  {}",
                 char_budget(name, MAX_NAME_CHARS)
             ),
+            Some(1),
             TEXT_FOOTER,
         ),
         ModalState::GroupModifyAddMembers {
@@ -263,7 +270,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
         } => {
             let adding = matches!(modal, ModalState::GroupModifyAddMembers { .. });
             let list = member_candidates(app, *target_gid, adding, filter);
-            let (title, body, footer) = candidate_dialog(&CandidateView {
+            let (title, body, focus, footer) = candidate_dialog(&CandidateView {
                 name: if adding {
                     "Add members"
                 } else {
@@ -276,13 +283,13 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
                 filtering: *filtering,
             });
             let body = with_error_line(body, modal.form_error());
-            render_modal_frame(frame, area, app, &title, body, footer);
+            render_modal_frame(frame, area, app, &title, body, focus, footer);
             return;
         }
         _ => return,
     };
     let body = with_error_line(text_lines(body), modal.form_error());
-    render_modal_frame(frame, area, app, title, body, footer);
+    render_modal_frame(frame, area, app, title, body, focus, footer);
 }
 
 fn choices(options: &[&str], selected: usize) -> String {

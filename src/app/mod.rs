@@ -286,6 +286,10 @@ pub enum ModalState {
         current: Option<usize>,
         /// The current shell was prepended because `/etc/shells` lacks it.
         current_unlisted: bool,
+        /// The user's current shell when it is a label rather than a path,
+        /// such as `(default /bin/sh)` for an empty passwd shell. Shown as a
+        /// note above the list and never offered as a choice.
+        current_label: Option<String>,
     },
     /// Opens with the current username or full name filled in.
     ModifyTextInput {

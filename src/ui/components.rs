@@ -508,15 +508,19 @@ pub const CURSOR_MARKER: &str = "▶";
 /// interior row. Every modal renderer goes through this frame.
 ///
 /// The dialog is as tall as its body plus the footer, capped by the
-/// terminal. When the body does not fit, it scrolls so the row carrying
-/// [`CURSOR_MARKER`] stays visible. The footer is drawn whenever the dialog
-/// has an interior row.
+/// terminal. `focus_row` is the index into `lines` of the caller's focused
+/// row (the highlighted choice or the field being edited). When the body
+/// does not fit, it scrolls so the last screen row of that line stays
+/// visible, which keeps the cursor after a long wrapped value on screen.
+/// Without a focus row the body starts at its top. The footer is drawn
+/// whenever the dialog has an interior row.
 pub fn render_modal_frame(
     frame: &mut Frame,
     area: Rect,
     app: &AppState,
     title: &str,
     lines: Vec<Line<'_>>,
+    focus_row: Option<usize>,
     footer: &str,
 ) {
     let width = modal_width(area.width);
@@ -524,9 +528,10 @@ pub fn render_modal_frame(
         .iter()
         .map(|line| wrap_line(line, usize::from(width.saturating_sub(2))))
         .collect();
-    // The text cursor wins over the row marker: in a long wrapped value it
-    // sits rows below the marker.
-    let cursor = marker_row(&wrapped, INPUT_CURSOR).or_else(|| marker_row(&wrapped, CURSOR_MARKER));
+    // Screen rows up to and including the focused line's last row.
+    let focus_end = focus_row
+        .filter(|row| *row < wrapped.len())
+        .map(|row| wrapped[..=row].iter().map(Vec::len).sum::<usize>());
     let body: Vec<Line<'_>> = wrapped.into_iter().flatten().collect();
     let body_rows = u16::try_from(body.len()).unwrap_or(u16::MAX);
     let height = body_rows
@@ -553,13 +558,7 @@ pub fn render_modal_frame(
         height: 1,
         ..inner
     };
-    // Show the rest of the marker's line too, as long as the marker row
-    // itself stays on screen.
-    let scroll = cursor.map_or(0, |(row, line_end)| {
-        line_end
-            .saturating_sub(usize::from(body_area.height))
-            .min(row)
-    });
+    let scroll = focus_end.map_or(0, |end| end.saturating_sub(usize::from(body_area.height)));
     // The body is already wrapped, so each Line is exactly one screen row.
     frame.render_widget(
         Paragraph::new(body).scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
@@ -569,22 +568,6 @@ pub fn render_modal_frame(
         Paragraph::new(footer.to_owned()).style(Style::default().fg(app.theme._muted)),
         footer_area,
     );
-}
-
-/// Screen row of the first wrapped line containing `marker`, and the row
-/// just past the end of that line, both counted in the flattened body.
-fn marker_row(wrapped: &[Vec<Line<'_>>], marker: &str) -> Option<(usize, usize)> {
-    let mut start = 0;
-    for rows in wrapped {
-        let hit = rows
-            .iter()
-            .position(|row| row.spans.iter().any(|span| span.content.contains(marker)));
-        if let Some(offset) = hit {
-            return Some((start + offset, start + rows.len()));
-        }
-        start += rows.len();
-    }
-    None
 }
 
 /// Break one body line into rows of at most `width` columns, splitting at
@@ -670,6 +653,7 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
                 app,
                 "Authentication required",
                 body,
+                None,
                 "Enter submit  Esc cancel operation",
             );
             return;
@@ -711,13 +695,14 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
                 app,
                 &title,
                 text_lines(body),
+                Some(*selected),
                 "↑↓ move  Enter/Space toggle  Backspace back  Esc close",
             );
             return;
         }
         _ => return,
     };
-    render_modal_frame(frame, area, app, title, text_lines(body), footer);
+    render_modal_frame(frame, area, app, title, text_lines(body), None, footer);
 }
 
 /// Operation confirmation: the action, the window of preview steps that
@@ -771,7 +756,8 @@ fn render_operation_confirm(
     } else {
         YES_NO_FOOTER
     };
-    render_modal_frame(frame, area, app, &title, body, footer);
+    // The preview window is sized so the body never has to scroll.
+    render_modal_frame(frame, area, app, &title, body, None, footer);
 }
 
 /// Confirmation on a terminal where no complete step fits: the size it
@@ -797,8 +783,9 @@ fn render_preview_too_small(
         body.push(Line::default());
     }
     body.push(Line::raw(choices));
+    let focus = body.len() - 1;
     let title = format!("Confirm ({steps} steps)");
-    render_modal_frame(frame, area, app, &title, body, YES_NO_FOOTER);
+    render_modal_frame(frame, area, app, &title, body, Some(focus), YES_NO_FOOTER);
 }
 
 /// Help modal text. Recorded configuration problems follow the key summary
@@ -988,11 +975,13 @@ pub struct CandidateView<'a> {
     pub filtering: bool,
 }
 
-/// Title, body, and footer of a multi-select dialog. The title reads
-/// `Add groups  page 2/9  3 selected` and notes when the list was capped.
-/// The body starts with the filter line when a filter is set or being
-/// typed.
-pub fn candidate_dialog(view: &CandidateView<'_>) -> (String, Vec<Line<'static>>, &'static str) {
+/// Title, body, focus row, and footer of a multi-select dialog. The title
+/// reads `Add groups  page 2/9  3 selected` and notes when the list was
+/// capped. The body starts with the filter line when a filter is set or
+/// being typed. The focus row is the highlighted candidate's body line.
+pub fn candidate_dialog(
+    view: &CandidateView<'_>,
+) -> (String, Vec<Line<'static>>, Option<usize>, &'static str) {
     let len = view.list.names.len();
     let pages = len.div_ceil(CANDIDATE_ROWS).max(1);
     let page = (view.selected / CANDIDATE_ROWS + 1).min(pages);
@@ -1018,6 +1007,7 @@ pub fn candidate_dialog(view: &CandidateView<'_>) -> (String, Vec<Line<'static>>
     if len == 0 && !view.filter.is_empty() {
         body.push(Line::from("No matches"));
     }
+    let focus = (len > 0).then(|| body.len() + view.selected % CANDIDATE_ROWS);
     body.extend(text_lines(candidate_page(
         &view.list.names,
         view.selected,
@@ -1030,5 +1020,5 @@ pub fn candidate_dialog(view: &CandidateView<'_>) -> (String, Vec<Line<'static>>
     } else {
         MULTI_FOOTER
     };
-    (title, body, footer)
+    (title, body, focus, footer)
 }
