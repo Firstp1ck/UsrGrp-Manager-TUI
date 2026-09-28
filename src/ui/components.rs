@@ -328,40 +328,93 @@ pub fn header_hints(app: &AppState) -> Vec<String> {
 
 /// Added to the header when the keybindings panel is on but the terminal is
 /// too narrow to show it.
-pub const KEYBINDS_HIDDEN_NOTICE: &str = " (keybinds hidden: narrow terminal)";
+pub const KEYBINDS_HIDDEN_NOTICE: &str = " (keybinds hidden)";
+
+/// Columns between the title and the first key hint, and between hints.
+const HINT_GAP: &str = "  ";
 
 /// One header line: app, user, and tabs on the left, key hints on the right.
 /// `width` is the header's inner width, two columns less than the terminal.
-/// Hints that do not fit are dropped from the end.
+/// See [`header_parts`] for what is kept when the line does not fit.
 pub fn header_line(app: &AppState, width: usize) -> String {
     let terminal_width = u16::try_from(width.saturating_add(2)).unwrap_or(u16::MAX);
     let (left, right) = header_parts(app, width, terminal_width);
     left + &right
 }
 
-/// The header line split into the app, user, and tabs part and the padded
-/// key hints part (empty when no hint fits). The first part ends with
-/// [`KEYBINDS_HIDDEN_NOTICE`] when the panel is on but `terminal_width` is
-/// too narrow for it.
+/// The header line split into the title part (app, user, tabs, and the
+/// hidden-panel notice) and the right-aligned key hints part.
+///
+/// Segments are placed by priority: the title, the help hint, the notice
+/// (only when the panel is on but `terminal_width` is too narrow for it),
+/// then the other hints. A segment that does not fit is left out whole and
+/// nothing after it is added. Only the title is ever shortened: the user
+/// name is cut with `…` so the title takes about half of `width`, or more
+/// when the help hint and the notice still fit next to it.
 fn header_parts(app: &AppState, width: usize, terminal_width: u16) -> (String, String) {
+    let notice = if app.show_keybinds && !super::layout::keybinds_fit(terminal_width) {
+        KEYBINDS_HIDDEN_NOTICE
+    } else {
+        ""
+    };
+    // `header_hints` lists the help hint first when help has a key.
+    let help = key_label(app, KeyAction::OpenHelp).map(|key| format!("{key} help"));
+    let hints = header_hints(app)
+        .into_iter()
+        .skip(usize::from(help.is_some()));
+    let reserved = help
+        .as_deref()
+        .map_or(0, |help| HINT_GAP.len() + text_width(help))
+        + text_width(notice);
+    let title = header_title(app, (width / 2).max(width.saturating_sub(reserved)));
+
+    let mut used = text_width(&title);
+    let mut shown: Vec<String> = Vec::new();
+    if let Some(help) = help {
+        if used + HINT_GAP.len() + text_width(&help) <= width {
+            used += HINT_GAP.len() + text_width(&help);
+            shown.push(help);
+        } else {
+            return (title, String::new());
+        }
+    }
+    let mut left = title;
+    if !notice.is_empty() && used + text_width(notice) <= width {
+        used += text_width(notice);
+        left.push_str(notice);
+    }
+    for hint in hints {
+        let extra = HINT_GAP.len() + text_width(&hint);
+        if used + extra > width {
+            break;
+        }
+        used += extra;
+        shown.push(hint);
+    }
+    if shown.is_empty() {
+        return (left, String::new());
+    }
+    let right = shown.join(HINT_GAP);
+    let padding = width - text_width(&left) - text_width(&right);
+    (left, format!("{}{right}", " ".repeat(padding)))
+}
+
+/// `usrgrp-manager (<user>)   [Users]  Groups` in at most `cap` columns.
+/// The user name is cut with `…` first; if the rest still does not fit,
+/// the whole title is cut.
+fn header_title(app: &AppState, cap: usize) -> String {
     let tabs = match app.active_tab {
         ActiveTab::Users => "[Users]  Groups",
         ActiveTab::Groups => "Users  [Groups]",
     };
-    let mut left = format!("usrgrp-manager ({})   {tabs}", app.current_username);
-    if app.show_keybinds && !super::layout::keybinds_fit(terminal_width) {
-        left.push_str(KEYBINDS_HIDDEN_NOTICE);
+    let title = |name: &str| format!("usrgrp-manager ({name})   {tabs}");
+    let full = title(&app.current_username);
+    if text_width(&full) <= cap {
+        return full;
     }
-    let mut hints = header_hints(app);
-    while !hints.is_empty() {
-        let right = hints.join("  ");
-        let used = text_width(&left) + text_width(&right);
-        if used + 2 <= width {
-            return (left, format!("{}{right}", " ".repeat(width - used)));
-        }
-        hints.pop();
-    }
-    (left, String::new())
+    let fixed = text_width(&full) - text_width(&app.current_username);
+    let name = truncate_to_width(&app.current_username, cap.saturating_sub(fixed).max(1));
+    truncate_to_width(&title(&name), cap)
 }
 
 /// Header block in the theme's header colors, with the key hints in the

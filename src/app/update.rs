@@ -5951,10 +5951,67 @@ mod tests {
         let mut app = single_account_app();
         app.show_keybinds = true;
         let rows = rendered_rows(&app, 80, 24);
-        assert!(rows[1].contains("keybinds hidden"), "{}", rows[1]);
+        let header = &rows[1];
+        assert!(header.contains("usrgrp-manager (unknown)   [Users]  Groups"));
+        assert!(header.contains(" (keybinds hidden)"), "{header}");
+        assert!(header.contains("? help"), "{header}");
+        assert!(!header.contains("narrow terminal"));
+        assert!(rendered_rows(&app, 89, 24)[1].contains("(keybinds hidden)"));
+        assert!(!rendered_rows(&app, 90, 24)[1].contains("keybinds hidden"));
         assert!(!rendered_rows(&app, 120, 40)[1].contains("keybinds hidden"));
         app.show_keybinds = false;
         assert!(!rendered_rows(&app, 80, 24)[1].contains("keybinds hidden"));
+    }
+
+    #[test]
+    fn header_shortens_a_long_user_name_before_dropping_help_or_the_notice() {
+        let mut app = single_account_app();
+        app.show_keybinds = true;
+        app.current_username = "abcdefghijklmnopqrstuvwxyz012345".to_owned();
+        assert_eq!(app.current_username.len(), 32);
+        let rows = rendered_rows(&app, 80, 24);
+        let header = &rows[1];
+        assert!(header.contains("? help"), "{header}");
+        assert!(header.contains(" (keybinds hidden)"), "{header}");
+        assert!(!header.contains(&app.current_username), "{header}");
+        assert!(header.contains("usrgrp-manager (abcdefg"), "{header}");
+        assert!(header.contains("…)   [Users]  Groups"), "{header}");
+        // Hints come whole or not at all.
+        let line = ui::components::header_line(&app, 78);
+        assert!(
+            line.ends_with("? help") || line.ends_with("/ search"),
+            "{line}"
+        );
+        // Wide enough: the name is shown in full.
+        assert!(rendered_rows(&app, 160, 40)[1].contains(&app.current_username));
+    }
+
+    #[test]
+    fn keybinds_panel_does_not_list_keys_bound_to_ignore() {
+        let mut app = user_app();
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("keybinds.conf");
+        std::fs::write(&path, "Ignore = x\n").unwrap();
+        app.keymap = crate::app::keymap::Keymap::from_file(path.to_str().unwrap()).unwrap();
+        assert!(
+            app.keymap
+                .all_bindings()
+                .into_iter()
+                .any(
+                    |((_, code), action)| code == KeyCode::Char('x') && action == KeyAction::Ignore
+                )
+        );
+        app.show_keybinds = true;
+        let screen = rendered_at(&app, 120, 40);
+        assert!(screen.contains("Navigation"));
+        assert!(!screen.contains("Ignore"));
+        for line in ui::components::keybinds_panel_lines(&app) {
+            let line = line.to_string();
+            let Some((_, keys)) = line.split_once(": ") else {
+                continue;
+            };
+            assert!(!keys.split(", ").any(|key| key == "x"), "{line}");
+        }
     }
 
     #[test]
