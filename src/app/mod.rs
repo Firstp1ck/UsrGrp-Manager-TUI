@@ -1017,12 +1017,15 @@ impl AppState {
             .cloned();
     }
 
+    /// Groups the selected user belongs to (primary group and supplementary
+    /// memberships). Resolved against `groups_all` so the Groups-tab filter
+    /// and search never hide memberships in the Users tab.
     pub fn selected_user_groups(&self) -> Vec<&sys::SystemGroup> {
         self.users
             .get(self.selected_user_index)
             .and_then(|user| self.user_group_gids.get(&user.name))
             .map_or_else(Vec::new, |group_gids| {
-                self.groups
+                self.groups_all
                     .iter()
                     .filter(|group| group_gids.contains(&group.gid))
                     .collect()
