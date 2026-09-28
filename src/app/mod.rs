@@ -742,11 +742,12 @@ const MAX_PROC_ENTRIES: usize = 65_536;
 /// Most bytes read from one `/proc/<pid>/status` file.
 const MAX_PROC_STATUS_BYTES: u64 = 4096;
 
-/// Count processes per real UID from `<proc_root>/<pid>/status`. Returns
-/// None when the directory cannot be listed, has more than
-/// [`MAX_PROC_ENTRIES`] entries, or a status file cannot be opened for any
-/// reason other than its process having exited, so a partial count is never
-/// reported as complete.
+/// Count processes per real UID from `<proc_root>/<pid>/status`. Fails
+/// closed: returns None when the directory cannot be listed, has more than
+/// [`MAX_PROC_ENTRIES`] entries, a status file cannot be opened or read for
+/// any reason other than NotFound (its process exited mid-scan), or a status
+/// file has no parseable `Uid:` line. A partial count is never reported as
+/// complete.
 fn read_process_counts(proc_root: &std::path::Path) -> Option<HashMap<u32, usize>> {
     let mut counts = HashMap::new();
     let mut entries = std::fs::read_dir(proc_root).ok()?;
@@ -759,29 +760,34 @@ fn read_process_counts(proc_root: &std::path::Path) -> Option<HashMap<u32, usize
         if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_digit()) {
             continue;
         }
-        let file = match File::open(entry.path().join("status")) {
-            Ok(file) => file,
-            // The process exited after the directory was listed.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return None,
-        };
-        let mut bytes = Vec::new();
-        if file
-            .take(MAX_PROC_STATUS_BYTES)
-            .read_to_end(&mut bytes)
-            .is_err()
-        {
-            // Reading a status file of a process that just exited fails.
+        let Some(bytes) = read_proc_status(&entry.path().join("status")).ok()? else {
             continue;
-        }
-        if let Some(uid) = status_real_uid(&String::from_utf8_lossy(&bytes)) {
-            *counts.entry(uid).or_default() += 1;
-        }
+        };
+        let uid = status_real_uid(&String::from_utf8_lossy(&bytes))?;
+        *counts.entry(uid).or_default() += 1;
     }
     if entries.next().is_some() {
         return None;
     }
     Some(counts)
+}
+
+/// Read at most [`MAX_PROC_STATUS_BYTES`] of one status file. `Ok(None)`
+/// means the process exited (NotFound) and is skipped; any other open or
+/// read error is returned and fails the whole scan.
+fn read_proc_status(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take(MAX_PROC_STATUS_BYTES)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    };
+    match read() {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Real UID from the `Uid:` line of a `/proc/<pid>/status` file.
@@ -1477,9 +1483,8 @@ mod tests {
         assert_eq!(status_real_uid("Uid:\tnope\n"), None);
     }
 
-    /// A fake /proc tree in a temporary directory; the host /proc is never read.
-    #[test]
-    fn process_counts_group_pid_directories_by_real_uid() {
+    /// A fake /proc tree with two users' processes and non-process entries.
+    fn fake_proc() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         write_status(root.path(), "1", "Name:\tinit\nUid:\t0\t0\t0\t0\n");
         write_status(
@@ -1488,17 +1493,50 @@ mod tests {
             "Name:\tsh\nUid:\t1000\t1000\t1000\t1000\n",
         );
         write_status(root.path(), "21", "Name:\tvim\nUid:\t1000\t0\t0\t0\n");
-        // Not a process directory.
-        write_status(root.path(), "self", "Uid:\t1000\t1000\t1000\t1000\n");
+        // Not process directories.
+        write_status(root.path(), "self", "Name:\tx\n");
         std::fs::write(root.path().join("uptime"), "1.0 1.0\n").unwrap();
-        // A process that exited after the listing has no status file.
-        std::fs::create_dir(root.path().join("30")).unwrap();
+        root
+    }
 
+    /// The fake /proc lives in a temporary directory; the host /proc is never read.
+    #[test]
+    fn process_counts_group_pid_directories_by_real_uid() {
+        let root = fake_proc();
         let counts = read_process_counts(root.path()).unwrap();
         assert_eq!(counts.get(&1000), Some(&2));
         assert_eq!(counts.get(&0), Some(&1));
         assert_eq!(counts.len(), 2);
 
         assert!(read_process_counts(&root.path().join("missing")).is_none());
+    }
+
+    #[test]
+    fn process_counts_skip_a_process_that_exited_mid_scan() {
+        let root = fake_proc();
+        // A PID directory whose status file is gone opens with NotFound.
+        std::fs::create_dir(root.path().join("30")).unwrap();
+        let counts = read_process_counts(root.path()).unwrap();
+        assert_eq!(counts.get(&1000), Some(&2));
+        assert_eq!(counts.get(&0), Some(&1));
+    }
+
+    #[test]
+    fn process_counts_fail_closed_on_a_status_read_error() {
+        let root = fake_proc();
+        // Opening a directory succeeds; reading it fails with a non-NotFound error.
+        std::fs::create_dir_all(root.path().join("40").join("status")).unwrap();
+        assert!(read_process_counts(root.path()).is_none());
+    }
+
+    #[test]
+    fn process_counts_fail_closed_on_a_status_without_uid() {
+        let root = fake_proc();
+        write_status(root.path(), "50", "Name:\todd\nGid:\t0\n");
+        assert!(read_process_counts(root.path()).is_none());
+
+        let root = fake_proc();
+        write_status(root.path(), "51", "Name:\todd\nUid:\tnope\t0\n");
+        assert!(read_process_counts(root.path()).is_none());
     }
 }
