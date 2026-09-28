@@ -601,16 +601,25 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 back(app)
             }
         }
-        ModalState::Help { scroll } => match key.code {
-            KeyCode::Esc | KeyCode::Enter => back(app),
-            KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
-            KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-            KeyCode::PageDown => *scroll = scroll.saturating_add(10),
-            _ => {}
-        },
+        ModalState::Help { scroll } => handle_help_key(app, scroll, key),
     }
     app.reattach_modal(modal, detached);
+}
+
+/// Esc and Enter close the help; arrows, j/k, and PgUp/PgDn scroll it,
+/// never past the page that shows the last line.
+fn handle_help_key(app: &mut AppState, scroll: &mut u16, key: KeyEvent) {
+    let current = usize::from(*scroll);
+    let next = match key.code {
+        KeyCode::Esc | KeyCode::Enter => return back(app),
+        KeyCode::Up | KeyCode::Char('k') => current.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => current + 1,
+        KeyCode::PageUp => current.saturating_sub(10),
+        KeyCode::PageDown => current + 10,
+        _ => return,
+    };
+    let maximum = ui::components::help_max_scroll(app, app.terminal_size);
+    *scroll = u16::try_from(next.min(maximum)).unwrap_or(u16::MAX);
 }
 
 fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
@@ -4241,6 +4250,75 @@ mod tests {
                 .contains("▶ [-] Expired (shadow unavailable: shadow data has not been refreshed)")
         );
         assert!(screen.contains("Backspace back  Esc close"));
+    }
+
+    fn help_scroll(app: &AppState) -> u16 {
+        match app.modal() {
+            Some(ModalState::Help { scroll }) => *scroll,
+            _ => panic!("expected the help dialog"),
+        }
+    }
+
+    #[test]
+    fn help_is_grouped_and_scrolls_by_line() {
+        let mut app = user_app();
+        app.terminal_size = (100, 30);
+        press(&mut app, KeyCode::Char('?'));
+        let top = rendered_at(&app, 100, 30);
+        assert!(top.contains("Navigation"));
+        assert!(top.contains("Move up: Up, k"));
+        assert!(top.contains("Help (lines 1-"));
+        assert!(top.contains("↑↓ PgUp PgDn scroll  Esc close"));
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(help_scroll(&app), 5);
+        let scrolled = rendered_at(&app, 100, 30);
+        assert_ne!(top, scrolled);
+        assert!(scrolled.contains("Help (lines 6-"));
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(help_scroll(&app), 4);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
+    }
+
+    #[test]
+    fn help_scroll_stops_at_the_page_with_the_last_line() {
+        let mut app = user_app();
+        app.terminal_size = (100, 30);
+        press(&mut app, KeyCode::Char('?'));
+        for _ in 0..20 {
+            press(&mut app, KeyCode::PageDown);
+        }
+        let maximum = ui::components::help_max_scroll(&app, (100, 30));
+        assert!(maximum > 0);
+        assert_eq!(usize::from(help_scroll(&app)), maximum);
+        let total = ui::components::help_lines(&app).len();
+        let screen = rendered_at(&app, 100, 30);
+        assert!(screen.contains(&format!("-{total} of {total})")));
+        assert!(screen.contains("--log-file <PATH>"));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(usize::from(help_scroll(&app)), maximum);
+    }
+
+    #[test]
+    fn help_lists_rebound_keys() {
+        let mut app = user_app();
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("keybinds.conf");
+        std::fs::write(&path, "StartSearch = Ctrl+f\n").unwrap();
+        app.keymap = crate::app::keymap::Keymap::from_file(path.to_str().unwrap()).unwrap();
+        let text: Vec<String> = ui::components::help_lines(&app)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            text.iter()
+                .any(|line| line == "Search the active tab: /, Ctrl+F")
+        );
+        app.terminal_size = (100, 30);
+        press(&mut app, KeyCode::Char('?'));
+        assert!(rendered_at(&app, 100, 30).contains("Ctrl+F"));
     }
 
     #[test]

@@ -940,7 +940,10 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
             message.clone(),
             "Enter/Esc close",
         ),
-        ModalState::Help { .. } => ("Help", help_text(app), "↑↓ PgUp PgDn scroll  Esc close"),
+        ModalState::Help { scroll } => {
+            render_help(frame, area, app, *scroll);
+            return;
+        }
         ModalState::SudoPrompt {
             password, error, ..
         } => {
@@ -1105,19 +1108,189 @@ fn render_preview_too_small(
     render_modal_frame(frame, area, app, title, body, Some(focus), YES_NO_FOOTER);
 }
 
-/// Help modal text. Recorded configuration problems follow the key summary
-/// in their own section.
-fn help_text(app: &AppState) -> String {
-    let mut text = "q quit; Tab switch tabs; Shift+Tab switch pane; / search; n create; Enter action; Delete delete; f filters".to_owned();
-    if !app.diagnostics.config_messages.is_empty() {
-        text.push_str("\n\n");
-        text.push_str(crate::app::CONFIG_PROBLEMS_TITLE);
-        for message in &app.diagnostics.config_messages {
-            text.push('\n');
-            text.push_str(message);
-        }
+/// Keys bound to any of `actions`, collapsed and ordered the way the
+/// keybindings panel lists them (`Shift+K`, not `K, Shift+k`), or `unbound`.
+fn bound_keys(app: &AppState, actions: &[KeyAction]) -> String {
+    let keys: BTreeSet<PanelKey> = app
+        .keymap
+        .all_bindings()
+        .into_iter()
+        .filter(|(_, action)| actions.contains(action))
+        .map(|((modifiers, code), _)| panel_key(modifiers, code))
+        .collect();
+    if keys.is_empty() {
+        return "unbound".to_owned();
     }
-    text
+    keys.into_iter()
+        .map(|(_, _, key)| key)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Help modal lines: recorded configuration problems first, then the keys
+/// by section, then where the configuration files are. Main-view keys come
+/// from the keymap, so a rebinding shows up here.
+pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
+    use KeyAction::*;
+    let heading = Style::default()
+        .fg(app.theme.title)
+        .add_modifier(Modifier::BOLD);
+    let text = Style::default().fg(app.theme.text);
+    let mut lines = Vec::new();
+    let mut section = |title: &str, entries: Vec<String>| {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled(title.to_owned(), heading));
+        lines.extend(entries.into_iter().map(|entry| Line::styled(entry, text)));
+    };
+    if !app.diagnostics.config_messages.is_empty() {
+        section(
+            crate::app::CONFIG_PROBLEMS_TITLE,
+            app.diagnostics.config_messages.clone(),
+        );
+    }
+    let keys = |actions: &[KeyAction]| bound_keys(app, actions);
+    section(
+        "Navigation",
+        vec![
+            format!("Move up: {}", keys(&[MoveUp])),
+            format!("Move down: {}", keys(&[MoveDown])),
+            format!("Page up: {}", keys(&[PageUp, MoveLeftPage])),
+            format!("Page down: {}", keys(&[PageDown, MoveRightPage])),
+            format!("Switch tab: {}", keys(&[SwitchTab])),
+            format!(
+                "Switch pane: {}",
+                keys(&[ToggleUsersFocus, ToggleGroupsFocus])
+            ),
+        ],
+    );
+    section(
+        "General",
+        vec![
+            format!("Help: {}", keys(&[OpenHelp])),
+            format!("Toggle keybindings panel: {}", keys(&[ToggleKeybindsPane])),
+            format!("Refresh accounts: {}", keys(&[Refresh])),
+            format!("Quit: {}", keys(&[Quit])),
+        ],
+    );
+    section(
+        "Search and filters",
+        vec![
+            format!("Search the active tab: {}", keys(&[StartSearch])),
+            "While typing: Enter keeps the search, Esc restores the previous one".to_owned(),
+            format!("Clear search: {}", keys(&[ClearSearch])),
+            format!("Filters: {}", keys(&[OpenFilterMenu])),
+        ],
+    );
+    let enter = keys(&[EnterAction]);
+    let new = keys(&[NewUser]);
+    let delete = keys(&[DeleteSelection]);
+    section(
+        "Users tab",
+        vec![
+            format!("User actions: {enter} on a user"),
+            format!("Group actions: {enter} in Member of"),
+            format!("New user: {new}"),
+            format!("Delete user: {delete} on a user"),
+            format!("Remove from group: {delete} in Member of"),
+        ],
+    );
+    section(
+        "Groups tab",
+        vec![
+            format!("Group actions: {enter} on a group"),
+            format!("Remove member: {enter} or {delete} in Members"),
+            format!("New group: {new}"),
+            format!("Delete group: {delete} on a group"),
+        ],
+    );
+    section(
+        "Inside dialogs",
+        vec![
+            "Move in menus: Up, Down, j, k".to_owned(),
+            "Choose in yes/no dialogs: Left, Right, h, l, Tab, or y/n".to_owned(),
+            "Tick a row: Space; tick all: *".to_owned(),
+            "Filter candidate lists: /".to_owned(),
+            "Reveal passwords: Ctrl+R".to_owned(),
+            "Back: Backspace in menus; Esc goes back one level".to_owned(),
+            "Long command previews: scroll to the end before Apply".to_owned(),
+        ],
+    );
+    section(
+        "Configuration",
+        vec![
+            format!("Theme file: {}", app.configuration_write_path("theme.conf")),
+            format!(
+                "Keys file: {}",
+                app.configuration_write_path("keybinds.conf")
+            ),
+            format!(
+                "Filters file: {}",
+                app.configuration_write_path("filter.conf")
+            ),
+            "--config-dir <PATH> reads and writes these files in PATH only".to_owned(),
+            "--dry-run shows every command preview and never runs it".to_owned(),
+            "--log-file <PATH> appends operations and results to PATH".to_owned(),
+        ],
+    );
+    lines
+}
+
+/// Index range of the help lines shown at `scroll` on a terminal of
+/// `area` (width, height). The start is clamped so the last page is full,
+/// and as many whole lines follow as fit the tallest dialog, counting the
+/// rows each wraps to. At least one line is shown.
+pub fn help_window(lines: &[Line<'_>], area: (u16, u16), scroll: usize) -> std::ops::Range<usize> {
+    let inner = usize::from(modal_width(area.0).saturating_sub(2));
+    let rows = modal_body_rows(area.1);
+    let heights: Vec<usize> = lines
+        .iter()
+        .map(|line| wrap_line(line, inner).len())
+        .collect();
+    // Smallest start from which the rest of the help fits.
+    let mut last_start = heights.len();
+    let mut used = 0;
+    while last_start > 0 && used + heights[last_start - 1] <= rows {
+        last_start -= 1;
+        used += heights[last_start];
+    }
+    let start = scroll.min(last_start).min(heights.len().saturating_sub(1));
+    let mut end = start;
+    let mut used = 0;
+    while end < heights.len() && (end == start || used + heights[end] <= rows) {
+        used += heights[end];
+        end += 1;
+    }
+    start..end
+}
+
+/// Largest useful help scroll on a terminal of `area` (width, height): the
+/// one that shows the last page.
+pub fn help_max_scroll(app: &AppState, area: (u16, u16)) -> usize {
+    help_window(&help_lines(app), area, usize::MAX).start
+}
+
+/// Help dialog at `scroll`, titled with the visible line range.
+fn render_help(frame: &mut Frame, area: Rect, app: &AppState, scroll: u16) {
+    let lines = help_lines(app);
+    let shown = help_window(&lines, (area.width, area.height), usize::from(scroll));
+    let title = format!(
+        "Help (lines {}-{} of {})",
+        shown.start + 1,
+        shown.end,
+        lines.len()
+    );
+    let body = lines[shown].to_vec();
+    render_modal_frame(
+        frame,
+        area,
+        app,
+        &title,
+        body,
+        None,
+        "↑↓ PgUp PgDn scroll  Esc close",
+    );
 }
 
 /// Filter menu rows for the active tab, without the cursor. User chips read
