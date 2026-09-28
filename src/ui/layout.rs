@@ -10,6 +10,12 @@ use crate::app::ActiveTab;
 /// Minimum width at which the keybindings panel gets its own column.
 const KEYBINDS_MIN_WIDTH: u16 = 90;
 
+/// Whether a terminal `width` columns wide has room for the keybindings
+/// panel. The header says so when the panel is on but does not fit.
+pub fn keybinds_fit(width: u16) -> bool {
+    width >= KEYBINDS_MIN_WIDTH
+}
+
 /// Header height: one line of text inside a border.
 const HEADER_ROWS: u16 = 3;
 
@@ -72,7 +78,7 @@ pub fn main_layout(
             Constraint::Length(1),
         ])
         .split(area);
-    let body = if show_keybinds && root[1].width >= KEYBINDS_MIN_WIDTH {
+    let body = if show_keybinds && keybinds_fit(root[1].width) {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([

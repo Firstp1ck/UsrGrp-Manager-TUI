@@ -5823,16 +5823,60 @@ mod tests {
 
     #[test]
     fn header_is_one_line_with_tabs_and_key_hints() {
-        let app = single_account_app();
+        let mut app = single_account_app();
         let rows = rendered_rows(&app, 100, 30);
         let header = &rows[1];
         assert!(header.contains("usrgrp-manager (unknown)   [Users]  Groups"));
         assert!(header.contains("? help  / search  f filter  Shift+K keys"));
         assert!(!rows[..3].iter().any(|row| row.contains("users:")));
-        // Hints that do not fit are dropped from the end.
+        // Hints that do not fit are dropped from the end. With the
+        // keybindings panel off the header has no narrow-terminal notice.
+        app.show_keybinds = false;
         let rows = rendered_rows(&app, 64, 20);
         assert!(rows[1].contains("? help  / search"), "{}", rows[1]);
         assert!(!rows[1].contains("filter"));
+    }
+
+    #[test]
+    fn keybinds_panel_groups_bindings_under_human_labels() {
+        let mut app = user_app();
+        app.show_keybinds = true;
+        let screen = rendered_at(&app, 120, 40);
+        for text in [
+            "General",
+            "Navigation",
+            "Actions",
+            "Move up: Up, k",
+            "Quit: q, Ctrl+C",
+            "Clear search: Esc",
+            "Delete: Delete",
+        ] {
+            assert!(screen.contains(text), "missing {text:?}");
+        }
+        assert!(!screen.contains("Ignore"));
+        assert!(!screen.contains("MoveUp"));
+
+        let lines: Vec<String> = ui::components::keybinds_panel_lines(&app)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(lines.contains(&"Toggle keybindings: Shift+K".to_owned()));
+        assert!(lines.contains(&"Switch pane: Left, Right, h, l, Shift+Tab".to_owned()));
+        let position = |text: &str| lines.iter().position(|line| line == text).unwrap();
+        assert!(position("General") < position("Navigation"));
+        assert!(position("Navigation") < position("Actions"));
+        assert!(position("Quit: q, Ctrl+C") < position("Help: ?"));
+    }
+
+    #[test]
+    fn header_says_when_the_keybinds_panel_is_hidden_by_width() {
+        let mut app = single_account_app();
+        app.show_keybinds = true;
+        let rows = rendered_rows(&app, 80, 24);
+        assert!(rows[1].contains("keybinds hidden"), "{}", rows[1]);
+        assert!(!rendered_rows(&app, 120, 40)[1].contains("keybinds hidden"));
+        app.show_keybinds = false;
+        assert!(!rendered_rows(&app, 80, 24)[1].contains("keybinds hidden"));
     }
 
     #[test]

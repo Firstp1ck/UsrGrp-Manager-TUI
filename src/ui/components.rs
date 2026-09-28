@@ -326,21 +326,32 @@ pub fn header_hints(app: &AppState) -> Vec<String> {
     .collect()
 }
 
+/// Added to the header when the keybindings panel is on but the terminal is
+/// too narrow to show it.
+pub const KEYBINDS_HIDDEN_NOTICE: &str = " (keybinds hidden: narrow terminal)";
+
 /// One header line: app, user, and tabs on the left, key hints on the right.
+/// `width` is the header's inner width, two columns less than the terminal.
 /// Hints that do not fit are dropped from the end.
 pub fn header_line(app: &AppState, width: usize) -> String {
-    let (left, right) = header_parts(app, width);
+    let terminal_width = u16::try_from(width.saturating_add(2)).unwrap_or(u16::MAX);
+    let (left, right) = header_parts(app, width, terminal_width);
     left + &right
 }
 
 /// The header line split into the app, user, and tabs part and the padded
-/// key hints part (empty when no hint fits).
-fn header_parts(app: &AppState, width: usize) -> (String, String) {
+/// key hints part (empty when no hint fits). The first part ends with
+/// [`KEYBINDS_HIDDEN_NOTICE`] when the panel is on but `terminal_width` is
+/// too narrow for it.
+fn header_parts(app: &AppState, width: usize, terminal_width: u16) -> (String, String) {
     let tabs = match app.active_tab {
         ActiveTab::Users => "[Users]  Groups",
         ActiveTab::Groups => "Users  [Groups]",
     };
-    let left = format!("usrgrp-manager ({})   {tabs}", app.current_username);
+    let mut left = format!("usrgrp-manager ({})   {tabs}", app.current_username);
+    if app.show_keybinds && !super::layout::keybinds_fit(terminal_width) {
+        left.push_str(KEYBINDS_HIDDEN_NOTICE);
+    }
     let mut hints = header_hints(app);
     while !hints.is_empty() {
         let right = hints.join("  ");
@@ -357,7 +368,7 @@ fn header_parts(app: &AppState, width: usize) -> (String, String) {
 /// muted color.
 pub fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
     let width = usize::from(area.width.saturating_sub(2));
-    let (left, hints) = header_parts(app, width);
+    let (left, hints) = header_parts(app, width, area.width);
     let line = Line::from(vec![
         Span::raw(left),
         Span::styled(hints, Style::default().fg(app.theme.muted)),
@@ -378,33 +389,116 @@ pub fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 }
 
-pub fn render_keybinds_panel(frame: &mut Frame, area: Rect, app: &AppState) {
-    let mut bindings: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+/// Section headings of the keybindings panel, in display order.
+const PANEL_SECTIONS: [&str; 3] = ["General", "Navigation", "Actions"];
+
+/// Where an action goes in the keybindings panel: section index, position
+/// in the section, and label. Actions that share a position and label are
+/// listed as one entry. `Ignore` is not listed.
+fn panel_entry(action: KeyAction) -> Option<(usize, usize, &'static str)> {
+    use KeyAction::*;
+    Some(match action {
+        Quit => (0, 0, "Quit"),
+        OpenHelp => (0, 1, "Help"),
+        ToggleKeybindsPane => (0, 2, "Toggle keybindings"),
+        Refresh => (0, 3, "Refresh"),
+        StartSearch => (0, 4, "Search"),
+        ClearSearch => (0, 5, "Clear search"),
+        OpenFilterMenu => (0, 6, "Filters"),
+        MoveUp => (1, 0, "Move up"),
+        MoveDown => (1, 1, "Move down"),
+        PageUp | MoveLeftPage => (1, 2, "Page up"),
+        PageDown | MoveRightPage => (1, 3, "Page down"),
+        SwitchTab => (1, 4, "Switch tab"),
+        ToggleUsersFocus | ToggleGroupsFocus => (1, 5, "Switch pane"),
+        EnterAction => (2, 0, "Open actions"),
+        NewUser => (2, 1, "New user/group"),
+        DeleteSelection => (2, 2, "Delete"),
+        Ignore => return None,
+    })
+}
+
+/// Has modifiers, is a character, and label: sorts and names a panel key.
+type PanelKey = (bool, bool, String);
+
+/// A key as the keybindings panel shows it, with a sort key that puts plain
+/// named keys first, then plain characters, then keys with modifiers. The
+/// spellings of one key collapse to one label: `Shift+k`, `Shift+K`, and `K`
+/// read `Shift+K`; `BackTab` reads `Shift+Tab`; `Ctrl+c` reads `Ctrl+C`.
+fn panel_key(modifiers: KeyModifiers, code: KeyCode) -> PanelKey {
+    let (modifiers, code) = match code {
+        KeyCode::BackTab => (modifiers | KeyModifiers::SHIFT, KeyCode::Tab),
+        KeyCode::Char(character) if character.is_alphabetic() => {
+            let shifted = modifiers.contains(KeyModifiers::SHIFT) || character.is_uppercase();
+            let modifiers = if shifted {
+                modifiers | KeyModifiers::SHIFT
+            } else {
+                modifiers
+            };
+            let character = if modifiers.is_empty() {
+                character
+            } else {
+                character.to_uppercase().next().unwrap_or(character)
+            };
+            (modifiers, KeyCode::Char(character))
+        }
+        other => (modifiers, other),
+    };
+    (
+        !modifiers.is_empty(),
+        matches!(code, KeyCode::Char(_)),
+        crate::app::keymap::Keymap::format_key(modifiers, code),
+    )
+}
+
+/// Keybindings panel lines: a heading per section, then `Label: keys` for
+/// every bound action in the section. Sections without a bound action are
+/// left out.
+pub fn keybinds_panel_lines(app: &AppState) -> Vec<Line<'static>> {
+    let mut entries: BTreeMap<(usize, usize), (&str, BTreeSet<PanelKey>)> = BTreeMap::new();
     for ((modifiers, code), action) in app.keymap.all_bindings() {
-        bindings
-            .entry(crate::app::keymap::format_action(action))
-            .or_default()
-            .insert(crate::app::keymap::Keymap::format_key(modifiers, code));
+        if let Some((section, position, label)) = panel_entry(action) {
+            entries
+                .entry((section, position))
+                .or_insert_with(|| (label, BTreeSet::new()))
+                .1
+                .insert(panel_key(modifiers, code));
+        }
     }
-    let lines = bindings
-        .into_iter()
-        .map(|(action, keys)| {
-            Line::from(vec![
-                Span::styled(
-                    format!("{action}: "),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(keys.into_iter().collect::<Vec<_>>().join(", ")),
-            ])
-        })
-        .collect::<Vec<_>>();
+    let heading = Style::default()
+        .fg(app.theme.title)
+        .add_modifier(Modifier::BOLD);
+    let text = Style::default().fg(app.theme.text);
+    let mut lines = Vec::new();
+    let mut current = None;
+    for ((section, _), (label, keys)) in entries {
+        if current != Some(section) {
+            if current.is_some() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::styled(PANEL_SECTIONS[section], heading));
+            current = Some(section);
+        }
+        let keys = keys
+            .into_iter()
+            .map(|(_, _, key)| key)
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::styled(format!("{label}: {keys}"), text));
+    }
+    lines
+}
+
+pub fn render_keybinds_panel(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .title("Keybindings")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        ),
+        Paragraph::new(keybinds_panel_lines(app))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .title("Keybindings")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border)),
+            ),
         area,
     );
 }
