@@ -281,6 +281,54 @@ fn move_index(index: &mut usize, len: usize, delta: isize) {
     *index = next as usize;
 }
 
+/// Choice lists move with Up/Down and k/j.
+fn list_step(key: KeyEvent) -> Option<isize> {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => Some(-1),
+        KeyCode::Down | KeyCode::Char('j') => Some(1),
+        _ => None,
+    }
+}
+
+/// What a key means in a yes/no dialog. Row 0 is Yes, row 1 is No.
+enum Answer {
+    /// Enter on the highlighted choice, or `y`.
+    Confirm,
+    /// `n`: choose No directly.
+    Decline,
+    /// Esc.
+    Cancel,
+    /// Movement or an unbound key.
+    Other,
+}
+
+/// Left/Right, h/l, and Tab move between Yes and No; `y` and `n` choose
+/// directly; Enter confirms the highlighted choice.
+fn yes_no_answer(selected: &mut usize, key: KeyEvent) -> Answer {
+    match key.code {
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Char('h')
+        | KeyCode::Char('l') => {
+            *selected = usize::from(*selected == 0);
+            Answer::Other
+        }
+        KeyCode::Char('y') => {
+            *selected = 0;
+            Answer::Confirm
+        }
+        KeyCode::Char('n') => {
+            *selected = 1;
+            Answer::Decline
+        }
+        KeyCode::Enter => Answer::Confirm,
+        KeyCode::Esc => Answer::Cancel,
+        _ => Answer::Other,
+    }
+}
+
 fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
     let Some((mut modal, detached)) = app.detach_top_modal() else {
         return;
@@ -380,8 +428,8 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
         }
         ModalState::Help { scroll } => match key.code {
             KeyCode::Esc | KeyCode::Enter => back(app),
-            KeyCode::Up => *scroll = scroll.saturating_sub(1),
-            KeyCode::Down => *scroll = scroll.saturating_add(1),
+            KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
             KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
             KeyCode::PageDown => *scroll = scroll.saturating_add(10),
             _ => {}
@@ -395,10 +443,12 @@ fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
         ActiveTab::Users => 7,
         ActiveTab::Groups => 2,
     };
+    if let Some(step) = list_step(key) {
+        move_index(selected, maximum + 1, step);
+        return;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(maximum),
-        KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % (maximum + 1),
         KeyCode::Enter | KeyCode::Char(' ') => {
             match app.active_tab {
                 ActiveTab::Users => match *selected {
@@ -428,11 +478,12 @@ fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
 }
 
 fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
+    if let Some(step) = list_step(key) {
+        move_index(selected, 2, step);
+        return;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
-            *selected = 1 - *selected
-        }
         KeyCode::Enter => {
             if *selected == 0 {
                 open_modal(app, ModalState::ModifyMenu { selected: 0 })
@@ -445,10 +496,12 @@ fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
 }
 
 fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
+    if let Some(step) = list_step(key) {
+        move_index(selected, 4, step);
+        return;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(3),
-        KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % 4,
         KeyCode::Enter => match *selected {
             0 => open_modal(
                 app,
@@ -474,10 +527,12 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
 }
 
 fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
+    if let Some(step) = list_step(key) {
+        move_index(selected, 3, step);
+        return;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(2),
-        KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % 3,
         KeyCode::Enter => match *selected {
             0 => open_modal(
                 app,
@@ -524,7 +579,9 @@ fn handle_text_input(app: &mut AppState, field: &ModifyField, value: &mut String
         KeyCode::Backspace => {
             value.pop();
         }
-        KeyCode::Char(character) if value.len() < 4096 => value.push(character),
+        KeyCode::Char(character) if !character.is_control() && value.len() < 4096 => {
+            value.push(character)
+        }
         KeyCode::Enter => {
             if let Some(user) = app.users.get(app.selected_user_index) {
                 let action = match field {
@@ -545,10 +602,12 @@ fn handle_text_input(app: &mut AppState, field: &ModifyField, value: &mut String
 }
 
 fn handle_shell_modal(app: &mut AppState, selected: &mut usize, shells: &[String], key: KeyEvent) {
+    if let Some(step) = list_step(key) {
+        move_index(selected, shells.len(), step);
+        return;
+    }
     match key.code {
         KeyCode::Esc => back(app),
-        KeyCode::Up | KeyCode::Char('k') => move_index(selected, shells.len(), -1),
-        KeyCode::Down | KeyCode::Char('j') => move_index(selected, shells.len(), 1),
         KeyCode::Enter => {
             if let (Some(user), Some(shell)) = (
                 app.users.get(app.selected_user_index),
@@ -589,10 +648,12 @@ fn handle_user_membership(
         .take(MAX_MODAL_CANDIDATES)
         .cloned()
         .collect();
+    if let Some(step) = list_step(key) {
+        move_index(selected, groups.len(), step);
+        return;
+    }
     match key.code {
         KeyCode::Esc => back(app),
-        KeyCode::Up | KeyCode::Char('k') => move_index(selected, groups.len(), -1),
-        KeyCode::Down | KeyCode::Char('j') => move_index(selected, groups.len(), 1),
         KeyCode::Char(' ') => toggle(selected_multi, *selected),
         KeyCode::Enter => {
             let names: Vec<_> = if selected_multi.is_empty() {
@@ -628,11 +689,12 @@ fn handle_user_membership(
 }
 
 fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
+    if let Some(step) = list_step(key) {
+        move_index(selected, 2, step);
+        return;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
-            *selected = 1 - *selected
-        }
         KeyCode::Enter => {
             if *selected == 0 {
                 open_modal(
@@ -679,7 +741,11 @@ fn handle_password_input(
             }
             _ => {}
         },
-        KeyCode::Char(character) if *selected < 2 && password.len().max(confirm.len()) < 1024 => {
+        KeyCode::Char(character)
+            if !character.is_control()
+                && *selected < 2
+                && password.len().max(confirm.len()) < 1024 =>
+        {
             if *selected == 0 {
                 password.push(character)
             } else {
@@ -728,11 +794,13 @@ fn handle_user_delete(
     delete_home: &mut bool,
     key: KeyEvent,
 ) {
-    match key.code {
-        KeyCode::Esc => back(app),
-        KeyCode::Left | KeyCode::Right => *selected = 1 - *selected,
-        KeyCode::Char(' ') => *delete_home = !*delete_home,
-        KeyCode::Enter if *selected == 0 && *allowed => {
+    if key.code == KeyCode::Char(' ') {
+        *delete_home = !*delete_home;
+        return;
+    }
+    match yes_no_answer(selected, key) {
+        Answer::Cancel | Answer::Decline => back(app),
+        Answer::Confirm if *selected == 0 && *allowed => {
             if let Some(user) = app.users.get(app.selected_user_index) {
                 start_pending_action(
                     app,
@@ -743,7 +811,7 @@ fn handle_user_delete(
                 )
             }
         }
-        KeyCode::Enter if !*allowed => open_modal(
+        Answer::Confirm if !*allowed => open_modal(
             app,
             ModalState::Info {
                 message: "Protected identities require explicit policy allowlisting.".to_owned(),
@@ -754,10 +822,9 @@ fn handle_user_delete(
 }
 
 fn handle_member_delete(app: &mut AppState, selected: &mut usize, encoded: &str, key: KeyEvent) {
-    match key.code {
-        KeyCode::Esc => back(app),
-        KeyCode::Left | KeyCode::Right => *selected = 1 - *selected,
-        KeyCode::Enter if *selected == 0 => {
+    match yes_no_answer(selected, key) {
+        Answer::Cancel | Answer::Decline => back(app),
+        Answer::Confirm if *selected == 0 => {
             if let Some((group, user)) = encoded.split_once(':') {
                 start_pending_action(
                     app,
@@ -779,10 +846,12 @@ fn handle_group_actions(
     key: KeyEvent,
 ) {
     let limit = if target_gid.is_some() { 1 } else { 2 };
+    if let Some(step) = list_step(key) {
+        move_index(selected, limit + 1, step);
+        return;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(limit),
-        KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % (limit + 1),
         KeyCode::Enter => match (*selected, *target_gid) {
             (0, _) if target_gid.is_none() => open_modal(
                 app,
@@ -823,7 +892,9 @@ fn handle_group_add(app: &mut AppState, name: &mut String, key: KeyEvent) {
         KeyCode::Backspace => {
             name.pop();
         }
-        KeyCode::Char(character) if name.len() < 32 => name.push(character),
+        KeyCode::Char(character) if !character.is_control() && name.len() < 32 => {
+            name.push(character)
+        }
         KeyCode::Enter => start_pending_action(
             app,
             PendingAction::CreateGroup {
@@ -840,10 +911,9 @@ fn handle_group_delete(
     target_gid: &mut Option<u32>,
     key: KeyEvent,
 ) {
-    match key.code {
-        KeyCode::Esc => back(app),
-        KeyCode::Left | KeyCode::Right => *selected = 1 - *selected,
-        KeyCode::Enter if *selected == 0 => {
+    match yes_no_answer(selected, key) {
+        Answer::Cancel | Answer::Decline => back(app),
+        Answer::Confirm if *selected == 0 => {
             let group = target_gid
                 .and_then(|gid| app.groups.iter().find(|group| group.gid == gid))
                 .or_else(|| app.groups.get(app.selected_group_index));
@@ -877,10 +947,12 @@ fn handle_group_modify(
     target_gid: &mut Option<u32>,
     key: KeyEvent,
 ) {
+    if let Some(step) = list_step(key) {
+        move_index(selected, 3, step);
+        return;
+    }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(2),
-        KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % 3,
         KeyCode::Enter => match *selected {
             0 => open_modal(
                 app,
@@ -923,7 +995,9 @@ fn handle_group_rename(
         KeyCode::Backspace => {
             name.pop();
         }
-        KeyCode::Char(character) if name.len() < 32 => name.push(character),
+        KeyCode::Char(character) if !character.is_control() && name.len() < 32 => {
+            name.push(character)
+        }
         KeyCode::Enter => {
             let group = target_gid
                 .and_then(|gid| app.groups.iter().find(|group| group.gid == gid))
@@ -984,10 +1058,12 @@ fn handle_group_members(
             .take(MAX_MODAL_CANDIDATES)
             .collect()
     };
+    if let Some(step) = list_step(key) {
+        move_index(selected, users.len(), step);
+        return;
+    }
     match key.code {
         KeyCode::Esc => back(app),
-        KeyCode::Up | KeyCode::Char('k') => move_index(selected, users.len(), -1),
-        KeyCode::Down | KeyCode::Char('j') => move_index(selected, users.len(), 1),
         KeyCode::Char(' ') => toggle(selected_multi, *selected),
         KeyCode::Enter => {
             let names: Vec<_> = if selected_multi.is_empty() {
@@ -1049,9 +1125,15 @@ fn handle_user_add(
             }
             _ => {}
         },
-        KeyCode::Char(character) if *selected == 0 && name.len() < 32 => name.push(character),
         KeyCode::Char(character)
-            if (*selected == 1 || *selected == 2) && password.len().max(confirm.len()) < 1024 =>
+            if !character.is_control() && *selected == 0 && name.len() < 32 =>
+        {
+            name.push(character)
+        }
+        KeyCode::Char(character)
+            if !character.is_control()
+                && (*selected == 1 || *selected == 2)
+                && password.len().max(confirm.len()) < 1024 =>
         {
             if *selected == 1 {
                 password.push(character);
@@ -1111,12 +1193,11 @@ fn handle_user_add(
 }
 
 fn handle_operation_confirm(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
-    match key.code {
-        KeyCode::Esc => cancel_operation(app),
-        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => *selected = 1 - *selected,
-        KeyCode::Enter if *selected == 0 => execute_pending_plan(app),
-        KeyCode::Enter => cancel_operation(app),
-        _ => {}
+    match yes_no_answer(selected, key) {
+        Answer::Cancel | Answer::Decline => cancel_operation(app),
+        Answer::Confirm if *selected == 0 => execute_pending_plan(app),
+        Answer::Confirm => cancel_operation(app),
+        Answer::Other => {}
     }
 }
 
@@ -1131,7 +1212,9 @@ fn handle_sudo_prompt(
         KeyCode::Backspace => {
             password.pop();
         }
-        KeyCode::Char(character) if password.len() < 1024 => password.push(character),
+        KeyCode::Char(character) if !character.is_control() && password.len() < 1024 => {
+            password.push(character)
+        }
         KeyCode::Enter => {
             if password.is_empty() {
                 *error = Some("A password is required.".to_owned());
@@ -2047,6 +2130,189 @@ mod tests {
                 .iter()
                 .any(|step| step.contains("chpasswd"))
         );
+    }
+
+    #[test]
+    fn yes_no_dialogs_answer_y_and_n_directly() {
+        let mut app = root_app();
+        app.dry_run = true;
+        press(&mut app, KeyCode::Delete);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::DeleteConfirm { selected: 1, .. })
+        ));
+        press(&mut app, KeyCode::Char('n'));
+        assert!(app.modal().is_none());
+
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { selected: 1, .. })
+        ));
+        assert!(app.pending_operation.is_some());
+        press(&mut app, KeyCode::Char('n'));
+        assert!(app.modal().is_none());
+        assert!(app.pending_operation.is_none());
+
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Char('y'));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::Info { message }) if message.contains("Dry run: nothing was executed")
+        ));
+    }
+
+    #[test]
+    fn yes_no_dialogs_move_with_arrows_h_l_and_tab() {
+        let mut app = root_app();
+        press(&mut app, KeyCode::Delete);
+        let selected = |app: &AppState| match app.modal() {
+            Some(ModalState::DeleteConfirm { selected, .. }) => *selected,
+            _ => panic!("expected the delete dialog"),
+        };
+        assert_eq!(selected(&app), 1);
+        for (code, expected) in [
+            (KeyCode::Char('h'), 0),
+            (KeyCode::Char('l'), 1),
+            (KeyCode::Tab, 0),
+            (KeyCode::Right, 1),
+            (KeyCode::Left, 0),
+        ] {
+            press(&mut app, code);
+            assert_eq!(selected(&app), expected);
+        }
+        // Up/Down and j/k are list keys, not yes/no keys.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected(&app), 0);
+    }
+
+    #[test]
+    fn menus_move_with_j_and_k() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::Actions { selected: 0 })
+        ));
+        press(&mut app, KeyCode::Char('j'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::Actions { selected: 1 })
+        ));
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyMenu { selected: 0 })
+        ));
+        press(&mut app, KeyCode::Char('k'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyMenu { selected: 3 })
+        ));
+        press(&mut app, KeyCode::Char('j'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyMenu { selected: 0 })
+        ));
+    }
+
+    #[test]
+    fn text_fields_take_letters_used_as_keys_elsewhere() {
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::GroupAddInput {
+                name: String::new(),
+            },
+        );
+        for character in ['j', 'k', 'h', 'l', 'y', 'n', '\u{7}'] {
+            press(&mut app, KeyCode::Char(character));
+        }
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupAddInput { name }) if name == "jkhlyn"
+        ));
+    }
+
+    #[test]
+    fn main_view_h_l_and_left_right_switch_panes() {
+        let mut app = user_app();
+        assert_eq!(app.users_focus, UsersFocus::UsersList);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.users_focus, UsersFocus::MemberOf);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.users_focus, UsersFocus::UsersList);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.users_focus, UsersFocus::MemberOf);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.users_focus, UsersFocus::UsersList);
+        assert_eq!(app.selected_user_index, 0);
+    }
+
+    fn rendered(app: &AppState) -> String {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| ui::render(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn modal_footers_name_their_keys() {
+        let mut app = user_app();
+        let cases = [
+            (ModalState::Actions { selected: 0 }, "Backspace back"),
+            (
+                ModalState::DeleteConfirm {
+                    selected: 1,
+                    allowed: true,
+                    delete_home: false,
+                },
+                "y/n",
+            ),
+            (
+                ModalState::GroupDeleteConfirm {
+                    selected: 1,
+                    target_gid: Some(1000),
+                },
+                "←→ choose  y/n  Enter confirm  Esc cancel",
+            ),
+            (
+                ModalState::ModifyGroupsAdd {
+                    selected: 0,
+                    offset: 0,
+                    selected_multi: vec![],
+                },
+                "↑↓ move  Space tick  Enter apply  Esc close",
+            ),
+            (
+                ModalState::GroupAddInput {
+                    name: String::new(),
+                },
+                "Enter submit  Esc back",
+            ),
+            (ModalState::FilterMenu { selected: 0 }, "Backspace back"),
+            (
+                ModalState::Info {
+                    message: "done".to_owned(),
+                },
+                "Enter/Esc close",
+            ),
+        ];
+        for (modal, footer) in cases {
+            app.close_modals();
+            open_modal(&mut app, modal);
+            let screen = rendered(&app);
+            assert!(screen.contains(footer), "missing footer {footer:?}");
+        }
     }
 
     /// Fixed wall clock so log timestamps and diagnostics do not vary.

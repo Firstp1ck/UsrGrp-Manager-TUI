@@ -4,10 +4,15 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
-use crate::app::{AppState, GroupsFocus, ModalState};
+use crate::{
+    app::{AppState, GroupsFocus, ModalState},
+    ui::components::{
+        MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, render_modal_frame, text_lines,
+    },
+};
 
 fn visible_rows(area: Rect) -> usize {
     usize::from(area.height.saturating_sub(3)).max(1)
@@ -139,7 +144,7 @@ pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {
-    let (title, body) = match modal {
+    let (title, body, footer) = match modal {
         ModalState::GroupsActions {
             selected,
             target_gid,
@@ -150,8 +155,11 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             } else {
                 choices(&["Create", "Delete", "Modify"], *selected)
             },
+            MENU_FOOTER,
         ),
-        ModalState::GroupAddInput { name } => ("Create group", format!("Group name:\n{name}")),
+        ModalState::GroupAddInput { name } => {
+            ("Create group", format!("Group name:\n{name}"), TEXT_FOOTER)
+        }
         ModalState::GroupDeleteConfirm {
             selected,
             target_gid,
@@ -167,13 +175,17 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
                     marker(*selected, 0),
                     marker(*selected, 1)
                 ),
+                YES_NO_FOOTER,
             )
         }
         ModalState::GroupModifyMenu { selected, .. } => (
             "Modify group",
             choices(&["Add members", "Remove members", "Rename"], *selected),
+            MENU_FOOTER,
         ),
-        ModalState::GroupRenameInput { name, .. } => ("Rename group", format!("New name:\n{name}")),
+        ModalState::GroupRenameInput { name, .. } => {
+            ("Rename group", format!("New name:\n{name}"), TEXT_FOOTER)
+        }
         ModalState::GroupModifyAddMembers {
             selected,
             selected_multi,
@@ -185,6 +197,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
                 *selected,
                 selected_multi,
             ),
+            MULTI_FOOTER,
         ),
         ModalState::GroupModifyRemoveMembers {
             selected,
@@ -203,25 +216,12 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
                     *selected,
                     selected_multi,
                 ),
+                MULTI_FOOTER,
             )
         }
         _ => return,
     };
-    let rect = crate::ui::components::centered_rect(
-        area.width.saturating_sub(8).min(70),
-        area.height.saturating_sub(6).min(20),
-        area,
-    );
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        ),
-        rect,
-    );
+    render_modal_frame(frame, area, app, title, text_lines(body), footer);
 }
 
 fn choices(options: &[&str], selected: usize) -> String {

@@ -4,10 +4,16 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
-use crate::app::{AppState, ModalState, ModifyField, UsersFocus};
+use crate::{
+    app::{AppState, ModalState, ModifyField, UsersFocus},
+    ui::components::{
+        FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
+        render_modal_frame, text_lines,
+    },
+};
 
 fn visible_rows(area: Rect) -> usize {
     usize::from(area.height.saturating_sub(3)).max(1)
@@ -161,18 +167,24 @@ fn member_groups(app: &AppState) -> Vec<&crate::sys::SystemGroup> {
 }
 
 pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {
-    let (title, body) = match modal {
-        ModalState::Actions { selected } => ("Actions", choices(&["Modify", "Delete"], *selected)),
+    let (title, body, footer) = match modal {
+        ModalState::Actions { selected } => (
+            "Actions",
+            choices(&["Modify", "Delete"], *selected),
+            MENU_FOOTER,
+        ),
         ModalState::ModifyMenu { selected } => (
             "Modify user",
             choices(
                 &["Add group", "Remove group", "Modify details", "Password"],
                 *selected,
             ),
+            MENU_FOOTER,
         ),
         ModalState::ModifyDetailsMenu { selected } => (
             "Modify details",
             choices(&["Username", "Full name", "Shell"], *selected),
+            MENU_FOOTER,
         ),
         ModalState::ModifyTextInput { field, value } => (
             match field {
@@ -180,10 +192,11 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 ModifyField::Fullname => "Change full name",
             },
             value.clone(),
+            TEXT_FOOTER,
         ),
         ModalState::ModifyShell {
             selected, shells, ..
-        } => ("Select shell", choices_page(shells, *selected)),
+        } => ("Select shell", choices_page(shells, *selected), LIST_FOOTER),
         ModalState::ModifyGroupsAdd {
             selected,
             selected_multi,
@@ -191,6 +204,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         } => (
             "Add groups",
             group_candidate_choices(app, true, *selected, selected_multi),
+            MULTI_FOOTER,
         ),
         ModalState::ModifyGroupsRemove {
             selected,
@@ -199,10 +213,12 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         } => (
             "Remove groups",
             group_candidate_choices(app, false, *selected, selected_multi),
+            MULTI_FOOTER,
         ),
         ModalState::ModifyPasswordMenu { selected } => (
             "Password",
             choices(&["Set/change password", "Expire password"], *selected),
+            MENU_FOOTER,
         ),
         ModalState::ChangePassword {
             selected,
@@ -221,6 +237,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 if *must_change { "x" } else { " " },
                 marker(*selected, 3)
             ),
+            FORM_FOOTER,
         ),
         ModalState::DeleteConfirm {
             selected,
@@ -236,6 +253,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 marker(*selected, 1),
                 if *allowed { "" } else { "Root is immutable." }
             ),
+            "←→ choose  y/n  Space home  Enter confirm  Esc cancel",
         ),
         ModalState::ConfirmRemoveUserFromGroup {
             selected,
@@ -247,6 +265,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 marker(*selected, 0),
                 marker(*selected, 1)
             ),
+            YES_NO_FOOTER,
         ),
         ModalState::UserAddInput {
             selected,
@@ -271,10 +290,11 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 if *add_to_wheel { "x" } else { " " },
                 marker(*selected, 5)
             ),
+            FORM_FOOTER,
         ),
         _ => return,
     };
-    render_text_modal(frame, area, app, title, &body);
+    render_modal_frame(frame, area, app, title, text_lines(body), footer);
 }
 
 const MAX_MODAL_CANDIDATES: usize = 1024;
@@ -334,23 +354,4 @@ fn choices_page(options: &[String], selected: usize) -> String {
 }
 fn marker(selected: usize, index: usize) -> &'static str {
     if selected == index { "▶" } else { " " }
-}
-fn render_text_modal(frame: &mut Frame, area: Rect, app: &AppState, title: &str, body: &str) {
-    let rect = crate::ui::components::centered_rect(
-        area.width.saturating_sub(8).min(70),
-        area.height.saturating_sub(6).min(20),
-        area,
-    );
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(body.to_owned())
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.border)),
-            ),
-        rect,
-    );
 }

@@ -51,12 +51,15 @@ impl Keymap {
             ((Modifiers::NONE, Enter), EnterAction),
             ((Modifiers::NONE, Up), MoveUp),
             ((Modifiers::NONE, Down), MoveDown),
-            ((Modifiers::NONE, Left), MoveLeftPage),
-            ((Modifiers::NONE, Right), MoveRightPage),
+            // Left/Right and h/l switch the focused pane. Paging stays on
+            // PageUp/PageDown; MoveLeftPage/MoveRightPage remain valid in
+            // keybinds.conf but are no longer bound by default.
+            ((Modifiers::NONE, Left), ToggleUsersFocus),
+            ((Modifiers::NONE, Right), ToggleUsersFocus),
             ((Modifiers::NONE, Char('k')), MoveUp),
             ((Modifiers::NONE, Char('j')), MoveDown),
-            ((Modifiers::NONE, Char('h')), MoveLeftPage),
-            ((Modifiers::NONE, Char('l')), MoveRightPage),
+            ((Modifiers::NONE, Char('h')), ToggleUsersFocus),
+            ((Modifiers::NONE, Char('l')), ToggleUsersFocus),
             ((Modifiers::SHIFT, Char('k')), ToggleKeybindsPane),
             ((Modifiers::SHIFT, Char('K')), ToggleKeybindsPane),
             ((Modifiers::NONE, Char('K')), ToggleKeybindsPane),
@@ -265,5 +268,61 @@ pub fn format_action(action: KeyAction) -> &'static str {
         MoveLeftPage => "MoveLeftPage",
         MoveRightPage => "MoveRightPage",
         Ignore => "Ignore",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn left_right_and_h_l_switch_panes_by_default() {
+        let keymap = Keymap::default();
+        for code in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+        ] {
+            assert_eq!(
+                keymap.resolve(&key(code)),
+                Some(KeyAction::ToggleUsersFocus)
+            );
+        }
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::PageDown)),
+            Some(KeyAction::PageDown)
+        );
+        assert!(keymap.all_bindings().iter().all(|(_, action)| !matches!(
+            action,
+            KeyAction::MoveLeftPage | KeyAction::MoveRightPage
+        )));
+    }
+
+    #[test]
+    fn example_keybinds_parse_and_switch_panes_with_h_l() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        let keymap = Keymap::from_file(path).unwrap();
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::Char('l'))),
+            Some(KeyAction::ToggleUsersFocus)
+        );
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::Left)),
+            Some(KeyAction::ToggleUsersFocus)
+        );
+    }
+
+    #[test]
+    fn page_actions_stay_parseable_for_existing_configs() {
+        assert_eq!(parse_action("MoveLeftPage"), Some(KeyAction::MoveLeftPage));
+        assert_eq!(
+            parse_action("MoveRightPage"),
+            Some(KeyAction::MoveRightPage)
+        );
     }
 }

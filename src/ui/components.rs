@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
@@ -84,11 +84,87 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
+/// Footer for single-choice menus that Backspace also closes.
+pub const MENU_FOOTER: &str = "↑↓ move  Enter select  Backspace back  Esc close";
+/// Footer for single-choice lists without a Backspace binding.
+pub const LIST_FOOTER: &str = "↑↓ move  Enter select  Esc back";
+/// Footer for multi-select candidate lists.
+pub const MULTI_FOOTER: &str = "↑↓ move  Space tick  Enter apply  Esc close";
+/// Footer for yes/no dialogs.
+pub const YES_NO_FOOTER: &str = "←→ choose  y/n  Enter confirm  Esc cancel";
+/// Footer for single-line text inputs.
+pub const TEXT_FOOTER: &str = "type to edit  Enter submit  Esc back";
+/// Footer for forms with several fields.
+pub const FORM_FOOTER: &str = "↑↓ field  Space tick  Enter on Submit  Esc back";
+
+/// Draw a centered dialog: title, body, and a key hint footer on the last
+/// interior row. Every modal renderer goes through this frame.
+pub fn render_modal_frame(
+    frame: &mut Frame,
+    area: Rect,
+    app: &AppState,
+    title: &str,
+    body: Vec<Line<'_>>,
+    footer: &str,
+) {
+    let rect = centered_rect(
+        area.width.saturating_sub(8).min(76),
+        area.height.saturating_sub(6).min(20),
+        area,
+    );
+    let block = Block::default()
+        .title(title.to_owned())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    let (body_area, footer_area) = if inner.height >= 2 {
+        (
+            Rect {
+                height: inner.height - 1,
+                ..inner
+            },
+            Some(Rect {
+                y: inner.y + inner.height - 1,
+                height: 1,
+                ..inner
+            }),
+        )
+    } else {
+        (inner, None)
+    };
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), body_area);
+    if let Some(footer_area) = footer_area {
+        frame.render_widget(
+            Paragraph::new(footer.to_owned()).style(Style::default().fg(app.theme._muted)),
+            footer_area,
+        );
+    }
+}
+
+/// Split newline-separated modal text into body lines.
+pub fn text_lines(text: String) -> Vec<Line<'static>> {
+    Text::from(text).lines
+}
+
 pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {
-    let (title, body) = match modal {
-        ModalState::Info { message } => ("Result", message.clone()),
-        ModalState::Help { .. } => ("Help", "q quit; Tab switch tabs; Shift+Tab switch pane; / search; n create; Enter action; Delete delete; f filters".to_owned()),
-        ModalState::SudoPrompt { password, error, .. } => ("Authentication required", format!("Enter sudo password:\n{}{}", "*".repeat(password.len()), error.as_ref().map_or(String::new(), |error| format!("\n{error}")))),
+    let (title, body, footer) = match modal {
+        ModalState::Info { message } => ("Result", message.clone(), "Enter/Esc close"),
+        ModalState::Help { .. } => (
+            "Help",
+            "q quit; Tab switch tabs; Shift+Tab switch pane; / search; n create; Enter action; Delete delete; f filters".to_owned(),
+            "↑↓ PgUp PgDn scroll  Esc close",
+        ),
+        ModalState::SudoPrompt { password, error, .. } => (
+            "Authentication required",
+            format!(
+                "Enter sudo password:\n{}{}",
+                "*".repeat(password.len()),
+                error.as_ref().map_or(String::new(), |error| format!("\n{error}"))
+            ),
+            "Enter submit  Esc cancel operation",
+        ),
         ModalState::OperationConfirm { selected, action, preview } => (
             "Confirm prepared operation",
             format!(
@@ -98,28 +174,19 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
                 marker(*selected, 0),
                 marker(*selected, 1)
             ),
+            YES_NO_FOOTER,
         ),
         ModalState::FilterMenu { selected } => {
             let options = match app.active_tab { crate::app::ActiveTab::Users => vec!["Show all", "Human users", "System users", "Inactive shell", "No home", "Locked (shadow)", "No password (shadow)", "Expired (shadow)"], crate::app::ActiveTab::Groups => vec!["Show all", "User GIDs", "System GIDs"] };
-            ("Filters", options.iter().enumerate().map(|(index, option)| format!("{} {option}", marker(*selected, index))).collect::<Vec<_>>().join("\n"))
+            (
+                "Filters",
+                options.iter().enumerate().map(|(index, option)| format!("{} {option}", marker(*selected, index))).collect::<Vec<_>>().join("\n"),
+                "↑↓ move  Enter/Space toggle  Backspace back  Esc close",
+            )
         }
         _ => return,
     };
-    let rect = centered_rect(
-        area.width.saturating_sub(8).min(76),
-        area.height.saturating_sub(6).min(20),
-        area,
-    );
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        ),
-        rect,
-    );
+    render_modal_frame(frame, area, app, title, text_lines(body), footer);
 }
 
 fn marker(selected: usize, index: usize) -> &'static str {
