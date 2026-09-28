@@ -255,6 +255,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             confirm,
             create_home,
             add_to_wheel,
+            ..
         } => (
             "Create user",
             format!(

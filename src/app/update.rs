@@ -92,6 +92,7 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
                     confirm: SecretInput::default(),
                     create_home: true,
                     add_to_wheel: false,
+                    password_reentry_required: false,
                 },
             ),
             ActiveTab::Groups => open_modal(
@@ -354,6 +355,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             confirm,
             create_home,
             add_to_wheel,
+            password_reentry_required,
         } => handle_user_add(
             app,
             selected,
@@ -362,6 +364,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             confirm,
             create_home,
             add_to_wheel,
+            password_reentry_required,
             key,
         ),
         ModalState::OperationConfirm { selected, .. } => {
@@ -1025,6 +1028,7 @@ fn handle_user_add(
     confirm: &mut SecretInput,
     create_home: &mut bool,
     add_to_wheel: &mut bool,
+    password_reentry_required: &mut bool,
     key: KeyEvent,
 ) {
     match key.code {
@@ -1050,10 +1054,20 @@ fn handle_user_add(
             if (*selected == 1 || *selected == 2) && password.len().max(confirm.len()) < 1024 =>
         {
             if *selected == 1 {
-                password.push(character)
+                password.push(character);
+                *password_reentry_required = false;
             } else {
                 confirm.push(character)
             }
+        }
+        KeyCode::Enter if *selected == 5 && *password_reentry_required && password.is_empty() => {
+            show_error(
+                app,
+                &CoreError::Validation {
+                    field: "password",
+                    reason: "Re-enter the password before submitting.",
+                },
+            )
         }
         KeyCode::Enter if *selected == 5 => {
             // Both fields empty means no password. Otherwise both must be
@@ -1079,8 +1093,10 @@ fn handle_user_add(
                     let secret = SecretString::new(password.take());
                     // The password has left the form. If the submission
                     // fails, the form stays open under the error, so empty
-                    // the confirm field too and make the user type both again.
+                    // the confirm field too and refuse to submit until a new
+                    // password is typed.
                     confirm.clear();
+                    *password_reentry_required = true;
                     match UserName::new(name.clone())
                         .and_then(|username| PasswordRecord::new(username, secret))
                     {
@@ -1954,7 +1970,8 @@ mod tests {
             name: GroupName::new(crate::app::sudo_group_name()).unwrap(),
             members: vec![],
         });
-        // Root identity: no sudo prompt. Preparation fails before any command.
+        // Root identity: no sudo prompt. Nothing here executes a plan, so
+        // `NoRun` is never reached.
         let adapter = Arc::new(SystemAdapter::from_components(
             Arc::new(StaticSource(snapshot.clone())),
             Arc::new(NoRun),
@@ -1970,6 +1987,7 @@ mod tests {
                 confirm: SecretInput::default(),
                 create_home: true,
                 add_to_wheel: false,
+                password_reentry_required: false,
             },
         );
         let type_text = |app: &mut AppState, text: &str| {
@@ -1986,6 +2004,7 @@ mod tests {
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Down);
+        // The sudo group is blocked by policy, so preparation fails.
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
         assert!(app.pending_operation.is_none());
@@ -1993,23 +2012,41 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert!(matches!(
             app.modal(),
-            Some(ModalState::UserAddInput { password, confirm, add_to_wheel: true, .. })
-                if password.is_empty() && confirm.is_empty()
+            Some(ModalState::UserAddInput {
+                password_reentry_required: true,
+                ..
+            })
         ));
 
-        // Untick the sudo box, fill only the confirm field, and submit.
+        // Untick the sudo box and resubmit without touching either secret field.
         press(&mut app, KeyCode::Up);
         press(&mut app, KeyCode::Char(' '));
-        press(&mut app, KeyCode::Up);
-        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_none());
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::Info { message }) if message.contains("Re-enter the password")
+        ));
+
+        // Typing the password again lets the submission through with it set.
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Up);
+        }
+        type_text(&mut app, "fixture-password");
+        press(&mut app, KeyCode::Down);
         type_text(&mut app, "fixture-password");
         for _ in 0..3 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
-        assert!(app.pending_operation.is_none());
-        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
-        assert_eq!(app.modal_depth(), 2);
+        assert!(app.pending_operation.is_some());
+        assert!(
+            app.last_preview
+                .iter()
+                .any(|step| step.contains("chpasswd"))
+        );
     }
 
     /// Fixed wall clock so log timestamps and diagnostics do not vary.

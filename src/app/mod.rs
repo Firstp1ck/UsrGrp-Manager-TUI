@@ -349,6 +349,10 @@ pub enum ModalState {
         confirm: SecretInput,
         create_home: bool,
         add_to_wheel: bool,
+        /// Set once a submission has consumed the typed password. Until a new
+        /// password is typed, submitting is refused, so a failed attempt
+        /// cannot be retried as an account without a password.
+        password_reentry_required: bool,
     },
 }
 
