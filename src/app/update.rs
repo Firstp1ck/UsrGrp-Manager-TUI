@@ -1536,7 +1536,7 @@ mod tests {
             Arc::new(NoRun),
             Arc::new(FixedIdentityProvider::uid(Uid(1000))),
         ));
-        let mut app = AppState::with_adapter(adapter, snapshot);
+        let mut app = isolated_app(adapter, snapshot);
         start_pending_action(
             &mut app,
             PendingAction::ChangeShell {
@@ -1610,7 +1610,7 @@ mod tests {
             Arc::new(NoRun),
             Arc::new(FixedIdentityProvider::uid(Uid(0))),
         ));
-        AppState::with_adapter(adapter, snapshot)
+        isolated_app(adapter, snapshot)
     }
 
     #[test]
@@ -1703,7 +1703,7 @@ mod tests {
             Arc::new(FailRun),
             Arc::new(FixedIdentityProvider::uid(Uid(0))),
         ));
-        let mut app = AppState::with_adapter(adapter, snapshot);
+        let mut app = isolated_app(adapter, snapshot);
         app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
         start_pending_action(
             &mut app,
@@ -1726,6 +1726,55 @@ mod tests {
         assert!(lines[0].ends_with("prepared: usermod -s /bin/bash alice"));
         assert!(lines[1].contains("executed: usermod -s /bin/bash alice => "));
         assert!(lines[2].ends_with(&format!(" error: {expected}")));
+    }
+
+    #[test]
+    fn failed_step_error_keeps_its_own_line_when_preview_exceeds_line_cap() {
+        let log = SharedLog::default();
+        let mut snapshot = fixture_snapshot();
+        let groupnames: Vec<String> = (0..128)
+            .map(|index| format!("group-with-a-long-name-{index:09}"))
+            .collect();
+        for (index, name) in groupnames.iter().enumerate() {
+            assert_eq!(name.len(), 32);
+            snapshot.groups.push(AccountGroup {
+                gid: Gid(2000 + u32::try_from(index).unwrap()),
+                name: GroupName::new(name).unwrap(),
+                members: vec![],
+            });
+        }
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(FailRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
+        start_pending_action(
+            &mut app,
+            PendingAction::AddUserToGroups {
+                username: "alice".to_owned(),
+                groupnames,
+            },
+        );
+        assert!(app.pending_operation.is_some());
+        assert!(app.last_preview.join("; ").len() > 4096);
+        execute_pending_plan(&mut app);
+        assert!(
+            app.last_report
+                .as_ref()
+                .is_some_and(|report| report.failed.is_some())
+        );
+        let expected =
+            classified_error_message(&CoreError::MissingExecutable { program: "usermod" });
+        let text = log.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("1700000000 prepared: "));
+        // The executed line is cut at the cap before the report text.
+        assert!(lines[1].starts_with("1700000000 executed: "));
+        assert!(!lines[1].contains(" => "));
+        assert_eq!(lines[2], format!("1700000000 error: {expected}"));
     }
 
     #[test]
@@ -1752,7 +1801,7 @@ mod tests {
             Arc::new(NoRun),
             Arc::new(FixedIdentityProvider::uid(Uid(1000))),
         ));
-        AppState::with_adapter(adapter, snapshot)
+        isolated_app(adapter, snapshot)
     }
 
     /// Actions > Modify > Modify details > Shell > Enter: the confirm dialog
@@ -1911,7 +1960,7 @@ mod tests {
             Arc::new(NoRun),
             Arc::new(FixedIdentityProvider::uid(Uid(0))),
         ));
-        let mut app = AppState::with_adapter(adapter, snapshot);
+        let mut app = isolated_app(adapter, snapshot);
         open_modal(
             &mut app,
             ModalState::UserAddInput {
@@ -1961,6 +2010,46 @@ mod tests {
         assert!(app.pending_operation.is_none());
         assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
         assert_eq!(app.modal_depth(), 2);
+    }
+
+    /// Fixed wall clock so log timestamps and diagnostics do not vary.
+    struct FixedClock;
+    impl crate::app::Clock for FixedClock {
+        fn now(&self) -> std::time::SystemTime {
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)
+        }
+    }
+
+    /// Diagnostics that never read /etc/shadow, /etc/group, or home directories.
+    struct NoDiagnostics;
+    impl crate::app::DiagnosticProvider for NoDiagnostics {
+        fn refresh(
+            &self,
+            _: &AccountSnapshot,
+            _: std::time::SystemTime,
+        ) -> crate::app::CachedDiagnostics {
+            crate::app::CachedDiagnostics::default()
+        }
+    }
+
+    /// No config roots, so nothing resolves against HOME or XDG_CONFIG_HOME.
+    struct NoConfigRoots;
+    impl crate::app::ConfigRootProvider for NoConfigRoots {
+        fn roots(&self) -> Vec<std::path::PathBuf> {
+            Vec::new()
+        }
+    }
+
+    /// Like `AppState::with_adapter`, but every host-reading dependency is a
+    /// fake, so `refresh_accounts` after an executed plan stays off the host.
+    fn isolated_app(adapter: Arc<SystemAdapter>, snapshot: AccountSnapshot) -> AppState {
+        AppState::with_dependencies(
+            adapter,
+            snapshot,
+            Arc::new(FixedClock),
+            Arc::new(NoDiagnostics),
+            Arc::new(NoConfigRoots),
+        )
     }
 
     fn fixture_snapshot() -> AccountSnapshot {
