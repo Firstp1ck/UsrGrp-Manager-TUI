@@ -319,6 +319,8 @@ pub enum ModalState {
         preview: Vec<String>,
     },
     Info {
+        /// Dialog title; None shows the default "Result".
+        title: Option<String>,
         message: String,
     },
     Help {
@@ -563,6 +565,9 @@ impl Drop for SecretInput {
         self.value.zeroize();
     }
 }
+
+/// Title of the dialog and help section that list configuration problems.
+pub const CONFIG_PROBLEMS_TITLE: &str = "Configuration problems";
 
 /// Cached, bounded diagnostics populated only by explicit refresh effects.
 #[derive(Clone, Debug, Default)]
@@ -1162,6 +1167,20 @@ impl AppState {
             Err(error) => self.record_config_message("filter", &error),
         }
         self.sort_and_filter();
+    }
+
+    /// Open a dialog listing the recorded configuration problems, if any.
+    /// Called once after startup so the user learns why defaults are in use.
+    pub fn show_config_problems(&mut self) {
+        if self.diagnostics.config_messages.is_empty() {
+            return;
+        }
+        let mut message = self.diagnostics.config_messages.join("\n");
+        message.push_str("\n\nDefaults are in use for the affected file.");
+        self.push_modal(ModalState::Info {
+            title: Some(CONFIG_PROBLEMS_TITLE.to_owned()),
+            message,
+        });
     }
 
     /// Retain only a small amount of non-secret configuration diagnostics.

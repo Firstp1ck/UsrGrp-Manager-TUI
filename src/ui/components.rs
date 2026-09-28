@@ -34,10 +34,10 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
         .stale_reason
         .as_ref()
         .map_or("fresh", |_| "STALE");
-    let config = if app.diagnostics.config_messages.is_empty() {
-        ""
-    } else {
-        " config-error"
+    let config = match app.diagnostics.config_messages.len() {
+        0 => String::new(),
+        1 => " config: 1 error (see ? help)".to_owned(),
+        count => format!(" config: {count} errors (see ? help)"),
     };
     let mode = match app.input_mode {
         InputMode::SearchUsers => "SEARCH(users) ",
@@ -249,28 +249,50 @@ pub fn with_error_line(mut lines: Vec<Line<'static>>, error: Option<&str>) -> Ve
 
 pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {
     let (title, body, footer) = match modal {
-        ModalState::Info { message } => ("Result", message.clone(), "Enter/Esc close"),
-        ModalState::Help { .. } => (
-            "Help",
-            "q quit; Tab switch tabs; Shift+Tab switch pane; / search; n create; Enter action; Delete delete; f filters".to_owned(),
-            "↑↓ PgUp PgDn scroll  Esc close",
+        ModalState::Info { title, message } => (
+            title.as_deref().unwrap_or("Result"),
+            message.clone(),
+            "Enter/Esc close",
         ),
-        ModalState::SudoPrompt { password, error, .. } => {
+        ModalState::Help { .. } => ("Help", help_text(app), "↑↓ PgUp PgDn scroll  Esc close"),
+        ModalState::SudoPrompt {
+            password, error, ..
+        } => {
             let operation = app.last_preview.first().map_or("", String::as_str);
             let body = text_lines(format!(
                 "Authenticating to run: {operation}\n\nEnter sudo password:\n{}",
                 "*".repeat(password.len())
             ));
             let body = with_error_line(body, error.as_deref());
-            render_modal_frame(frame, area, app, "Authentication required", body, "Enter submit  Esc cancel operation");
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                "Authentication required",
+                body,
+                "Enter submit  Esc cancel operation",
+            );
             return;
         }
-        ModalState::OperationConfirm { selected, action, preview } => (
+        ModalState::OperationConfirm {
+            selected,
+            action,
+            preview,
+        } => (
             "Confirm prepared operation",
             format!(
                 "{action}\n\n{}{}\n\n{} Apply   {} Cancel",
-                preview.iter().take(12).cloned().collect::<Vec<_>>().join("\n"),
-                if preview.len() > 12 { "\n… additional steps omitted from this modal" } else { "" },
+                preview
+                    .iter()
+                    .take(12)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                if preview.len() > 12 {
+                    "\n… additional steps omitted from this modal"
+                } else {
+                    ""
+                },
                 marker(*selected, 0),
                 marker(*selected, 1)
             ),
@@ -303,6 +325,21 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
         _ => return,
     };
     render_modal_frame(frame, area, app, title, text_lines(body), footer);
+}
+
+/// Help modal text. Recorded configuration problems follow the key summary
+/// in their own section.
+fn help_text(app: &AppState) -> String {
+    let mut text = "q quit; Tab switch tabs; Shift+Tab switch pane; / search; n create; Enter action; Delete delete; f filters".to_owned();
+    if !app.diagnostics.config_messages.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(crate::app::CONFIG_PROBLEMS_TITLE);
+        for message in &app.diagnostics.config_messages {
+            text.push('\n');
+            text.push_str(message);
+        }
+    }
+    text
 }
 
 /// Filter menu rows for the active tab, without the cursor. User chips read

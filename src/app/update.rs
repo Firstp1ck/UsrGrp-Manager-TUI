@@ -30,6 +30,7 @@ pub fn run_app_with(
     options: RunOptions,
 ) -> Result<()> {
     let mut app = AppState::load_system_with(options);
+    app.show_config_problems();
     let size = terminal.size()?;
     app.terminal_size = (size.width, size.height);
     loop {
@@ -1037,6 +1038,7 @@ fn handle_user_delete(
         Answer::Confirm => open_modal(
             app,
             ModalState::Info {
+                title: None,
                 message: "Protected identities require explicit policy allowlisting.".to_owned(),
             },
         ),
@@ -1156,6 +1158,7 @@ fn handle_group_delete(
                     open_modal(
                         app,
                         ModalState::Info {
+                            title: None,
                             message:
                                 "Protected group mutations require explicit policy allowlisting."
                                     .to_owned(),
@@ -1812,7 +1815,13 @@ fn classified_error_message(error: &CoreError) -> String {
 /// operation log. Esc returns to the dialog so the input can be corrected.
 fn show_error(app: &mut AppState, error: &CoreError) {
     let message = log_error(app, error);
-    open_modal(app, ModalState::Info { message });
+    open_modal(
+        app,
+        ModalState::Info {
+            title: None,
+            message,
+        },
+    );
 }
 
 /// Keep a validation problem in the form that caused it, logged the same
@@ -1840,13 +1849,28 @@ fn log_error(app: &mut AppState, error: &CoreError) -> String {
 /// first, so Esc from the result lands on the main view.
 fn show_outcome(app: &mut AppState, message: String) {
     app.close_modals();
-    open_modal(app, ModalState::Info { message });
+    open_modal(
+        app,
+        ModalState::Info {
+            title: None,
+            message,
+        },
+    );
 }
 
 fn save_filters(app: &mut AppState) {
     let path = app.configuration_write_path("filter.conf");
     if let Err(error) = FiltersConfig::save_from_app(app, &path) {
         app.record_config_message("filter", &error);
+        open_modal(
+            app,
+            ModalState::Info {
+                title: Some(crate::app::CONFIG_PROBLEMS_TITLE.to_owned()),
+                message: format!(
+                    "The filter change applies now but was not saved.\nfilter configuration: {error}"
+                ),
+            },
+        );
     }
 }
 
@@ -2055,7 +2079,7 @@ mod tests {
         execute_pending_plan(&mut app);
         assert!(matches!(
             app.modal(),
-            Some(ModalState::Info { message }) if message.contains("Dry run: nothing was executed")
+            Some(ModalState::Info { message, .. }) if message.contains("Dry run: nothing was executed")
         ));
         assert!(app.pending_operation.is_none());
         assert!(app.last_report.is_none());
@@ -2618,7 +2642,7 @@ mod tests {
         press(&mut app, KeyCode::Char('y'));
         assert!(matches!(
             app.modal(),
-            Some(ModalState::Info { message }) if message.contains("Dry run: nothing was executed")
+            Some(ModalState::Info { message, .. }) if message.contains("Dry run: nothing was executed")
         ));
     }
 
@@ -2674,7 +2698,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             app.modal(),
-            Some(ModalState::Info { message }) if message.contains("Protected identities")
+            Some(ModalState::Info { message, .. }) if message.contains("Protected identities")
         ));
         assert!(app.pending_operation.is_none());
     }
@@ -3129,6 +3153,32 @@ mod tests {
     }
 
     #[test]
+    fn failed_filter_save_opens_a_dialog_over_the_filter_menu() {
+        let config = tempfile::tempdir().unwrap();
+        // A regular file where the config directory should be: every write fails.
+        let blocker = config.path().join("not-a-dir");
+        std::fs::write(&blocker, "").unwrap();
+        let mut app = membership_app();
+        app.config_root_provider = Arc::new(crate::app::FixedConfigRootProvider(
+            blocker.join("UsrGrpManager"),
+        ));
+        press(&mut app, KeyCode::Char('f'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.users_filter_chips.human_only);
+        assert_eq!(app.diagnostics.config_messages.len(), 1);
+        match app.modal() {
+            Some(ModalState::Info { title, message }) => {
+                assert_eq!(title.as_deref(), Some(crate::app::CONFIG_PROBLEMS_TITLE));
+                assert!(message.contains("not saved"));
+            }
+            _ => panic!("expected the save failure dialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.modal(), Some(ModalState::FilterMenu { .. })));
+    }
+
+    #[test]
     fn show_all_clears_chips_and_hand_edited_users_filter() {
         let config = tempfile::tempdir().unwrap();
         let mut app = filter_app(&config);
@@ -3327,6 +3377,7 @@ mod tests {
             (ModalState::FilterMenu { selected: 0 }, "Backspace back"),
             (
                 ModalState::Info {
+                    title: None,
                     message: "done".to_owned(),
                 },
                 "Enter/Esc close",
@@ -3978,7 +4029,7 @@ mod tests {
             submit_sudo_password(&mut app);
         }
         match app.modal() {
-            Some(ModalState::Info { message }) => assert_eq!(
+            Some(ModalState::Info { message, .. }) => assert_eq!(
                 message,
                 "Authentication failed three times. The operation was not run."
             ),
