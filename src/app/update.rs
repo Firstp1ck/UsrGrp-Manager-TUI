@@ -25,16 +25,31 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Re
     loop {
         terminal.draw(|frame| ui::render(frame, &app))?;
         if event::poll(std::time::Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
+            && handle_event(&mut app, event::read()?)
         {
+            break Ok(());
+        }
+    }
+}
+
+/// Dispatch one terminal event. Returns `true` when the app should quit.
+///
+/// Only key presses reach the key handlers. A resize needs no state change:
+/// the next loop iteration redraws at the new size. Mouse capture is not
+/// enabled, so mouse, focus, and paste events are ignored.
+fn handle_event(app: &mut AppState, event: Event) -> bool {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
             if matches!(app.input_mode, InputMode::Normal)
                 && matches!(app.keymap.resolve(&key), Some(KeyAction::Quit))
             {
-                break Ok(());
+                return true;
             }
-            handle_key(&mut app, key);
+            handle_key(app, key);
+            false
         }
+        Event::Resize(_, _) => false,
+        _ => false,
     }
 }
 
@@ -1455,6 +1470,26 @@ mod tests {
             SystemAdapter, Uid,
         },
     };
+
+    #[test]
+    fn resize_event_redraws_without_being_treated_as_a_key() {
+        let mut app = AppState::new();
+        let before_tab = app.active_tab;
+        let before_mode = app.input_mode;
+        assert!(!handle_event(&mut app, Event::Resize(80, 24)));
+        assert!(!handle_event(&mut app, Event::Resize(20, 5)));
+        assert_eq!(app.active_tab, before_tab);
+        assert_eq!(app.input_mode, before_mode);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn quit_key_press_event_requests_exit() {
+        let mut app = AppState::new();
+        let quit = KeyEvent::new(KeyCode::Char('q'), crossterm::event::KeyModifiers::NONE);
+        assert_eq!(app.keymap.resolve(&quit), Some(KeyAction::Quit));
+        assert!(handle_event(&mut app, Event::Key(quit)));
+    }
 
     #[test]
     fn index_movement_wraps_without_stateful_rendering() {
