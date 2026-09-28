@@ -480,6 +480,11 @@ impl SecretInput {
     pub fn take(&mut self) -> String {
         std::mem::take(&mut self.value)
     }
+    /// Zeroize and empty the field.
+    pub fn clear(&mut self) {
+        use zeroize::Zeroize;
+        self.value.zeroize();
+    }
 }
 
 impl Drop for SecretInput {

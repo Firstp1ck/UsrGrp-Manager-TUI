@@ -693,9 +693,14 @@ fn handle_password_input(
                 )
             } else if let Some(user) = app.users.get(app.selected_user_index) {
                 let username = user.name.clone();
+                let secret = SecretString::new(password.take());
+                // The password has left the form. If the submission fails,
+                // the form stays open under the error, so empty the confirm
+                // field too and make the user type both again.
+                confirm.clear();
                 match PasswordRecord::new(
                     UserName::new(&username).expect("observed username remains valid"),
-                    SecretString::new(password.take()),
+                    secret,
                 ) {
                     Ok(record) => start_password_action(
                         app,
@@ -1051,7 +1056,10 @@ fn handle_user_add(
             }
         }
         KeyCode::Enter if *selected == 5 => {
-            if name.is_empty() || (!password.is_empty() && !password.matches(confirm)) {
+            // Both fields empty means no password. Otherwise both must be
+            // filled and equal: a filled confirm with an empty password is
+            // an error, not an account without a password.
+            if name.is_empty() || !password.matches(confirm) {
                 open_modal(
                     app,
                     ModalState::Info {
@@ -1068,9 +1076,14 @@ fn handle_user_add(
                 if password.is_empty() {
                     start_pending_action(app, action);
                 } else {
-                    match UserName::new(name.clone()).and_then(|username| {
-                        PasswordRecord::new(username, SecretString::new(password.take()))
-                    }) {
+                    let secret = SecretString::new(password.take());
+                    // The password has left the form. If the submission
+                    // fails, the form stays open under the error, so empty
+                    // the confirm field too and make the user type both again.
+                    confirm.clear();
+                    match UserName::new(name.clone())
+                        .and_then(|username| PasswordRecord::new(username, secret))
+                    {
                         Ok(record) => start_password_action(app, action, record),
                         Err(error) => show_error(app, &error),
                     }
@@ -1882,6 +1895,72 @@ mod tests {
             app.modal(),
             Some(ModalState::GroupAddInput { name }) if name == "!"
         ));
+    }
+
+    #[test]
+    fn failed_create_user_submission_requires_password_reentry() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.groups.push(AccountGroup {
+            gid: Gid(998),
+            name: GroupName::new(crate::app::sudo_group_name()).unwrap(),
+            members: vec![],
+        });
+        // Root identity: no sudo prompt. Preparation fails before any command.
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        let mut app = AppState::with_adapter(adapter, snapshot);
+        open_modal(
+            &mut app,
+            ModalState::UserAddInput {
+                selected: 0,
+                name: String::new(),
+                password: SecretInput::default(),
+                confirm: SecretInput::default(),
+                create_home: true,
+                add_to_wheel: false,
+            },
+        );
+        let type_text = |app: &mut AppState, text: &str| {
+            for character in text.chars() {
+                press(app, KeyCode::Char(character));
+            }
+        };
+        type_text(&mut app, "bob");
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "fixture-password");
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "fixture-password");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
+        assert!(app.pending_operation.is_none());
+
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::UserAddInput { password, confirm, add_to_wheel: true, .. })
+                if password.is_empty() && confirm.is_empty()
+        ));
+
+        // Untick the sudo box, fill only the confirm field, and submit.
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        type_text(&mut app, "fixture-password");
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_none());
+        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
+        assert_eq!(app.modal_depth(), 2);
     }
 
     fn fixture_snapshot() -> AccountSnapshot {
