@@ -4,14 +4,15 @@
 //! application only displays redacted plans/reports; it never chooses commands,
 //! receives runners, or retains sudo credentials.
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 
 use crate::{
     app::{
         ActiveTab, AppState, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, GroupsFocus,
-        InputMode, ModalState, ModifyField, PendingAction, RunOptions, SecretInput, UsersFocus,
-        filterconf::FiltersConfig, keymap::KeyAction,
+        InputMode, MAX_LENGTH_REACHED, MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState, ModifyField,
+        PendingAction, RunOptions, SecretInput, UsersFocus, filterconf::FiltersConfig,
+        keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
     sys::{GroupName, OperationRequest, PasswordRecord, SecretString, UserName},
@@ -94,6 +95,7 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
                     confirm: SecretInput::default(),
                     create_home: true,
                     add_to_wheel: false,
+                    reveal: false,
                     password_reentry_required: false,
                     name_touched: false,
                     error: None,
@@ -422,8 +424,20 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             password,
             confirm,
             must_change,
+            reveal,
             error,
-        } => handle_password_input(app, selected, password, confirm, must_change, error, key),
+        } => handle_password_input(
+            app,
+            selected,
+            PasswordFields {
+                password,
+                confirm,
+                reveal,
+            },
+            must_change,
+            error,
+            key,
+        ),
         ModalState::DeleteConfirm {
             selected,
             allowed,
@@ -498,6 +512,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             confirm,
             create_home,
             add_to_wheel,
+            reveal,
             password_reentry_required,
             name_touched,
             error,
@@ -505,8 +520,11 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             app,
             selected,
             name,
-            password,
-            confirm,
+            PasswordFields {
+                password,
+                confirm,
+                reveal,
+            },
             create_home,
             add_to_wheel,
             password_reentry_required,
@@ -678,44 +696,58 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
     }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Enter => match *selected {
-            0 => open_modal(
-                app,
-                ModalState::ModifyTextInput {
-                    field: ModifyField::Username,
-                    value: String::new(),
-                    error: None,
-                },
-            ),
-            1 => open_modal(
-                app,
-                ModalState::ModifyTextInput {
-                    field: ModifyField::Fullname,
-                    value: String::new(),
-                    error: None,
-                },
-            ),
-            _ => {
-                let shells = app
-                    .account_snapshot
-                    .as_ref()
-                    .map_or_else(Vec::new, |snapshot| {
-                        snapshot
-                            .shells
-                            .iter()
-                            .map(|shell| shell.as_str().to_owned())
-                            .collect()
-                    });
-                open_modal(
-                    app,
-                    ModalState::ModifyShell {
-                        selected: 0,
-                        offset: 0,
-                        shells,
-                    },
-                );
+        KeyCode::Enter => {
+            let user = app.users.get(app.selected_user_index);
+            match *selected {
+                0 => {
+                    let value = user.map(|user| user.name.clone()).unwrap_or_default();
+                    open_modal(
+                        app,
+                        ModalState::ModifyTextInput {
+                            field: ModifyField::Username,
+                            value,
+                            error: None,
+                        },
+                    )
+                }
+                1 => {
+                    let value = user
+                        .and_then(|user| user.full_name.clone())
+                        .unwrap_or_default();
+                    open_modal(
+                        app,
+                        ModalState::ModifyTextInput {
+                            field: ModifyField::Fullname,
+                            value,
+                            error: None,
+                        },
+                    )
+                }
+                _ => {
+                    let shells: Vec<String> =
+                        app.account_snapshot
+                            .as_ref()
+                            .map_or_else(Vec::new, |snapshot| {
+                                snapshot
+                                    .shells
+                                    .iter()
+                                    .map(|shell| shell.as_str().to_owned())
+                                    .collect()
+                            });
+                    let current =
+                        user.and_then(|user| shells.iter().position(|shell| *shell == user.shell));
+                    open_modal(
+                        app,
+                        ModalState::ModifyShell {
+                            selected: current.unwrap_or(0),
+                            offset: 0,
+                            shells,
+                            current,
+                        },
+                    );
+                }
             }
-        },
+        }
         _ => {}
     }
 }
@@ -737,9 +769,11 @@ fn handle_text_input(
             value.pop();
             *error = live_error(value);
         }
-        KeyCode::Char(character) if !character.is_control() && value.len() < 4096 => {
-            value.push(character);
-            *error = live_error(value);
+        KeyCode::Char(character) if !character.is_control() => {
+            if has_room(value.chars().count(), field.max_chars(), error) {
+                value.push(character);
+                *error = live_error(value);
+            }
         }
         KeyCode::Enter => {
             if let Some(user) = app.users.get(app.selected_user_index) {
@@ -915,6 +949,7 @@ fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent)
                         password: SecretInput::default(),
                         confirm: SecretInput::default(),
                         must_change: false,
+                        reveal: false,
                         error: None,
                     },
                 )
@@ -934,12 +969,20 @@ fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent)
 fn handle_password_input(
     app: &mut AppState,
     selected: &mut usize,
-    password: &mut SecretInput,
-    confirm: &mut SecretInput,
+    fields: PasswordFields<'_>,
     must_change: &mut bool,
     error: &mut Option<String>,
     key: KeyEvent,
 ) {
+    let PasswordFields {
+        password,
+        confirm,
+        reveal,
+    } = fields;
+    if is_reveal_toggle(key) {
+        *reveal = !*reveal;
+        return;
+    }
     match key.code {
         KeyCode::Esc => back(app),
         KeyCode::Up => *selected = selected.saturating_sub(1),
@@ -956,17 +999,12 @@ fn handle_password_input(
             }
             _ => {}
         },
-        KeyCode::Char(character)
-            if !character.is_control()
-                && *selected < 2
-                && password.len().max(confirm.len()) < 1024 =>
-        {
-            if *selected == 0 {
-                password.push(character)
-            } else {
-                confirm.push(character)
+        KeyCode::Char(character) if !character.is_control() && *selected < 2 => {
+            let field = if *selected == 0 { password } else { confirm };
+            if has_room(field.char_count(), MAX_PASSWORD_CHARS, error) {
+                field.push(character);
+                *error = None;
             }
-            *error = None;
         }
         KeyCode::Enter if *selected == 3 => {
             if password.is_empty() || !password.matches(confirm) {
@@ -1141,9 +1179,11 @@ fn handle_group_add(
             name.pop();
             *error = live_name_error(GroupName::new(&*name));
         }
-        KeyCode::Char(character) if !character.is_control() && name.len() < 32 => {
-            name.push(character);
-            *error = live_name_error(GroupName::new(&*name));
+        KeyCode::Char(character) if !character.is_control() => {
+            if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
+                name.push(character);
+                *error = live_name_error(GroupName::new(&*name));
+            }
         }
         KeyCode::Enter => start_form_action(
             app,
@@ -1230,14 +1270,21 @@ fn handle_group_modify(
                     filtering: false,
                 },
             ),
-            _ => open_modal(
-                app,
-                ModalState::GroupRenameInput {
-                    name: String::new(),
-                    target_gid: *target_gid,
-                    error: None,
-                },
-            ),
+            _ => {
+                let name = target_gid
+                    .and_then(|gid| app.groups.iter().find(|group| group.gid == gid))
+                    .or_else(|| app.groups.get(app.selected_group_index))
+                    .map(|group| group.name.clone())
+                    .unwrap_or_default();
+                open_modal(
+                    app,
+                    ModalState::GroupRenameInput {
+                        name,
+                        target_gid: *target_gid,
+                        error: None,
+                    },
+                )
+            }
         },
         _ => {}
     }
@@ -1256,9 +1303,11 @@ fn handle_group_rename(
             name.pop();
             *error = live_name_error(GroupName::new(&*name));
         }
-        KeyCode::Char(character) if !character.is_control() && name.len() < 32 => {
-            name.push(character);
-            *error = live_name_error(GroupName::new(&*name));
+        KeyCode::Char(character) if !character.is_control() => {
+            if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
+                name.push(character);
+                *error = live_name_error(GroupName::new(&*name));
+            }
         }
         KeyCode::Enter => {
             let group = target_gid
@@ -1338,8 +1387,7 @@ fn handle_user_add(
     app: &mut AppState,
     selected: &mut usize,
     name: &mut String,
-    password: &mut SecretInput,
-    confirm: &mut SecretInput,
+    fields: PasswordFields<'_>,
     create_home: &mut bool,
     add_to_wheel: &mut bool,
     password_reentry_required: &mut bool,
@@ -1357,6 +1405,15 @@ fn handle_user_add(
             None
         }
     };
+    let PasswordFields {
+        password,
+        confirm,
+        reveal,
+    } = fields;
+    if is_reveal_toggle(key) {
+        *reveal = !*reveal;
+        return;
+    }
     match key.code {
         KeyCode::Esc => back(app),
         KeyCode::Up => *selected = selected.saturating_sub(1),
@@ -1379,25 +1436,28 @@ fn handle_user_add(
             }
             _ => {}
         },
-        KeyCode::Char(character)
-            if !character.is_control() && *selected == 0 && name.len() < 32 =>
-        {
-            name.push(character);
-            *name_touched = true;
-            *error = live_error(name, *name_touched);
+        KeyCode::Char(character) if !character.is_control() && *selected == 0 => {
+            if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
+                name.push(character);
+                *name_touched = true;
+                *error = live_error(name, *name_touched);
+            }
         }
         KeyCode::Char(character)
-            if !character.is_control()
-                && (*selected == 1 || *selected == 2)
-                && password.len().max(confirm.len()) < 1024 =>
+            if !character.is_control() && (*selected == 1 || *selected == 2) =>
         {
-            if *selected == 1 {
-                password.push(character);
-                *password_reentry_required = false;
+            let field = if *selected == 1 {
+                &mut *password
             } else {
-                confirm.push(character)
+                &mut *confirm
+            };
+            if has_room(field.char_count(), MAX_PASSWORD_CHARS, error) {
+                field.push(character);
+                if *selected == 1 {
+                    *password_reentry_required = false;
+                }
+                *error = live_error(name, *name_touched);
             }
-            *error = live_error(name, *name_touched);
         }
         KeyCode::Enter if *selected == 5 && *password_reentry_required && password.is_empty() => {
             show_form_error(
@@ -1895,6 +1955,29 @@ fn show_error(app: &mut AppState, error: &CoreError) {
             message,
         },
     );
+}
+
+/// The two password fields of a form and whether they are shown in clear.
+struct PasswordFields<'a> {
+    password: &'a mut SecretInput,
+    confirm: &'a mut SecretInput,
+    reveal: &'a mut bool,
+}
+
+/// Ctrl+R, which shows or hides the typed passwords of a form.
+fn is_reveal_toggle(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r' | 'R'))
+}
+
+/// Whether a field holding `count` characters takes one more. At the limit
+/// the form shows [`MAX_LENGTH_REACHED`] instead.
+fn has_room(count: usize, maximum: usize, error: &mut Option<String>) -> bool {
+    if count < maximum {
+        true
+    } else {
+        *error = Some(MAX_LENGTH_REACHED.to_owned());
+        false
+    }
 }
 
 /// Keep a validation problem in the form that caused it, logged the same
@@ -2511,9 +2594,10 @@ mod tests {
         press(&mut app, KeyCode::Char('a'));
         press(&mut app, KeyCode::Char('b'));
         press(&mut app, KeyCode::Backspace);
+        // The field opened with the current name, "alice".
         assert!(matches!(
             app.modal(),
-            Some(ModalState::ModifyTextInput { value, .. }) if value == "a"
+            Some(ModalState::ModifyTextInput { value, .. }) if value == "alicea"
         ));
         assert_eq!(app.modal_depth(), 4);
         press(&mut app, KeyCode::Esc);
@@ -2621,6 +2705,7 @@ mod tests {
                 confirm: SecretInput::default(),
                 create_home: true,
                 add_to_wheel: false,
+                reveal: false,
                 password_reentry_required: false,
                 name_touched: false,
                 error: None,
@@ -2725,6 +2810,7 @@ mod tests {
                 password: SecretInput::default(),
                 confirm: SecretInput::default(),
                 must_change: false,
+                reveal: false,
                 error: None,
             },
         );
@@ -3224,8 +3310,10 @@ mod tests {
             .position(|row| row.starts_with("aaaaaaaaaaa"))
             .expect("first row of the value");
         assert_eq!(body[start], "aaaaaaaaaaa bbbbbbbb");
-        assert_eq!(body[start + 1].trim_end(), "bbb ccccccccccc");
-        assert!(rows[start + 2].contains("type to edit"));
+        // The cursor and the character count follow the value.
+        assert_eq!(body[start + 1], "bbb ccccccccccc▏  35");
+        assert_eq!(body[start + 2].trim_end(), "/256");
+        assert!(rows[start + 3].contains("type to edit"));
     }
 
     #[test]
@@ -4632,5 +4720,253 @@ mod tests {
         fn run(&self, _: ElevationGrant, _: &crate::sys::CommandSpec) -> CoreResult<CommandResult> {
             unreachable!("authentication required must precede command execution")
         }
+    }
+
+    /// Actions > Modify > Modify details, cursor on row `row`, Enter.
+    fn open_details_row(app: &mut AppState, row: usize) {
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Enter);
+        for _ in 0..row {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn text_value(app: &AppState) -> Option<&str> {
+        match app.modal() {
+            Some(
+                ModalState::ModifyTextInput { value, .. }
+                | ModalState::GroupAddInput { name: value, .. }
+                | ModalState::GroupRenameInput { name: value, .. }
+                | ModalState::UserAddInput { name: value, .. },
+            ) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn ctrl(app: &mut AppState, character: char) {
+        handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL),
+        );
+    }
+
+    #[test]
+    fn rename_dialogs_open_with_the_current_value() {
+        let mut app = user_app();
+        open_details_row(&mut app, 0);
+        assert_eq!(text_value(&app), Some("alice"));
+        let screen = rendered(&app);
+        assert!(screen.contains("alice▏  5/32"));
+        assert!(screen.contains("The home directory keeps its current name."));
+
+        app.close_modals();
+        open_details_row(&mut app, 1);
+        assert_eq!(text_value(&app), Some("Alice"));
+        assert!(rendered(&app).contains("Alice▏  5/256"));
+
+        app.close_modals();
+        open_modal(
+            &mut app,
+            ModalState::GroupModifyMenu {
+                selected: 2,
+                target_gid: Some(1000),
+            },
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupRenameInput { name, .. }) if name == "dev"
+        ));
+        assert!(rendered(&app).contains("dev▏  3/32"));
+    }
+
+    #[test]
+    fn name_fields_count_characters_and_say_when_full() {
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::GroupAddInput {
+                name: String::new(),
+                error: None,
+            },
+        );
+        // Two bytes each: a byte count would stop at 16.
+        type_text(&mut app, &"é".repeat(32));
+        assert_eq!(text_value(&app).map(|name| name.chars().count()), Some(32));
+        assert_ne!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(text_value(&app).map(|name| name.chars().count()), Some(32));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+        assert!(rendered(&app).contains("Maximum length reached"));
+
+        app.close_modals();
+        open_details_row(&mut app, 1);
+        type_text(&mut app, &"b".repeat(300));
+        assert_eq!(text_value(&app).map(str::len), Some(256));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+
+        app.close_modals();
+        open_user_add(&mut app);
+        type_text(&mut app, &"b".repeat(40));
+        assert_eq!(text_value(&app).map(str::len), Some(32));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+        // Deleting a character makes room again and clears the message.
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
+    }
+
+    fn password_counts(app: &AppState) -> (usize, usize) {
+        match app.modal() {
+            Some(
+                ModalState::UserAddInput {
+                    password, confirm, ..
+                }
+                | ModalState::ChangePassword {
+                    password, confirm, ..
+                },
+            ) => (password.char_count(), confirm.char_count()),
+            _ => panic!("no password form open"),
+        }
+    }
+
+    #[test]
+    fn password_fields_are_limited_independently() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, &"p".repeat(1030));
+        assert_eq!(password_counts(&app), (1024, 0));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+        // A full password field does not stop the confirm field.
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "pp");
+        assert_eq!(password_counts(&app), (1024, 2));
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
+    }
+
+    #[test]
+    fn create_user_refuses_a_confirm_without_a_password() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        type_text(&mut app, "bob");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "only-confirm");
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_none());
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::UserAddInput { error: Some(message), .. })
+                if message.contains("passwords must match")
+        ));
+    }
+
+    #[test]
+    fn shell_picker_starts_on_and_marks_the_current_shell() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.shells = vec![
+            ShellPath::new("/bin/bash").unwrap(),
+            ShellPath::new("/bin/sh").unwrap(),
+            ShellPath::new("/bin/zsh").unwrap(),
+        ];
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        open_details_row(&mut app, 2);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyShell {
+                selected: 1,
+                current: Some(1),
+                ..
+            })
+        ));
+        let screen = rendered(&app);
+        assert!(screen.contains("▶ /bin/sh (current)"));
+        assert!(!screen.contains("/bin/bash (current)"));
+    }
+
+    #[test]
+    fn ctrl_r_reveals_both_password_fields_and_strength_is_hinted() {
+        let mut app = root_app();
+        open_menu_password_form(&mut app);
+        let screen = rendered(&app);
+        assert!(screen.contains("Ctrl+R reveal"));
+        assert!(!screen.contains("Strength:"));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "abd");
+        let screen = rendered(&app);
+        assert!(screen.contains("New password: ***"));
+        assert!(screen.contains("Confirm: ***▏"));
+        assert!(screen.contains("Strength: weak"));
+        assert!(!screen.contains("abc"));
+
+        ctrl(&mut app, 'r');
+        assert_eq!(password_counts(&app), (3, 3), "Ctrl+R is not typed");
+        let screen = rendered(&app);
+        assert!(screen.contains("New password: abc"));
+        assert!(screen.contains("Confirm: abd▏"));
+
+        ctrl(&mut app, 'r');
+        assert!(!rendered(&app).contains("abc"));
+
+        // The create-user form toggles the same way.
+        app.close_modals();
+        open_user_add(&mut app);
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "Tr0ub4dor&33");
+        ctrl(&mut app, 'r');
+        let screen = rendered(&app);
+        assert!(screen.contains("Password: Tr0ub4dor&33▏"));
+        assert!(screen.contains("Strength: strong"));
+    }
+
+    fn open_menu_password_form(app: &mut AppState) {
+        open_modal(app, ModalState::ModifyPasswordMenu { selected: 0 });
+        press(app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ChangePassword { reveal: false, .. })
+        ));
+    }
+
+    #[test]
+    fn password_strength_hint_levels() {
+        let strength = |text: &str| {
+            let mut input = SecretInput::default();
+            text.chars().for_each(|character| input.push(character));
+            input.strength()
+        };
+        assert_eq!(strength("abc1!"), "weak");
+        assert_eq!(strength("abcdefgh"), "ok");
+        assert_eq!(strength("abcdefgh1234"), "ok");
+        assert_eq!(strength("abcdefgh12!"), "ok");
+        assert_eq!(strength("abcdefgh12!?"), "strong");
     }
 }

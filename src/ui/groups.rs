@@ -8,11 +8,13 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AppState, CandidateList, GroupsFilter, GroupsFocus, InputMode, ModalState},
+    app::{
+        AppState, CandidateList, GroupsFilter, GroupsFocus, InputMode, MAX_NAME_CHARS, ModalState,
+    },
     ui::components::{
-        CandidateView, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, marker,
-        no_match_text, nothing_loaded_lines, push_filter_labels, render_empty_state,
-        render_modal_frame, search_title, text_lines, with_error_line,
+        CandidateView, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog,
+        char_budget, marker, no_match_text, nothing_loaded_lines, push_filter_labels,
+        render_empty_state, render_modal_frame, search_title, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -204,9 +206,14 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             },
             MENU_FOOTER,
         ),
-        ModalState::GroupAddInput { name, .. } => {
-            ("Create group", format!("Group name:\n{name}"), TEXT_FOOTER)
-        }
+        ModalState::GroupAddInput { name, .. } => (
+            "Create group",
+            format!(
+                "Group name:\n{name}{INPUT_CURSOR}  {}",
+                char_budget(name, MAX_NAME_CHARS)
+            ),
+            TEXT_FOOTER,
+        ),
         ModalState::GroupDeleteConfirm {
             selected,
             target_gid,
@@ -230,9 +237,14 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             choices(&["Add members", "Remove members", "Rename"], *selected),
             MENU_FOOTER,
         ),
-        ModalState::GroupRenameInput { name, .. } => {
-            ("Rename group", format!("New name:\n{name}"), TEXT_FOOTER)
-        }
+        ModalState::GroupRenameInput { name, .. } => (
+            "Rename group",
+            format!(
+                "New name:\n{name}{INPUT_CURSOR}  {}",
+                char_budget(name, MAX_NAME_CHARS)
+            ),
+            TEXT_FOOTER,
+        ),
         ModalState::GroupModifyAddMembers {
             selected,
             target_gid,

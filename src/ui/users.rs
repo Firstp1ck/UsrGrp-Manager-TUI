@@ -11,13 +11,13 @@ use ratatui::{
 use crate::{
     app::{
         AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, InputMode,
-        ModalState, ModifyField, UsersFocus,
+        MAX_NAME_CHARS, ModalState, ModifyField, SecretInput, UsersFocus,
     },
     ui::components::{
-        CandidateView, FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
-        candidate_dialog, marker, no_match_text, nothing_loaded_lines, push_filter_labels,
-        render_empty_state, render_modal_frame, search_title, shadow_skipped_note, text_lines,
-        with_error_line,
+        CandidateView, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER, PASSWORD_FORM_FOOTER, TEXT_FOOTER,
+        YES_NO_FOOTER, candidate_dialog, char_budget, input_cursor, marker, no_match_text,
+        nothing_loaded_lines, push_filter_labels, render_empty_state, render_modal_frame,
+        search_title, shadow_skipped_note, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -240,12 +240,41 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 ModifyField::Username => "Change username",
                 ModifyField::Fullname => "Change full name",
             },
-            value.clone(),
+            match field {
+                ModifyField::Username => format!(
+                    "{value}{INPUT_CURSOR}  {}\nThe home directory keeps its current name.",
+                    char_budget(value, field.max_chars())
+                ),
+                ModifyField::Fullname => format!(
+                    "{value}{INPUT_CURSOR}  {}",
+                    char_budget(value, field.max_chars())
+                ),
+            },
             TEXT_FOOTER,
         ),
         ModalState::ModifyShell {
-            selected, shells, ..
-        } => ("Select shell", choices_page(shells, *selected), LIST_FOOTER),
+            selected,
+            shells,
+            current,
+            ..
+        } => {
+            let labels: Vec<String> = shells
+                .iter()
+                .enumerate()
+                .map(|(index, shell)| {
+                    if Some(index) == *current {
+                        format!("{shell} (current)")
+                    } else {
+                        shell.clone()
+                    }
+                })
+                .collect();
+            (
+                "Select shell",
+                choices_page(&labels, *selected),
+                LIST_FOOTER,
+            )
+        }
         ModalState::ModifyGroupsAdd {
             selected,
             selected_multi,
@@ -288,20 +317,23 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             password,
             confirm,
             must_change,
+            reveal,
             ..
         } => (
             "Set password",
             format!(
-                "{} New password: {}\n{} Confirm: {}\n{} [{}] Must change next login\n{} Submit",
-                marker(*selected, 0),
-                "*".repeat(password.len()),
-                marker(*selected, 1),
-                "*".repeat(confirm.len()),
+                "{}\n{} [{}] Must change next login\n{} Submit",
+                password_rows(
+                    *selected,
+                    (0, "New password", password),
+                    (1, "Confirm", confirm),
+                    *reveal
+                ),
                 marker(*selected, 2),
                 if *must_change { "x" } else { " " },
                 marker(*selected, 3)
             ),
-            FORM_FOOTER,
+            PASSWORD_FORM_FOOTER,
         ),
         ModalState::DeleteConfirm { .. } => {
             render_modal_frame(
@@ -333,23 +365,28 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             confirm,
             create_home,
             add_to_wheel,
+            reveal,
             ..
         } => (
             "Create user",
             format!(
-                "{} Username: {name}\n{} Password: {}\n{} Confirm: {}\n{} [{}] Create home\n{} [{}] Add to sudo group\n{} Submit",
+                "{} Username: {name}{}  {}\n{}\n{} [{}] Create home\n{} [{}] Add to sudo group\n{} Submit",
                 marker(*selected, 0),
-                marker(*selected, 1),
-                "*".repeat(password.len()),
-                marker(*selected, 2),
-                "*".repeat(confirm.len()),
+                input_cursor(*selected, 0),
+                char_budget(name, MAX_NAME_CHARS),
+                password_rows(
+                    *selected,
+                    (1, "Password", password),
+                    (2, "Confirm", confirm),
+                    *reveal
+                ),
                 marker(*selected, 3),
                 if *create_home { "x" } else { " " },
                 marker(*selected, 4),
                 if *add_to_wheel { "x" } else { " " },
                 marker(*selected, 5)
             ),
-            FORM_FOOTER,
+            PASSWORD_FORM_FOOTER,
         ),
         _ => return,
     };
@@ -401,6 +438,31 @@ fn delete_confirm_body(modal: &ModalState) -> Vec<Line<'static>> {
         if *delete_home { "x" } else { " " },
     )));
     lines
+}
+
+/// A password field and its confirmation, each `(row, label, input)`:
+/// masked unless `reveal`, the cursor after the focused one, and the
+/// strength hint under the first once something is typed.
+fn password_rows(
+    selected: usize,
+    first: (usize, &str, &SecretInput),
+    second: (usize, &str, &SecretInput),
+    reveal: bool,
+) -> String {
+    let row = |(index, label, input): (usize, &str, &SecretInput)| {
+        format!(
+            "{} {label}: {}{}",
+            marker(selected, index),
+            input.display(reveal),
+            input_cursor(selected, index)
+        )
+    };
+    let strength = if first.2.is_empty() {
+        String::new()
+    } else {
+        format!("\n    Strength: {}", first.2.strength())
+    };
+    format!("{}{strength}\n{}", row(first), row(second))
 }
 
 const MAX_MODAL_CANDIDATES: usize = 1024;

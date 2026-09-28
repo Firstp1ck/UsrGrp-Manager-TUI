@@ -280,7 +280,10 @@ pub enum ModalState {
         selected: usize,
         offset: usize,
         shells: Vec<String>,
+        /// Index of the user's shell in `shells` when it is listed there.
+        current: Option<usize>,
     },
+    /// Opens with the current username or full name filled in.
     ModifyTextInput {
         field: ModifyField,
         value: String,
@@ -309,6 +312,8 @@ pub enum ModalState {
         password: SecretInput,
         confirm: SecretInput,
         must_change: bool,
+        /// Ctrl+R shows both password fields in clear text.
+        reveal: bool,
         /// Validation problem shown inline under the fields.
         error: Option<String>,
     },
@@ -377,6 +382,7 @@ pub enum ModalState {
         filter: String,
         filtering: bool,
     },
+    /// Opens with the current group name filled in.
     GroupRenameInput {
         name: String,
         target_gid: Option<u32>,
@@ -390,6 +396,8 @@ pub enum ModalState {
         confirm: SecretInput,
         create_home: bool,
         add_to_wheel: bool,
+        /// Ctrl+R shows both password fields in clear text.
+        reveal: bool,
         /// Set once a submission has consumed the typed password. Until a new
         /// password is typed, submitting is refused, so a failed attempt
         /// cannot be retried as an account without a password.
@@ -416,6 +424,15 @@ impl ModalState {
     }
 }
 
+/// Longest username or group name a text field accepts, in characters.
+pub const MAX_NAME_CHARS: usize = 32;
+/// Longest full name (GECOS) a text field accepts, in characters.
+pub const MAX_GECOS_CHARS: usize = 256;
+/// Longest password each password field accepts, in characters.
+pub const MAX_PASSWORD_CHARS: usize = 1024;
+/// Form error shown when a keystroke would pass a field's limit.
+pub const MAX_LENGTH_REACHED: &str = "Maximum length reached";
+
 /// "Also delete home" checkbox row of the user delete dialog.
 pub const DELETE_ROW_HOME: usize = 0;
 /// Yes button of the user delete dialog.
@@ -427,6 +444,16 @@ pub const DELETE_ROW_NO: usize = 2;
 pub enum ModifyField {
     Username,
     Fullname,
+}
+
+impl ModifyField {
+    /// Characters the field accepts before [`MAX_LENGTH_REACHED`].
+    pub fn max_chars(&self) -> usize {
+        match self {
+            Self::Username => MAX_NAME_CHARS,
+            Self::Fullname => MAX_GECOS_CHARS,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -548,6 +575,35 @@ impl SecretInput {
     }
     pub fn len(&self) -> usize {
         self.value.len()
+    }
+    /// Characters typed, the unit form limits count in.
+    pub fn char_count(&self) -> usize {
+        self.value.chars().count()
+    }
+    /// One `*` per character, or the typed text when `reveal` is set.
+    pub fn display(&self, reveal: bool) -> String {
+        if reveal {
+            self.value.clone()
+        } else {
+            "*".repeat(self.char_count())
+        }
+    }
+    /// Rough strength hint: `weak` under 8 characters, `strong` from 12
+    /// characters with letters, digits, and symbols, otherwise `ok`.
+    pub fn strength(&self) -> &'static str {
+        let has = |test: fn(&char) -> bool| self.value.chars().any(|c| test(&c));
+        let count = self.char_count();
+        if count < 8 {
+            "weak"
+        } else if count >= 12
+            && has(|c| c.is_alphabetic())
+            && has(|c| c.is_numeric())
+            && has(|c| !c.is_alphanumeric())
+        {
+            "strong"
+        } else {
+            "ok"
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()

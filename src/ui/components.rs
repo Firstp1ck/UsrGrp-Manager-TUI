@@ -356,8 +356,23 @@ pub const FILTER_FOOTER: &str = "type to filter  Backspace delete  Enter/Esc don
 pub const YES_NO_FOOTER: &str = "←→ choose  y/n  Enter confirm  Esc cancel";
 /// Footer for single-line text inputs.
 pub const TEXT_FOOTER: &str = "type to edit  Enter submit  Esc back";
-/// Footer for forms with several fields.
-pub const FORM_FOOTER: &str = "↑↓ field  Space tick  Enter on Submit  Esc back";
+/// Footer for forms with several fields, all of which have password
+/// fields that Ctrl+R reveals.
+pub const PASSWORD_FORM_FOOTER: &str =
+    "↑↓ field  Space tick  Ctrl+R reveal  Enter on Submit  Esc back";
+
+/// Drawn after the text of the focused input field.
+pub const INPUT_CURSOR: &str = "▏";
+
+/// [`INPUT_CURSOR`] when field `index` has the focus, else nothing.
+pub fn input_cursor(selected: usize, index: usize) -> &'static str {
+    if selected == index { INPUT_CURSOR } else { "" }
+}
+
+/// Characters used out of a field's limit, as `12/32`.
+pub fn char_budget(value: &str, maximum: usize) -> String {
+    format!("{}/{maximum}", value.chars().count())
+}
 
 /// Footer for an operation confirmation whose preview scrolls.
 pub const PREVIEW_FOOTER: &str = "↑↓ PgUp PgDn scroll  ←→ choose  y/n  Enter confirm  Esc cancel";
