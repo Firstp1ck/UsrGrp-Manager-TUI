@@ -5579,6 +5579,44 @@ mod tests {
     }
 
     #[test]
+    fn dark_preset_keeps_muted_status_text_visible() {
+        let mut app = single_account_app();
+        app.theme = crate::app::Theme::dark();
+        app.diagnostics
+            .config_messages
+            .push("theme configuration line 3: unknown color".to_owned());
+        app.diagnostics.shadow = crate::search::ShadowState::Unavailable {
+            reason: "shadow data has not been refreshed".to_owned(),
+        };
+        app.last_refresh_label = "22:13:20 UTC".to_owned();
+        let (width, height) = (120, 12);
+        let rows = rendered_rows(&app, width, height);
+        let buffer = rendered_buffer(&app, width, height);
+        let y = height - 1;
+        assert!(rows[usize::from(y)].contains("(see ? help) · shadow unavailable"));
+        let muted: Vec<_> = (0..width)
+            .map(|x| &buffer[(x, y)])
+            .filter(|cell| cell.fg == app.theme.muted && !cell.symbol().trim().is_empty())
+            .collect();
+        assert_eq!(
+            muted.len(),
+            "(see ? help)unavailable"
+                .chars()
+                .filter(|c| *c != ' ')
+                .count(),
+            "muted status cells"
+        );
+        for cell in muted {
+            assert_ne!(
+                cell.fg,
+                cell.bg,
+                "muted {:?} on its own background",
+                cell.symbol()
+            );
+        }
+    }
+
+    #[test]
     fn empty_snapshot_shows_nothing_loaded_with_the_stale_reason() {
         let snapshot = AccountSnapshot {
             users: vec![],

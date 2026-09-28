@@ -134,8 +134,9 @@ impl Theme {
             border: Color::Gray,
             header_bg: Color::Black,
             header_fg: Color::Cyan,
-            status_bg: Color::DarkGray,
-            status_fg: Color::Black,
+            // Black, not DarkGray: muted status spans are DarkGray.
+            status_bg: Color::Black,
+            status_fg: Color::Gray,
             highlight_fg: Color::Yellow,
             highlight_bg: Color::Reset,
         }
