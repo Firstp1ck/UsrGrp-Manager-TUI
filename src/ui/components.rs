@@ -680,24 +680,23 @@ pub fn render_empty_state(
 ) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let width = usize::from(inner.width.max(1));
-    let height = lines
-        .iter()
-        .map(|line| line.chars().count().div_ceil(width).max(1))
-        .sum::<usize>();
-    let height = u16::try_from(height).unwrap_or(u16::MAX).min(inner.height);
-    // Word wrapping can take more rows than the estimate, so the text keeps
-    // every row below its start.
-    let top = (inner.height - height) / 2;
+    // Wrap by character up front, the way dialog bodies are, so the row
+    // count is exact and the text is centered from its real height.
+    let rows: Vec<Line<'static>> = lines
+        .into_iter()
+        .flat_map(|line| wrap_line(&Line::from(line), usize::from(inner.width)))
+        .collect();
+    let height = u16::try_from(rows.len())
+        .unwrap_or(u16::MAX)
+        .min(inner.height);
     let text_area = Rect {
-        y: inner.y + top,
-        height: inner.height - top,
+        y: inner.y + (inner.height - height) / 2,
+        height,
         ..inner
     };
     frame.render_widget(
-        Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+        Paragraph::new(rows)
             .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true })
             .style(Style::default().fg(app.theme._muted)),
         text_area,
     );

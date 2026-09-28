@@ -3873,6 +3873,53 @@ mod tests {
     }
 
     #[test]
+    fn empty_state_wraps_exactly_on_a_narrow_pane() {
+        let mut app = single_account_app();
+        app.users_query = "aaaaaaa aaaaaaa aaaaaaa aaaaaaa aaaaaaa bbbbbbb".to_owned();
+        app.sort_and_filter();
+        assert!(app.users.is_empty());
+        let rows = rendered_rows(&app, 30, 14);
+        assert!(
+            find_text(&rows, "bbbbbbb").is_some(),
+            "end of the message stays visible:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn member_of_pane_says_when_the_user_has_no_groups() {
+        // alice's primary gid 500 has no group and no group lists her.
+        let snapshot = AccountSnapshot {
+            users: vec![AccountUser {
+                uid: Uid(1000),
+                name: UserName::new("alice").unwrap(),
+                primary_gid: Gid(500),
+                full_name: None,
+                home_dir: "/home/alice".into(),
+                shell: ShellPath::new("/bin/sh").unwrap(),
+            }],
+            groups: vec![AccountGroup {
+                gid: Gid(100),
+                name: GroupName::new("staff").unwrap(),
+                members: vec![],
+            }],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let app = isolated_app(adapter, snapshot);
+        assert_eq!(app.selected_user_index, 0);
+        assert!(app.selected_user_groups().is_empty());
+        let rows = rendered_rows(&app, 100, 30);
+        let (x, _) = find_text(&rows, "No supplementary groups").expect("member-of empty state");
+        assert!(x >= 50, "inside the member-of pane: {x}");
+    }
+
+    #[test]
     fn empty_groups_table_and_members_pane_say_why() {
         let mut app = single_account_app();
         app.active_tab = ActiveTab::Groups;
