@@ -831,7 +831,9 @@ fn handle_user_delete(
     }
     match yes_no_answer(selected, key) {
         Answer::Cancel | Answer::Decline => back(app),
-        Answer::Confirm if *selected == 0 && *allowed => {
+        // Enter on No closes the dialog, like `n`, even for protected users.
+        Answer::Confirm if *selected != 0 => back(app),
+        Answer::Confirm if *allowed => {
             if let Some(user) = app.users.get(app.selected_user_index) {
                 start_pending_action(
                     app,
@@ -842,13 +844,13 @@ fn handle_user_delete(
                 )
             }
         }
-        Answer::Confirm if !*allowed => open_modal(
+        Answer::Confirm => open_modal(
             app,
             ModalState::Info {
                 message: "Protected identities require explicit policy allowlisting.".to_owned(),
             },
         ),
-        _ => {}
+        Answer::Other => {}
     }
 }
 
@@ -866,7 +868,9 @@ fn handle_member_delete(app: &mut AppState, selected: &mut usize, encoded: &str,
                 )
             }
         }
-        _ => {}
+        // Enter on No closes the dialog, like `n`.
+        Answer::Confirm => back(app),
+        Answer::Other => {}
     }
 }
 
@@ -977,7 +981,9 @@ fn handle_group_delete(
                 }
             }
         }
-        _ => {}
+        // Enter on No closes the dialog, like `n`.
+        Answer::Confirm => back(app),
+        Answer::Other => {}
     }
 }
 
@@ -2423,6 +2429,71 @@ mod tests {
             app.modal(),
             Some(ModalState::Info { message }) if message.contains("Dry run: nothing was executed")
         ));
+    }
+
+    #[test]
+    fn enter_on_no_closes_delete_dialogs() {
+        let mut app = root_app();
+        press(&mut app, KeyCode::Delete);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::DeleteConfirm { selected: 1, .. })
+        ));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal().is_none());
+        assert!(app.pending_operation.is_none());
+
+        for modal in [
+            ModalState::ConfirmRemoveUserFromGroup {
+                selected: 1,
+                group_name: "dev:alice".to_owned(),
+            },
+            ModalState::GroupDeleteConfirm {
+                selected: 1,
+                target_gid: Some(1000),
+            },
+        ] {
+            open_modal(&mut app, modal);
+            press(&mut app, KeyCode::Enter);
+            assert!(app.modal().is_none());
+            assert!(app.pending_operation.is_none());
+        }
+
+        // Only the dialog closes; the menu under it stays.
+        open_modal(&mut app, ModalState::Actions { selected: 0 });
+        open_modal(
+            &mut app,
+            ModalState::DeleteConfirm {
+                selected: 1,
+                allowed: true,
+                delete_home: false,
+            },
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::Actions { .. })));
+        assert_eq!(app.modal_depth(), 1);
+    }
+
+    #[test]
+    fn protected_user_delete_explains_only_on_yes() {
+        let mut app = root_app();
+        let protected = || ModalState::DeleteConfirm {
+            selected: 1,
+            allowed: false,
+            delete_home: false,
+        };
+        open_modal(&mut app, protected());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal().is_none());
+
+        open_modal(&mut app, protected());
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::Info { message }) if message.contains("Protected identities")
+        ));
+        assert!(app.pending_operation.is_none());
     }
 
     #[test]
