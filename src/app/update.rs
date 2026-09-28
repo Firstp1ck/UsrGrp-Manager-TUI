@@ -5083,7 +5083,7 @@ mod tests {
         terminal.draw(|frame| ui::render(frame, &app)).unwrap();
         assert_eq!(
             terminal.backend().buffer()[(x, y)].fg,
-            app.theme._muted,
+            app.theme.muted,
             "empty state uses the muted color"
         );
 
@@ -5096,6 +5096,62 @@ mod tests {
         app.sort_and_filter();
         let rows = rendered_rows(&app, 100, 30);
         assert!(find_text(&rows, "No users match filters: system").is_some());
+    }
+
+    #[test]
+    fn theme_colors_style_selected_rows_text_details_and_header() {
+        use ratatui::style::{Color, Modifier};
+        let mut app = single_account_app();
+        app.theme.highlight_fg = Color::Rgb(4, 5, 6);
+        app.theme.highlight_bg = Color::Rgb(1, 2, 3);
+        app.theme.text = Color::Rgb(7, 8, 9);
+        app.theme.muted = Color::Rgb(10, 11, 12);
+        app.theme.header_fg = Color::Rgb(13, 14, 15);
+        app.theme.header_bg = Color::Rgb(16, 17, 18);
+        let (width, height) = (100, 30);
+        let draw = |app: &AppState| {
+            let mut terminal =
+                Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| ui::render(frame, app)).unwrap();
+            terminal.backend().buffer().clone()
+        };
+
+        let rows = rendered_rows(&app, width, height);
+        let buffer = draw(&app);
+        let (x, y) = find_text(&rows, "1000    alice").expect("selected user row");
+        let cell = &buffer[(x, y)];
+        assert_eq!(cell.bg, Color::Rgb(1, 2, 3), "selected row background");
+        assert_eq!(cell.fg, Color::Rgb(4, 5, 6), "selected row foreground");
+        assert!(cell.modifier.contains(Modifier::BOLD));
+        let (x, y) = find_text(&rows, "100     staff").expect("selected membership row");
+        assert_eq!(buffer[(x, y)].bg, Color::Rgb(1, 2, 3), "member-of row");
+
+        let (x, y) = find_text(&rows, "User: alice").expect("details pane");
+        assert_eq!(buffer[(x, y)].fg, Color::Rgb(7, 8, 9), "details text");
+
+        let (x, y) = find_text(&rows, "usrgrp-manager").expect("header line");
+        assert_eq!(buffer[(x, y)].fg, Color::Rgb(13, 14, 15), "header text");
+        assert_eq!(
+            buffer[(x, y)].bg,
+            Color::Rgb(16, 17, 18),
+            "header background"
+        );
+        let (x, y) = find_text(&rows, "? help").expect("header key hints");
+        assert_eq!(buffer[(x, y)].fg, Color::Rgb(10, 11, 12), "muted key hints");
+
+        app.active_tab = ActiveTab::Groups;
+        let rows = rendered_rows(&app, width, height);
+        let buffer = draw(&app);
+        let (x, y) = find_text(&rows, "│100 ").expect("selected group row");
+        assert!(x < 44, "groups table on the left: {x},{y}");
+        let x = x + 1;
+        assert_eq!(buffer[(x, y)].bg, Color::Rgb(1, 2, 3), "selected group row");
+        let (x, y) = find_text(&rows, "unavailable").expect("unavailable value");
+        assert_eq!(
+            buffer[(x, y)].fg,
+            Color::Rgb(10, 11, 12),
+            "muted unavailable"
+        );
     }
 
     #[test]

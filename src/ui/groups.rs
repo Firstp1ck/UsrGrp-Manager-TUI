@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
@@ -13,8 +13,9 @@ use crate::{
     },
     ui::components::{
         CandidateView, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog,
-        char_budget, marker, no_match_text, nothing_loaded_lines, push_filter_labels,
-        render_empty_state, render_modal_frame, search_title, text_lines, with_error_line,
+        char_budget, details_lines, marker, no_match_text, nothing_loaded_lines,
+        push_filter_labels, render_empty_state, render_modal_frame, row_style, search_title,
+        text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -85,13 +86,7 @@ pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(group.gid.to_string()),
                 Cell::from(group.name.clone()),
             ])
-            .style(if selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            })
+            .style(row_style(app, selected))
         });
     frame.render_widget(
         Table::new(rows, [Constraint::Length(8), Constraint::Percentage(100)])
@@ -137,12 +132,14 @@ pub fn render_group_details(frame: &mut Frame, area: Rect, app: &AppState) {
         "No group selected.".to_owned()
     };
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .title("Group details")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        ),
+        Paragraph::new(details_lines(app, &text))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .title("Group details")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border)),
+            ),
         area,
     );
 }
@@ -176,13 +173,7 @@ pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {
         .enumerate()
         .map(|(offset, member)| {
             let selected = start + offset == app.selected_group_member_index;
-            Row::new([Cell::from(member.clone())]).style(if selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            })
+            Row::new([Cell::from(member.clone())]).style(row_style(app, selected))
         });
     frame.render_widget(
         Table::new(rows, [Constraint::Percentage(100)])

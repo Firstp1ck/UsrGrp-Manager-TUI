@@ -47,6 +47,19 @@ Settings are parsed as bounded `key = value` files with source-line diagnostics 
 
 Example files are in [`example-configs/`](example-configs/). Theme colors support `#RRGGBB`, `index:N`, `named:color`, and `reset`.
 
+`theme.conf` keys:
+
+| Key | Used for |
+| --- | --- |
+| `preset` | Optional. `mocha` (the default) or `dark` picks the base palette; the color keys in the file override it. Written back only if the file had it. `dark` uses named colors, for terminals without truecolor. |
+| `text` | Table rows and the details panes |
+| `muted` | Secondary text: header key hints, dialog footers, empty tables, unavailable values, filters that cannot apply. The old spelling `_muted` is still read. |
+| `title` | Table column headings |
+| `border` | Pane and dialog borders |
+| `header_fg`, `header_bg` | The header bar at the top |
+| `status_fg`, `status_bg` | The status bar at the bottom |
+| `highlight_fg`, `highlight_bg` | The selected row in every table |
+
 ## Verification
 
 ```bash

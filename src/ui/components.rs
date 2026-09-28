@@ -267,6 +267,13 @@ pub fn header_hints(app: &AppState) -> Vec<String> {
 /// One header line: app, user, and tabs on the left, key hints on the right.
 /// Hints that do not fit are dropped from the end.
 pub fn header_line(app: &AppState, width: usize) -> String {
+    let (left, right) = header_parts(app, width);
+    left + &right
+}
+
+/// The header line split into the app, user, and tabs part and the padded
+/// key hints part (empty when no hint fits).
+fn header_parts(app: &AppState, width: usize) -> (String, String) {
     let tabs = match app.active_tab {
         ActiveTab::Users => "[Users]  Groups",
         ActiveTab::Groups => "Users  [Groups]",
@@ -277,18 +284,29 @@ pub fn header_line(app: &AppState, width: usize) -> String {
         let right = hints.join("  ");
         let used = text_width(&left) + text_width(&right);
         if used + 2 <= width {
-            return format!("{left}{}{right}", " ".repeat(width - used));
+            return (left, format!("{}{right}", " ".repeat(width - used)));
         }
         hints.pop();
     }
-    left
+    (left, String::new())
 }
 
+/// Header block in the theme's header colors, with the key hints in the
+/// muted color.
 pub fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
     let width = usize::from(area.width.saturating_sub(2));
+    let (left, hints) = header_parts(app, width);
+    let line = Line::from(vec![
+        Span::raw(left),
+        Span::styled(hints, Style::default().fg(app.theme.muted)),
+    ]);
     frame.render_widget(
-        Paragraph::new(header_line(app, width))
-            .style(Style::default().fg(app.theme.header_fg))
+        Paragraph::new(line)
+            .style(
+                Style::default()
+                    .fg(app.theme.header_fg)
+                    .bg(app.theme.header_bg),
+            )
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -589,7 +607,7 @@ pub fn render_modal_frame(
         body_area,
     );
     frame.render_widget(
-        Paragraph::new(footer.to_owned()).style(Style::default().fg(app.theme._muted)),
+        Paragraph::new(footer.to_owned()).style(Style::default().fg(app.theme.muted)),
         footer_area,
     );
 }
@@ -641,6 +659,40 @@ fn wrap_line<'a>(line: &'a Line<'_>, width: usize) -> Vec<Line<'a>> {
 /// Split newline-separated modal text into body lines.
 pub fn text_lines(text: String) -> Vec<Line<'static>> {
     Text::from(text).lines
+}
+
+/// Table row style: the theme's highlight colors in bold for the selected
+/// row, the text color for the rest.
+pub fn row_style(app: &AppState, selected: bool) -> Style {
+    if selected {
+        Style::default()
+            .fg(app.theme.highlight_fg)
+            .bg(app.theme.highlight_bg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(app.theme.text)
+    }
+}
+
+/// Details pane text in the theme's text color, with every `unavailable`
+/// value in the muted color.
+pub fn details_lines(app: &AppState, text: &str) -> Vec<Line<'static>> {
+    const UNAVAILABLE: &str = "unavailable";
+    let muted = Style::default().fg(app.theme.muted);
+    text.lines()
+        .map(|line| {
+            let mut spans = Vec::new();
+            for (index, part) in line.split(UNAVAILABLE).enumerate() {
+                if index > 0 {
+                    spans.push(Span::styled(UNAVAILABLE, muted));
+                }
+                if !part.is_empty() {
+                    spans.push(Span::raw(part.to_owned()));
+                }
+            }
+            Line::from(spans).style(Style::default().fg(app.theme.text))
+        })
+        .collect()
 }
 
 /// Append a form's inline validation message as the last body line, in red.
@@ -700,12 +752,20 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
             return;
         }
         ModalState::FilterMenu { selected } => {
+            // Shadow chips that cannot apply (`[-]`) are drawn muted.
+            let muted = Style::default().fg(app.theme.muted);
             let body = filter_menu_rows(app)
-                .iter()
+                .into_iter()
                 .enumerate()
-                .map(|(index, row)| format!("{} {row}", marker(*selected, index)))
-                .collect::<Vec<_>>()
-                .join("\n");
+                .map(|(index, row)| {
+                    let style = if row.starts_with("[-]") {
+                        muted
+                    } else {
+                        Style::default()
+                    };
+                    Line::styled(format!("{} {row}", marker(*selected, index)), style)
+                })
+                .collect::<Vec<_>>();
             let mut title = "Filters".to_owned();
             if app.active_tab == crate::app::ActiveTab::Users
                 && let Some(note) = shadow_skipped_note(app)
@@ -718,7 +778,7 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
                 area,
                 app,
                 &title,
-                text_lines(body),
+                body,
                 Some(*selected),
                 "↑↓ move  Enter/Space toggle  Backspace back  Esc close",
             );
@@ -775,7 +835,7 @@ fn render_operation_confirm(
         body.push(if seen_all || reached_end {
             Line::styled(
                 format!("All {} steps shown.", preview.len()),
-                Style::default().fg(app.theme._muted),
+                Style::default().fg(app.theme.muted),
             )
         } else {
             Line::styled(PREVIEW_REFUSAL, Style::default().fg(Color::Yellow))
@@ -953,7 +1013,7 @@ pub fn render_empty_state(
     frame.render_widget(
         Paragraph::new(rows)
             .alignment(Alignment::Center)
-            .style(Style::default().fg(app.theme._muted)),
+            .style(Style::default().fg(app.theme.muted)),
         text_area,
     );
 }

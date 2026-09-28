@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
@@ -15,9 +15,10 @@ use crate::{
     },
     ui::components::{
         CandidateView, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER, PASSWORD_FORM_FOOTER, TEXT_FOOTER,
-        YES_NO_FOOTER, candidate_dialog, char_budget, input_cursor, marker, no_match_text,
-        nothing_loaded_lines, push_filter_labels, render_empty_state, render_modal_frame,
-        search_title, shadow_skipped_note, text_lines, with_error_line,
+        YES_NO_FOOTER, candidate_dialog, char_budget, details_lines, input_cursor, marker,
+        no_match_text, nothing_loaded_lines, push_filter_labels, render_empty_state,
+        render_modal_frame, row_style, search_title, shadow_skipped_note, text_lines,
+        with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -87,13 +88,7 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(user.home_dir.clone()),
                 Cell::from(user.shell.clone()),
             ])
-            .style(if selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            })
+            .style(row_style(app, selected))
         });
     frame.render_widget(
         Table::new(
@@ -153,12 +148,14 @@ pub fn render_user_details(frame: &mut Frame, area: Rect, app: &AppState) {
         "No user selected.".to_owned()
     };
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .title("Details")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border)),
-        ),
+        Paragraph::new(details_lines(app, &text))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .title("Details")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border)),
+            ),
         area,
     );
 }
@@ -195,13 +192,7 @@ pub fn render_user_groups(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(group.gid.to_string()),
                 Cell::from(group.name.clone()),
             ])
-            .style(if selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            })
+            .style(row_style(app, selected))
         });
     frame.render_widget(
         Table::new(rows, [Constraint::Length(7), Constraint::Percentage(100)])

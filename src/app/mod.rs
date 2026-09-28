@@ -53,11 +53,66 @@ pub enum InputMode {
     Modal,
 }
 
+/// Built-in base palette a theme file can select with `preset = mocha | dark`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemePreset {
+    Mocha,
+    Dark,
+}
+
+impl ThemePreset {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "mocha" => Some(Self::Mocha),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mocha => "mocha",
+            Self::Dark => "dark",
+        }
+    }
+
+    /// The preset's colors, with the preset recorded so it is written back.
+    fn theme(self) -> Theme {
+        let base = match self {
+            Self::Mocha => Theme::mocha(),
+            Self::Dark => Theme::dark(),
+        };
+        Theme {
+            preset: Some(self),
+            ..base
+        }
+    }
+}
+
+/// Theme keys that take a color. `_muted` is the old spelling of `muted`,
+/// still read so existing files keep loading.
+const THEME_COLOR_KEYS: [&str; 11] = [
+    "text",
+    "muted",
+    "_muted",
+    "title",
+    "border",
+    "header_bg",
+    "header_fg",
+    "status_bg",
+    "status_fg",
+    "highlight_fg",
+    "highlight_bg",
+];
+
 /// Color palette for theming the TUI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
+    /// Base chosen by the file's `preset` key, if it had one. Only a theme
+    /// read with a preset writes the key back.
+    pub preset: Option<ThemePreset>,
     pub text: Color,
-    pub _muted: Color,
+    pub muted: Color,
     pub title: Color,
     pub border: Color,
     pub header_bg: Color,
@@ -72,8 +127,9 @@ impl Theme {
     /// Dark default theme with neutral grays and cyan accents.
     pub fn dark() -> Self {
         Self {
+            preset: None,
             text: Color::Gray,
-            _muted: Color::DarkGray,
+            muted: Color::DarkGray,
             title: Color::Cyan,
             border: Color::Gray,
             header_bg: Color::Black,
@@ -88,8 +144,9 @@ impl Theme {
     /// Catppuccin Mocha theme defaults.
     pub fn mocha() -> Self {
         Self {
+            preset: None,
             text: Color::Rgb(0xcd, 0xd6, 0xf4),
-            _muted: Color::Rgb(0x7f, 0x84, 0x9c),
+            muted: Color::Rgb(0x7f, 0x84, 0x9c),
             title: Color::Rgb(0xcb, 0xa6, 0xf7),
             border: Color::Rgb(0x58, 0x5b, 0x70),
             header_bg: Color::Rgb(0x31, 0x32, 0x44),
@@ -102,33 +159,55 @@ impl Theme {
     }
 
     /// Load a theme with line-oriented, lossless supported-color parsing.
+    /// The base is Mocha, or the `preset` key's palette wherever that key
+    /// appears in the file; every color key then overrides the base.
     pub fn from_file(path: &str) -> std::io::Result<Self> {
         let contents = crate::config::read_bounded(path)?;
-        let mut theme = Self::mocha();
+        let mut preset = None;
+        let mut colors = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for assignment in crate::config::parse_assignments(&contents)? {
-            let key = assignment.key.as_str();
-            if !seen.insert(key.to_owned()) {
+            let key = assignment.key;
+            if !seen.insert(key.clone()) {
                 return config_line_error(assignment.line, "duplicate theme key");
+            }
+            if key == "preset" {
+                let Some(parsed) = ThemePreset::parse(&assignment.value) else {
+                    return config_line_error(assignment.line, "invalid theme preset");
+                };
+                preset = Some(parsed);
+                continue;
+            }
+            if !THEME_COLOR_KEYS.contains(&key.as_str()) {
+                return config_line_error(assignment.line, "unknown theme key");
             }
             let Some(color) = Self::parse_color(&assignment.value) else {
                 return config_line_error(assignment.line, "invalid theme color");
             };
-            match key {
-                "text" => theme.text = color,
-                "muted" | "_muted" => theme._muted = color,
-                "title" => theme.title = color,
-                "border" => theme.border = color,
-                "header_bg" => theme.header_bg = color,
-                "header_fg" => theme.header_fg = color,
-                "status_bg" => theme.status_bg = color,
-                "status_fg" => theme.status_fg = color,
-                "highlight_fg" => theme.highlight_fg = color,
-                "highlight_bg" => theme.highlight_bg = color,
-                _ => return config_line_error(assignment.line, "unknown theme key"),
-            }
+            colors.push((key, color));
+        }
+        let mut theme = preset.map_or_else(Self::mocha, ThemePreset::theme);
+        for (key, color) in colors {
+            theme.set_color(&key, color);
         }
         Ok(theme)
+    }
+
+    /// Set the color named by one of [`THEME_COLOR_KEYS`].
+    fn set_color(&mut self, key: &str, color: Color) {
+        match key {
+            "text" => self.text = color,
+            "muted" | "_muted" => self.muted = color,
+            "title" => self.title = color,
+            "border" => self.border = color,
+            "header_bg" => self.header_bg = color,
+            "header_fg" => self.header_fg = color,
+            "status_bg" => self.status_bg = color,
+            "status_fg" => self.status_fg = color,
+            "highlight_fg" => self.highlight_fg = color,
+            "highlight_bg" => self.highlight_bg = color,
+            _ => {}
+        }
     }
 
     fn parse_color(value: &str) -> Option<Color> {
@@ -197,14 +276,20 @@ impl Theme {
         }
     }
 
-    /// Atomically persist every theme field in the canonical format.
+    /// Atomically persist every theme field in the canonical format. The
+    /// `preset` line is written only when the theme was read with one.
     pub fn write_file(&self, path: &str) -> std::io::Result<()> {
         let mut contents = String::from(
-            "# usrgrp-manager theme configuration\n# Format: key = value\n# Colors: #RRGGBB, index:N, named:color, or reset\n\n",
+            "# usrgrp-manager theme configuration\n# Format: key = value\n# Optional: preset = mocha | dark picks the base colors; the keys below override it\n# Colors: #RRGGBB, index:N, named:color, or reset\n\n",
         );
+        if let Some(preset) = self.preset {
+            contents.push_str("preset = ");
+            contents.push_str(preset.name());
+            contents.push('\n');
+        }
         for (key, color) in [
             ("text", self.text),
-            ("muted", self._muted),
+            ("muted", self.muted),
             ("title", self.title),
             ("border", self.border),
             ("header_bg", self.header_bg),
