@@ -9,8 +9,11 @@ use ratatui::{
 
 use crate::{
     app::{
-        AppState, CandidateList, GroupsFilter, GroupsFocus, InputMode, MAX_NAME_CHARS, ModalState,
+        AppState, CandidateList, GroupDiagnostics, GroupsFilter, GroupsFocus, InputMode,
+        MAX_NAME_CHARS, ModalState, civil_date_label,
     },
+    search::ShadowState,
+    sys::SystemGroup,
     ui::components::{
         CandidateView, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog,
         char_budget, details_lines, marker, no_match_text, nothing_loaded_lines,
@@ -97,40 +100,10 @@ pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 pub fn render_group_details(frame: &mut Frame, area: Rect, app: &AppState) {
-    let text = if let Some(group) = app.groups.get(app.selected_group_index) {
-        let diagnostics = app.diagnostics.groups.get(&group.gid);
-        let mtime = app
-            .diagnostics
-            .group_mtime_days
-            .map_or("unavailable".to_owned(), |days| days.to_string());
-        let protected = if crate::app::is_default_protected_group(group) {
-            " protected by default policy"
-        } else {
-            ""
-        };
-        format!(
-            "Group: {}\nGID: {} ({}){}\nPrimary members: {}\nSecondary members: {}\nOrphan members: {}\nShadow ({}) locked={} empty={} expired={}\n/etc/group mtime days: {}{}",
-            group.name,
-            group.gid,
-            if group.gid < 1000 { "system" } else { "user" },
-            protected,
-            diagnostics.map_or(0, |value| value.primary_members),
-            group.members.len(),
-            diagnostics.map_or(0, |value| value.orphan_members),
-            app.diagnostics.shadow.availability_label(),
-            diagnostics.map_or(0, |value| value.locked_members),
-            diagnostics.map_or(0, |value| value.empty_password_members),
-            diagnostics.map_or(0, |value| value.expired_members),
-            mtime,
-            if diagnostics.is_some_and(|value| value.members_truncated) {
-                "\nMember diagnostics bounded at 100000 records."
-            } else {
-                ""
-            }
-        )
-    } else {
-        "No group selected.".to_owned()
-    };
+    let text = app.groups.get(app.selected_group_index).map_or_else(
+        || "No group selected.".to_owned(),
+        |group| group_details_text(app, group),
+    );
     frame.render_widget(
         Paragraph::new(details_lines(app, &text))
             .wrap(Wrap { trim: true })
@@ -142,6 +115,68 @@ pub fn render_group_details(frame: &mut Frame, area: Rect, app: &AppState) {
             ),
         area,
     );
+}
+
+/// Details pane text for `group`, one fact per line. Anything the last
+/// refresh could not read says "unavailable" and renders muted.
+pub fn group_details_text(app: &AppState, group: &SystemGroup) -> String {
+    let diagnostics = app.diagnostics.groups.get(&group.gid);
+    let count = |field: fn(&GroupDiagnostics) -> usize| diagnostics.map_or(0, field);
+    let kind = if group.gid < 1000 { "system" } else { "user" };
+    let protected = if crate::app::is_default_protected_group(group) {
+        ", protected"
+    } else {
+        ""
+    };
+    let passwords = match app.diagnostics.shadow {
+        ShadowState::Known(_) => format!(
+            "{} locked, {} empty, {} expired (shadow known)",
+            count(|value| value.locked_members),
+            count(|value| value.empty_password_members),
+            count(|value| value.expired_members)
+        ),
+        ShadowState::Unavailable { .. } => "unavailable".to_owned(),
+    };
+    let mut lines = vec![
+        format!(
+            "Group: {} (GID {}, {kind}{protected})",
+            group.name, group.gid
+        ),
+        format!(
+            "Members: {} primary, {} secondary, {} orphaned",
+            count(|value| value.primary_members),
+            group.members.len(),
+            count(|value| value.orphan_members)
+        ),
+        format!("Password status of members: {passwords}"),
+        format!(
+            "/etc/group changed: {}",
+            changed_label(
+                app.diagnostics.group_mtime_days,
+                app.diagnostics.refreshed_days
+            )
+        ),
+    ];
+    if diagnostics.is_some_and(|value| value.members_truncated) {
+        lines.push("Member diagnostics bounded at 100000 records.".to_owned());
+    }
+    lines.join("\n")
+}
+
+/// `2026-09-01 (27 days ago)` for a file changed on day `changed`, counted
+/// back from the refresh day. No age is shown when the change day is later
+/// than the refresh day.
+fn changed_label(changed: Option<u64>, refreshed: u64) -> String {
+    let Some(changed) = changed else {
+        return "unavailable".to_owned();
+    };
+    let date = civil_date_label(i64::try_from(changed).unwrap_or(i64::MAX));
+    match refreshed.checked_sub(changed) {
+        Some(0) => format!("{date} (today)"),
+        Some(1) => format!("{date} (1 day ago)"),
+        Some(days) => format!("{date} ({days} days ago)"),
+        None => date,
+    }
 }
 
 pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {

@@ -5,11 +5,23 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+use crate::app::ActiveTab;
+
 /// Minimum width at which the keybindings panel gets its own column.
 const KEYBINDS_MIN_WIDTH: u16 = 90;
 
 /// Header height: one line of text inside a border.
 const HEADER_ROWS: u16 = 3;
+
+/// Details pane height on the users tab: ten lines inside a border.
+const USER_DETAILS_ROWS: u16 = 12;
+
+/// Details pane height on the groups tab: five lines inside a border.
+const GROUP_DETAILS_ROWS: u16 = 7;
+
+/// Smallest member list: one row inside a border. It wins over the details
+/// pane when the terminal is short.
+const MEMBERS_MIN_ROWS: u16 = 3;
 
 /// Rows a table spends on its border (top and bottom) and column header.
 const TABLE_CHROME_ROWS: u16 = 3;
@@ -38,8 +50,9 @@ pub fn below_minimum(area: Rect) -> bool {
     area.width < MIN_WIDTH || area.height < MIN_HEIGHT
 }
 
-/// Split the screen into header, body panes, and status bar.
-pub fn main_layout(area: Rect, show_keybinds: bool) -> MainLayout {
+/// Split the screen into header, body panes, and status bar. The details
+/// pane has a fixed height per tab and the member list takes the rest.
+pub fn main_layout(area: Rect, tab: ActiveTab, show_keybinds: bool) -> MainLayout {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -65,7 +78,10 @@ pub fn main_layout(area: Rect, show_keybinds: bool) -> MainLayout {
     };
     let side = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(7), Constraint::Min(5)])
+        .constraints([
+            Constraint::Length(details_rows(tab)),
+            Constraint::Min(MEMBERS_MIN_ROWS),
+        ])
         .split(body[1]);
     MainLayout {
         header: root[0],
@@ -74,6 +90,13 @@ pub fn main_layout(area: Rect, show_keybinds: bool) -> MainLayout {
         members: side[1],
         keybinds: body.get(2).copied(),
         status: root[2],
+    }
+}
+
+fn details_rows(tab: ActiveTab) -> u16 {
+    match tab {
+        ActiveTab::Users => USER_DETAILS_ROWS,
+        ActiveTab::Groups => GROUP_DETAILS_ROWS,
     }
 }
 
@@ -90,10 +113,14 @@ mod tests {
     #[test]
     fn keybinds_column_needs_the_toggle_and_width() {
         let wide = Rect::new(0, 0, 100, 40);
-        assert!(main_layout(wide, true).keybinds.is_some());
-        assert!(main_layout(wide, false).keybinds.is_none());
+        assert!(main_layout(wide, ActiveTab::Users, true).keybinds.is_some());
         assert!(
-            main_layout(Rect::new(0, 0, 89, 40), true)
+            main_layout(wide, ActiveTab::Users, false)
+                .keybinds
+                .is_none()
+        );
+        assert!(
+            main_layout(Rect::new(0, 0, 89, 40), ActiveTab::Users, true)
                 .keybinds
                 .is_none()
         );
@@ -101,9 +128,29 @@ mod tests {
 
     #[test]
     fn table_rows_subtract_border_and_header() {
-        let layout = main_layout(Rect::new(0, 0, 100, 40), true);
+        let layout = main_layout(Rect::new(0, 0, 100, 40), ActiveTab::Users, true);
         // 40 rows - 3 header - 1 status = 36 body rows; minus border and header.
         assert_eq!(table_rows(layout.table), 33);
         assert_eq!(table_rows(Rect::new(0, 0, 10, 2)), 1);
+    }
+
+    #[test]
+    fn details_pane_is_sized_per_tab_and_members_take_the_rest() {
+        let area = Rect::new(0, 0, 100, 40);
+        let users = main_layout(area, ActiveTab::Users, false);
+        assert_eq!(users.details.height, 12);
+        assert_eq!(users.members.height, 36 - 12);
+        let groups = main_layout(area, ActiveTab::Groups, false);
+        assert_eq!(groups.details.height, 7);
+        assert_eq!(groups.members.height, 36 - 7);
+        assert_eq!(groups.table, users.table);
+    }
+
+    #[test]
+    fn short_terminal_keeps_a_member_row() {
+        // 12 rows - 3 header - 1 status = 8 body rows.
+        let layout = main_layout(Rect::new(0, 0, 100, 12), ActiveTab::Users, false);
+        assert_eq!(layout.members.height, 3);
+        assert_eq!(layout.details.height, 5);
     }
 }

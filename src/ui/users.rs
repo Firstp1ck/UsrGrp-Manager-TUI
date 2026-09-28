@@ -11,8 +11,10 @@ use ratatui::{
 use crate::{
     app::{
         AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, InputMode,
-        MAX_NAME_CHARS, ModalState, ModifyField, SecretInput, UsersFocus,
+        MAX_NAME_CHARS, ModalState, ModifyField, SecretInput, UsersFocus, civil_date_label,
     },
+    search::AccountShadowState,
+    sys::SystemUser,
     ui::components::{
         CandidateView, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER, PASSWORD_FORM_FOOTER, TEXT_FOOTER,
         YES_NO_FOOTER, candidate_dialog, char_budget, details_lines, input_cursor, marker,
@@ -111,42 +113,10 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 pub fn render_user_details(frame: &mut Frame, area: Rect, app: &AppState) {
-    let text = if let Some(user) = app.users.get(app.selected_user_index) {
-        let home = app.diagnostics.homes.get(&user.name);
-        let home_exists = home
-            .and_then(|diagnostic| diagnostic.exists)
-            .map_or("unavailable".to_owned(), |exists| exists.to_string());
-        let permissions = home
-            .and_then(|diagnostic| diagnostic.permissions.as_deref())
-            .unwrap_or("unavailable");
-        let keys = home
-            .and_then(|diagnostic| diagnostic.authorized_key_count)
-            .map_or("unavailable".to_owned(), |count| count.to_string());
-        let shadow = app.diagnostics.shadow.status(&user.name);
-        let shadow_text = shadow.map_or_else(
-            || app.diagnostics.shadow.availability_label().to_string(),
-            |status| {
-                format!(
-                    "locked={} empty={} expired={}",
-                    status.locked, status.no_password, status.expired
-                )
-            },
-        );
-        format!(
-            "User: {}\nUID: {}  GID: {}\nHome: {} (exists: {}, perms: {})\nShell: {}\nShadow: {}\nAuthorized keys: {}",
-            user.name,
-            user.uid,
-            user.primary_gid,
-            user.home_dir,
-            home_exists,
-            permissions,
-            user.shell,
-            shadow_text,
-            keys
-        )
-    } else {
-        "No user selected.".to_owned()
-    };
+    let text = app.users.get(app.selected_user_index).map_or_else(
+        || "No user selected.".to_owned(),
+        |user| user_details_text(app, user),
+    );
     frame.render_widget(
         Paragraph::new(details_lines(app, &text))
             .wrap(Wrap { trim: true })
@@ -158,6 +128,129 @@ pub fn render_user_details(frame: &mut Frame, area: Rect, app: &AppState) {
             ),
         area,
     );
+}
+
+/// Details pane text for `user`, one fact per line. Anything the last
+/// refresh could not read says "unavailable" and renders muted.
+pub fn user_details_text(app: &AppState, user: &SystemUser) -> String {
+    const UNAVAILABLE: &str = "unavailable";
+    let name = match user.full_name.as_deref().map(str::trim) {
+        Some(full_name) if !full_name.is_empty() => format!("{} ({full_name})", user.name),
+        _ => user.name.clone(),
+    };
+    let primary_group = app
+        .groups_all
+        .iter()
+        .find(|group| group.gid == user.primary_gid)
+        .map_or("no such group", |group| group.name.as_str());
+
+    let home = app.diagnostics.homes.get(&user.name);
+    let exists = home.and_then(|diagnostic| diagnostic.exists);
+    let permissions = match exists {
+        Some(false) => "-",
+        _ => home
+            .and_then(|diagnostic| diagnostic.permissions.as_deref())
+            .unwrap_or(UNAVAILABLE),
+    };
+    let count = |value: Option<usize>| value.map_or(UNAVAILABLE.to_owned(), |n| n.to_string());
+    let keys = count(home.and_then(|diagnostic| diagnostic.authorized_key_count));
+    let processes = count(home.and_then(|diagnostic| diagnostic.process_count));
+
+    let listed = app
+        .account_snapshot
+        .as_ref()
+        .map_or(UNAVAILABLE, |snapshot| {
+            yes_no(
+                snapshot
+                    .shells
+                    .iter()
+                    .any(|shell| shell.as_ref() == user.shell),
+            )
+        });
+
+    let (password, dates) = match app.diagnostics.shadow.account_status(&user.name) {
+        AccountShadowState::Known(status) => (
+            format!(
+                "locked {}  empty {}  expired {}",
+                yes_no(status.locked),
+                yes_no(status.no_password),
+                yes_no(status.expired)
+            ),
+            format!(
+                "Last change: {}  Expires: {}",
+                last_change_label(status.last_change_days),
+                status
+                    .expire_abs_days
+                    .map_or("never".to_owned(), civil_date_label)
+            ),
+        ),
+        AccountShadowState::Unknown { .. } => (
+            format!("{UNAVAILABLE} (no shadow record)"),
+            format!("Last change: {UNAVAILABLE}  Expires: {UNAVAILABLE}"),
+        ),
+        AccountShadowState::Unavailable { .. } => (
+            UNAVAILABLE.to_owned(),
+            format!("Last change: {UNAVAILABLE}  Expires: {UNAVAILABLE}"),
+        ),
+    };
+
+    let sudo = if is_sudo_member(app, user) {
+        "member"
+    } else {
+        "not member"
+    };
+    [
+        format!("User: {name}"),
+        format!(
+            "UID {}  GID {} ({primary_group})",
+            user.uid, user.primary_gid
+        ),
+        format!(
+            "Home: {}  exists: {}  perms: {permissions}",
+            user.home_dir,
+            exists.map_or(UNAVAILABLE, yes_no)
+        ),
+        format!(
+            "Shell: {}  listed: {listed}  interactive: {}",
+            user.shell,
+            yes_no(is_interactive_shell(&user.shell))
+        ),
+        format!("Password: {password}"),
+        dates,
+        format!("Sudo group ({}): {sudo}", app.sudo_group),
+        format!("SSH keys: {keys}"),
+        format!("Processes: {processes}"),
+    ]
+    .join("\n")
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+/// A shell that only refuses logins (`nologin`, `false`) is not interactive.
+fn is_interactive_shell(shell: &str) -> bool {
+    let program = shell.rsplit('/').next().unwrap_or(shell);
+    !matches!(program, "nologin" | "false")
+}
+
+/// Shadow last-change day: day zero forces a change at the next login and an
+/// empty field turns password aging off.
+fn last_change_label(days: Option<i64>) -> String {
+    match days {
+        Some(0) => "must change at next login".to_owned(),
+        Some(days) => civil_date_label(days),
+        None => "not set".to_owned(),
+    }
+}
+
+/// Whether `user` is in the configured sudo group, as a listed member or
+/// through their primary group.
+fn is_sudo_member(app: &AppState, user: &SystemUser) -> bool {
+    app.groups_all
+        .iter()
+        .filter(|group| group.name == app.sudo_group)
+        .any(|group| group.gid == user.primary_gid || group.members.contains(&user.name))
 }
 
 pub fn render_user_groups(frame: &mut Frame, area: Rect, app: &AppState) {

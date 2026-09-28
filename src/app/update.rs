@@ -280,7 +280,11 @@ fn open_delete(app: &mut AppState) {
 /// same layout the renderer uses.
 fn page_size(app: &AppState) -> usize {
     let (width, height) = app.terminal_size;
-    let layout = ui::layout::main_layout(Rect::new(0, 0, width, height), app.show_keybinds);
+    let layout = ui::layout::main_layout(
+        Rect::new(0, 0, width, height),
+        app.active_tab,
+        app.show_keybinds,
+    );
     let pane = match (app.active_tab, app.users_focus, app.groups_focus) {
         (ActiveTab::Users, UsersFocus::UsersList, _)
         | (ActiveTab::Groups, _, GroupsFocus::GroupsList) => layout.table,
@@ -4960,7 +4964,7 @@ mod tests {
         press(&mut app, KeyCode::PageUp);
         app.users_focus = UsersFocus::MemberOf;
         let area = Rect::new(0, 0, 100, 20);
-        let members = ui::layout::main_layout(area, app.show_keybinds).members;
+        let members = ui::layout::main_layout(area, app.active_tab, app.show_keybinds).members;
         press(&mut app, KeyCode::PageDown);
         assert_eq!(
             app.selected_user_group_index,
@@ -5140,6 +5144,8 @@ mod tests {
         assert_eq!(buffer[(x, y)].fg, Color::Rgb(10, 11, 12), "muted key hints");
 
         app.active_tab = ActiveTab::Groups;
+        // Without the keybindings column every group detail line fits.
+        app.show_keybinds = false;
         let rows = rendered_rows(&app, width, height);
         let buffer = draw(&app);
         let (x, y) = find_text(&rows, "│100 ").expect("selected group row");
@@ -5152,6 +5158,189 @@ mod tests {
             Color::Rgb(10, 11, 12),
             "muted unavailable"
         );
+    }
+
+    /// alice (Alice Liddell) with primary group `alice` and a listed zsh,
+    /// in `wheel`; bob logs in with nologin and is in no group.
+    fn details_app() -> AppState {
+        let user = |uid, name: &str, gid, full_name: Option<&str>, shell: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(gid),
+            full_name: full_name.map(|value| Gecos::new(value).unwrap()),
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new(shell).unwrap(),
+        };
+        let group = |gid, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(member).unwrap())
+                .collect(),
+        };
+        let snapshot = AccountSnapshot {
+            users: vec![
+                user(1000, "alice", 1000, Some("Alice Liddell"), "/bin/zsh"),
+                user(1001, "bob", 1001, None, "/usr/sbin/nologin"),
+            ],
+            groups: vec![
+                group(998, "wheel", &["alice", "ghost"]),
+                group(1000, "alice", &[]),
+            ],
+            shells: vec![
+                ShellPath::new("/bin/sh").unwrap(),
+                ShellPath::new("/bin/zsh").unwrap(),
+            ],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.sudo_group = "wheel".to_owned();
+        // A 50-column details pane: every line fits without wrapping.
+        app.show_keybinds = false;
+        app
+    }
+
+    /// Diagnostics as a refresh on 2026-09-28 would cache them.
+    fn known_diagnostics() -> crate::app::CachedDiagnostics {
+        let mut shadow = std::collections::HashMap::new();
+        shadow.insert(
+            "alice".to_owned(),
+            crate::search::ShadowStatus {
+                locked: false,
+                no_password: false,
+                expired: false,
+                last_change_days: Some(20_516),
+                expire_abs_days: None,
+            },
+        );
+        shadow.insert(
+            "bob".to_owned(),
+            crate::search::ShadowStatus {
+                locked: true,
+                last_change_days: Some(0),
+                expire_abs_days: Some(20_849),
+                ..crate::search::ShadowStatus::default()
+            },
+        );
+        let mut diagnostics = crate::app::CachedDiagnostics {
+            shadow: crate::search::ShadowState::Known(shadow),
+            group_mtime_days: Some(20_697),
+            refreshed_days: 20_724,
+            ..crate::app::CachedDiagnostics::default()
+        };
+        diagnostics.homes.insert(
+            "alice".to_owned(),
+            crate::app::HomeDiagnostics {
+                exists: Some(true),
+                permissions: Some("750".to_owned()),
+                authorized_key_count: Some(3),
+                process_count: Some(12),
+            },
+        );
+        diagnostics.groups.insert(
+            998,
+            crate::app::GroupDiagnostics {
+                primary_members: 0,
+                orphan_members: 1,
+                locked_members: 1,
+                ..crate::app::GroupDiagnostics::default()
+            },
+        );
+        diagnostics
+    }
+
+    #[test]
+    fn user_details_show_full_name_and_primary_group_name() {
+        let mut app = details_app();
+        app.diagnostics = known_diagnostics();
+        let screen = rendered_rows(&app, 100, 30).join("\n");
+        for line in [
+            "User: alice (Alice Liddell)",
+            "UID 1000  GID 1000 (alice)",
+            "Home: /home/alice  exists: yes  perms: 750",
+            "Shell: /bin/zsh  listed: yes  interactive: yes",
+            "Password: locked no  empty no  expired no",
+            "Last change: 2026-03-04  Expires: never",
+            "Sudo group (wheel): member",
+            "SSH keys: 3",
+            "Processes: 12",
+        ] {
+            assert!(screen.contains(line), "missing {line:?} in\n{screen}");
+        }
+    }
+
+    #[test]
+    fn user_details_cover_unlisted_shells_forced_changes_and_missing_data() {
+        let mut app = details_app();
+        app.diagnostics = known_diagnostics();
+        let bob = app.users.iter().find(|user| user.name == "bob").unwrap();
+        let text = ui::users::user_details_text(&app, bob);
+        assert_eq!(
+            text,
+            [
+                "User: bob",
+                "UID 1001  GID 1001 (no such group)",
+                "Home: /home/bob  exists: unavailable  perms: unavailable",
+                "Shell: /usr/sbin/nologin  listed: no  interactive: no",
+                "Password: locked yes  empty no  expired no",
+                "Last change: must change at next login  Expires: 2027-01-31",
+                "Sudo group (wheel): not member",
+                "SSH keys: unavailable",
+                "Processes: unavailable",
+            ]
+            .join("\n")
+        );
+
+        // Primary-group membership counts as being in the sudo group.
+        app.sudo_group = "alice".to_owned();
+        let alice = app.users.iter().find(|user| user.name == "alice").unwrap();
+        assert!(ui::users::user_details_text(&app, alice).contains("Sudo group (alice): member"));
+
+        // Without shadow data every password fact is unavailable.
+        app.diagnostics = crate::app::CachedDiagnostics::default();
+        let text = ui::users::user_details_text(&app, alice);
+        assert!(text.contains("Password: unavailable\n"));
+        assert!(text.contains("Last change: unavailable  Expires: unavailable"));
+    }
+
+    #[test]
+    fn group_details_show_a_date_and_age_instead_of_day_counts() {
+        let mut app = details_app();
+        app.diagnostics = known_diagnostics();
+        app.active_tab = ActiveTab::Groups;
+        let screen = rendered_rows(&app, 100, 30).join("\n");
+        for line in [
+            "Group: wheel (GID 998, system, protected)",
+            "Members: 0 primary, 2 secondary, 1 orphaned",
+            "/etc/group changed: 2026-09-01 (27 days ago)",
+        ] {
+            assert!(screen.contains(line), "missing {line:?} in\n{screen}");
+        }
+        let wheel = &app.groups[0];
+        assert!(
+            ui::groups::group_details_text(&app, wheel).contains(
+                "Password status of members: 1 locked, 0 empty, 0 expired (shadow known)"
+            )
+        );
+
+        let alice = app.groups.iter().find(|group| group.gid == 1000).unwrap();
+        app.diagnostics.group_mtime_days = Some(20_724);
+        assert!(
+            ui::groups::group_details_text(&app, alice)
+                .starts_with("Group: alice (GID 1000, user)\n")
+        );
+        assert!(ui::groups::group_details_text(&app, alice).ends_with("2026-09-28 (today)"));
+
+        app.diagnostics = crate::app::CachedDiagnostics::default();
+        let text = ui::groups::group_details_text(&app, alice);
+        assert!(text.contains("Password status of members: unavailable\n"));
+        assert!(text.ends_with("/etc/group changed: unavailable"));
     }
 
     #[test]

@@ -864,6 +864,9 @@ pub struct CachedDiagnostics {
     /// Group summaries are computed during refresh, never by a frame render.
     pub groups: HashMap<u32, GroupDiagnostics>,
     pub group_mtime_days: Option<u64>,
+    /// Days since the UNIX epoch when this refresh ran, so the details pane
+    /// can say how long ago /etc/group changed without reading the clock.
+    pub refreshed_days: u64,
     pub stale_reason: Option<String>,
     /// At most three source/line diagnostics are retained for display.
     pub config_messages: Vec<String>,
@@ -905,6 +908,28 @@ pub fn utc_time_label(time: SystemTime) -> String {
         seconds / 60 % 60,
         seconds % 60
     )
+}
+
+/// Format a day count since the UNIX epoch as a `YYYY-MM-DD` calendar date
+/// (proleptic Gregorian, UTC). Negative counts are dates before 1970.
+pub fn civil_date_label(days: i64) -> String {
+    // Howard Hinnant's days-to-civil algorithm, with eras of 400 years
+    // counted from 0000-03-01 so leap days fall at the end of each year.
+    let z = days.saturating_add(719_468);
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// Injectable clock for deterministic diagnostics and config-root tests.
@@ -974,6 +999,9 @@ impl DiagnosticProvider for SystemDiagnosticProvider {
         const MAX_TOTAL_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
         let mut diagnostics = CachedDiagnostics {
             shadow: crate::search::read_shadow_state(),
+            refreshed_days: now
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs() / 86_400),
             ..CachedDiagnostics::default()
         };
         let mut remaining_bytes = MAX_TOTAL_DIAGNOSTIC_BYTES;
@@ -2064,7 +2092,22 @@ pub fn sudo_group_name() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_process_counts, status_real_uid};
+    use super::{civil_date_label, read_process_counts, status_real_uid};
+
+    #[test]
+    fn civil_date_label_converts_days_since_the_epoch() {
+        assert_eq!(civil_date_label(0), "1970-01-01");
+        assert_eq!(civil_date_label(-1), "1969-12-31");
+        assert_eq!(civil_date_label(59), "1970-03-01");
+        // Leap day in a year divisible by 400, and the day after.
+        assert_eq!(civil_date_label(11_016), "2000-02-29");
+        assert_eq!(civil_date_label(11_017), "2000-03-01");
+        assert_eq!(civil_date_label(19_675), "2023-11-14");
+        assert_eq!(civil_date_label(20_516), "2026-03-04");
+        // 2100 is not a leap year.
+        assert_eq!(civil_date_label(47_540), "2100-02-28");
+        assert_eq!(civil_date_label(47_541), "2100-03-01");
+    }
 
     fn write_status(root: &std::path::Path, pid: &str, status: &str) {
         let dir = root.join(pid);

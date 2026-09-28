@@ -18,7 +18,7 @@ pub fn render(frame: &mut Frame, app: &AppState) {
         );
         return;
     }
-    let layout = layout::main_layout(frame.area(), app.show_keybinds);
+    let layout = layout::main_layout(frame.area(), app.active_tab, app.show_keybinds);
     components::render_header(frame, layout.header, app);
     match app.active_tab {
         ActiveTab::Users => {
