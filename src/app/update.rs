@@ -150,7 +150,7 @@ fn handle_search_key(app: &mut AppState, key: KeyEvent) {
             app.search_query.pop();
             app.sort_and_filter();
         }
-        KeyCode::Char(character) if app.search_query.len() < 256 => {
+        KeyCode::Char(character) if !character.is_control() && app.search_query.len() < 256 => {
             app.search_query.push(character);
             app.sort_and_filter();
         }
@@ -2425,7 +2425,12 @@ mod tests {
     }
 
     fn rendered(app: &AppState) -> String {
-        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        rendered_at(app, 100, 30)
+    }
+
+    fn rendered_at(app: &AppState, width: u16, height: u16) -> String {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| ui::render(frame, app)).unwrap();
         terminal
             .backend()
@@ -2434,6 +2439,57 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn filter_menu_keeps_last_entry_visible_above_footer_at_80x16() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Char('f'));
+        press(&mut app, KeyCode::Char('k'));
+        let screen = rendered_at(&app, 80, 16);
+        assert!(screen.contains("▶ Expired (shadow)"));
+        assert!(screen.contains("Backspace back  Esc close"));
+    }
+
+    #[test]
+    fn create_user_form_keeps_submit_row_at_80x14() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Char('n'));
+        assert!(matches!(app.modal(), Some(ModalState::UserAddInput { .. })));
+        let screen = rendered_at(&app, 80, 14);
+        assert!(screen.contains("Submit"));
+        assert!(screen.contains("Enter on Submit  Esc back"));
+    }
+
+    #[test]
+    fn short_terminal_scrolls_to_the_cursor_and_keeps_the_footer_at_80x9() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Char('f'));
+        press(&mut app, KeyCode::Char('k'));
+        let screen = rendered_at(&app, 80, 9);
+        assert!(screen.contains("▶ Expired (shadow)"));
+        assert!(screen.contains("Backspace back  Esc close"));
+
+        app.close_modals();
+        press(&mut app, KeyCode::Char('n'));
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        let screen = rendered_at(&app, 80, 9);
+        assert!(screen.contains("▶ Submit"));
+        assert!(screen.contains("Enter on Submit  Esc back"));
+    }
+
+    #[test]
+    fn search_ignores_control_characters() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.input_mode, InputMode::SearchUsers);
+        press(&mut app, KeyCode::Char('\u{7}'));
+        press(&mut app, KeyCode::Char('\u{1b}'));
+        assert_eq!(app.search_query, "");
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.search_query, "a");
     }
 
     #[test]

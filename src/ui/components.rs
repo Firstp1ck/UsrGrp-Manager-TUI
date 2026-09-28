@@ -97,8 +97,18 @@ pub const TEXT_FOOTER: &str = "type to edit  Enter submit  Esc back";
 /// Footer for forms with several fields.
 pub const FORM_FOOTER: &str = "↑↓ field  Space tick  Enter on Submit  Esc back";
 
+/// Tallest dialog: 18 body rows, the footer row, and two border rows.
+const MAX_MODAL_HEIGHT: u16 = 21;
+/// Marks the highlighted row in every dialog body.
+pub const CURSOR_MARKER: &str = "▶";
+
 /// Draw a centered dialog: title, body, and a key hint footer on the last
 /// interior row. Every modal renderer goes through this frame.
+///
+/// The dialog is as tall as its body plus the footer, capped by the
+/// terminal. When the body does not fit, it scrolls so the row carrying
+/// [`CURSOR_MARKER`] stays visible. The footer is drawn whenever the dialog
+/// has an interior row.
 pub fn render_modal_frame(
     frame: &mut Frame,
     area: Rect,
@@ -107,11 +117,14 @@ pub fn render_modal_frame(
     body: Vec<Line<'_>>,
     footer: &str,
 ) {
-    let rect = centered_rect(
-        area.width.saturating_sub(8).min(76),
-        area.height.saturating_sub(6).min(20),
-        area,
-    );
+    let width = area.width.saturating_sub(8).min(76);
+    let rows = wrapped_rows(&body, width.saturating_sub(2));
+    let body_rows = u16::try_from(rows.iter().sum::<usize>()).unwrap_or(u16::MAX);
+    let height = body_rows
+        .saturating_add(3)
+        .min(MAX_MODAL_HEIGHT)
+        .min(area.height);
+    let rect = centered_rect(width, height, area);
     let block = Block::default()
         .title(title.to_owned())
         .borders(Borders::ALL)
@@ -119,28 +132,50 @@ pub fn render_modal_frame(
     let inner = block.inner(rect);
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
-    let (body_area, footer_area) = if inner.height >= 2 {
-        (
-            Rect {
-                height: inner.height - 1,
-                ..inner
-            },
-            Some(Rect {
-                y: inner.y + inner.height - 1,
-                height: 1,
-                ..inner
-            }),
-        )
-    } else {
-        (inner, None)
-    };
-    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), body_area);
-    if let Some(footer_area) = footer_area {
-        frame.render_widget(
-            Paragraph::new(footer.to_owned()).style(Style::default().fg(app.theme._muted)),
-            footer_area,
-        );
+    if inner.height == 0 {
+        return;
     }
+    let body_area = Rect {
+        height: inner.height - 1,
+        ..inner
+    };
+    let footer_area = Rect {
+        y: inner.y + inner.height - 1,
+        height: 1,
+        ..inner
+    };
+    let scroll = cursor_scroll(&body, &rows, usize::from(body_area.height));
+    frame.render_widget(
+        Paragraph::new(body)
+            .wrap(Wrap { trim: false })
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
+        body_area,
+    );
+    frame.render_widget(
+        Paragraph::new(footer.to_owned()).style(Style::default().fg(app.theme._muted)),
+        footer_area,
+    );
+}
+
+/// Screen rows each body line takes once wrapped to `width` columns.
+fn wrapped_rows(body: &[Line<'_>], width: u16) -> Vec<usize> {
+    let width = usize::from(width.max(1));
+    body.iter()
+        .map(|line| line.width().div_ceil(width).max(1))
+        .collect()
+}
+
+/// First visible row so the cursor line ends up inside `visible` rows.
+fn cursor_scroll(body: &[Line<'_>], rows: &[usize], visible: usize) -> usize {
+    let Some(cursor) = body.iter().position(|line| {
+        line.spans
+            .iter()
+            .any(|span| span.content.contains(CURSOR_MARKER))
+    }) else {
+        return 0;
+    };
+    let end: usize = rows[..=cursor].iter().sum();
+    end.saturating_sub(visible)
 }
 
 /// Split newline-separated modal text into body lines.
@@ -200,6 +235,11 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
     render_modal_frame(frame, area, app, title, text_lines(body), footer);
 }
 
-fn marker(selected: usize, index: usize) -> &'static str {
-    if selected == index { "▶" } else { " " }
+/// Cursor prefix for row `index` of a dialog body.
+pub fn marker(selected: usize, index: usize) -> &'static str {
+    if selected == index {
+        CURSOR_MARKER
+    } else {
+        " "
+    }
 }

@@ -10,7 +10,7 @@ use ratatui::{
 use crate::{
     app::{AppState, ModalState, ModifyField, UsersFocus},
     ui::components::{
-        FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
+        FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, marker,
         render_modal_frame, text_lines, with_error_line,
     },
 };
@@ -353,7 +353,4 @@ fn choices_page(options: &[String], selected: usize) -> String {
         .map(|(index, option)| format!("{} {option}", marker(selected, index)))
         .collect::<Vec<_>>()
         .join("\n")
-}
-fn marker(selected: usize, index: usize) -> &'static str {
-    if selected == index { "▶" } else { " " }
 }

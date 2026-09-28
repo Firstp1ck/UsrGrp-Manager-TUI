@@ -10,8 +10,8 @@ use ratatui::{
 use crate::{
     app::{AppState, GroupsFocus, ModalState},
     ui::components::{
-        MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, render_modal_frame, text_lines,
-        with_error_line,
+        MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, marker, render_modal_frame,
+        text_lines, with_error_line,
     },
 };
 
@@ -257,7 +257,4 @@ fn user_candidate_choices<'a>(
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-fn marker(selected: usize, index: usize) -> &'static str {
-    if selected == index { "▶" } else { " " }
 }
