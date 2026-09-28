@@ -10,12 +10,12 @@ use ratatui::{
 
 use crate::{
     app::{
-        AppState, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, ModalState, ModifyField,
-        UsersFocus,
+        AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, ModalState,
+        ModifyField, UsersFocus,
     },
     ui::components::{
-        FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
-        candidate_page, marker, render_modal_frame, text_lines, with_error_line,
+        CandidateView, FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
+        candidate_dialog, marker, render_modal_frame, text_lines, with_error_line,
     },
 };
 
@@ -204,21 +204,35 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         ModalState::ModifyGroupsAdd {
             selected,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => (
-            "Add groups",
-            candidate_page(&group_candidates(app, true), *selected, selected_multi),
-            MULTI_FOOTER,
-        ),
-        ModalState::ModifyGroupsRemove {
+        }
+        | ModalState::ModifyGroupsRemove {
             selected,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => (
-            "Remove groups",
-            candidate_page(&group_candidates(app, false), *selected, selected_multi),
-            MULTI_FOOTER,
-        ),
+        } => {
+            let adding = matches!(modal, ModalState::ModifyGroupsAdd { .. });
+            let list = group_candidates(app, adding, filter);
+            let (title, body, footer) = candidate_dialog(&CandidateView {
+                name: if adding {
+                    "Add groups"
+                } else {
+                    "Remove groups"
+                },
+                list: &list,
+                selected: *selected,
+                ticked: selected_multi,
+                filter,
+                filtering: *filtering,
+            });
+            let body = with_error_line(body, modal.form_error());
+            render_modal_frame(frame, area, app, &title, body, footer);
+            return;
+        }
         ModalState::ModifyPasswordMenu { selected } => (
             "Password",
             choices(&["Set/change password", "Expire password"], *selected),
@@ -349,10 +363,12 @@ const MAX_MODAL_ROWS: usize = 12;
 
 /// Candidates for the selected user's add/remove groups dialog, the same
 /// list `handle_user_membership` indexes.
-fn group_candidates(app: &AppState, adding: bool) -> Vec<String> {
+fn group_candidates(app: &AppState, adding: bool, filter: &str) -> CandidateList {
     app.users
         .get(app.selected_user_index)
-        .map_or_else(Vec::new, |user| app.user_group_candidates(user.uid, adding))
+        .map_or_else(CandidateList::default, |user| {
+            app.user_group_candidate_list(user.uid, adding, filter)
+        })
 }
 
 fn choices(options: &[&str], selected: usize) -> String {

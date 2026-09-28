@@ -360,13 +360,37 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
         ModalState::ModifyGroupsAdd {
             selected,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => handle_user_membership(app, true, selected, selected_multi, key),
+        } => handle_user_membership(
+            app,
+            true,
+            CandidateDialog {
+                selected,
+                selected_multi,
+                filter,
+                filtering,
+            },
+            key,
+        ),
         ModalState::ModifyGroupsRemove {
             selected,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => handle_user_membership(app, false, selected, selected_multi, key),
+        } => handle_user_membership(
+            app,
+            false,
+            CandidateDialog {
+                selected,
+                selected_multi,
+                filter,
+                filtering,
+            },
+            key,
+        ),
         ModalState::ModifyPasswordMenu { selected } => handle_password_menu(app, selected, key),
         ModalState::ChangePassword {
             selected,
@@ -408,14 +432,40 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected,
             target_gid,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => handle_group_members(app, true, selected, target_gid, selected_multi, key),
+        } => handle_group_members(
+            app,
+            true,
+            *target_gid,
+            CandidateDialog {
+                selected,
+                selected_multi,
+                filter,
+                filtering,
+            },
+            key,
+        ),
         ModalState::GroupModifyRemoveMembers {
             selected,
             target_gid,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => handle_group_members(app, false, selected, target_gid, selected_multi, key),
+        } => handle_group_members(
+            app,
+            false,
+            *target_gid,
+            CandidateDialog {
+                selected,
+                selected_multi,
+                filter,
+                filtering,
+            },
+            key,
+        ),
         ModalState::UserAddInput {
             selected,
             name,
@@ -535,6 +585,8 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
                     selected: 0,
                     offset: 0,
                     selected_multi: vec![],
+                    filter: String::new(),
+                    filtering: false,
                 },
             ),
             1 => open_modal(
@@ -543,6 +595,8 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
                     selected: 0,
                     offset: 0,
                     selected_multi: vec![],
+                    filter: String::new(),
+                    filtering: false,
                 },
             ),
             2 => open_modal(app, ModalState::ModifyDetailsMenu { selected: 0 }),
@@ -669,30 +723,24 @@ fn handle_shell_modal(app: &mut AppState, selected: &mut usize, shells: &[String
 fn handle_user_membership(
     app: &mut AppState,
     adding: bool,
-    selected: &mut usize,
-    selected_multi: &mut Vec<usize>,
+    mut dialog: CandidateDialog<'_>,
     key: KeyEvent,
 ) {
     let Some(user) = app.users.get(app.selected_user_index).cloned() else {
         back(app);
         return;
     };
-    let groups = app.user_group_candidates(user.uid, adding);
-    if let Some(step) = list_step(key) {
-        move_index(selected, groups.len(), step);
-        return;
-    }
-    match key.code {
-        KeyCode::Esc => back(app),
-        KeyCode::Char(' ') => toggle(selected_multi, *selected),
-        KeyCode::Enter => {
-            let names: Vec<_> = if selected_multi.is_empty() {
-                groups.get(*selected).cloned().into_iter().collect()
+    let groups = app
+        .user_group_candidate_list(user.uid, adding, dialog.filter)
+        .names;
+    match candidate_key(&mut dialog, &groups, key) {
+        CandidateKey::Handled => {}
+        CandidateKey::Close => back(app),
+        CandidateKey::Apply => {
+            let names = if dialog.selected_multi.is_empty() {
+                groups.get(*dialog.selected).cloned().into_iter().collect()
             } else {
-                selected_multi
-                    .iter()
-                    .filter_map(|index| groups.get(*index).cloned())
-                    .collect()
+                app.offered_user_groups(user.uid, adding, dialog.selected_multi)
             };
             if !names.is_empty() {
                 start_pending_action(
@@ -711,8 +759,79 @@ fn handle_user_membership(
                 );
             }
         }
+    }
+}
+
+/// Longest filter a multi-select dialog accepts, in characters. Account
+/// names are at most 32.
+const MAX_CANDIDATE_FILTER: usize = 32;
+
+/// The fields of a multi-select candidate dialog, borrowed from the modal.
+struct CandidateDialog<'a> {
+    /// Highlighted row of the filtered list.
+    selected: &'a mut usize,
+    /// Ticked names, in tick order.
+    selected_multi: &'a mut Vec<String>,
+    filter: &'a mut String,
+    filtering: &'a mut bool,
+}
+
+/// What is left for the handler after `candidate_key`.
+enum CandidateKey {
+    /// The key moved, ticked, or edited the filter.
+    Handled,
+    /// Esc outside filter typing.
+    Close,
+    /// Enter outside filter typing.
+    Apply,
+}
+
+/// Keys shared by the four multi-select dialogs. `list` is the filtered
+/// candidate list the dialog shows.
+///
+/// `/` starts filter typing: printable characters and Backspace edit the
+/// filter, Up/Down still move, and Enter or Esc stop typing. Otherwise
+/// Up/Down/j/k move, Space ticks the highlighted row, and `*` ticks every
+/// listed row (or clears them when all are ticked already).
+fn candidate_key(dialog: &mut CandidateDialog<'_>, list: &[String], key: KeyEvent) -> CandidateKey {
+    if *dialog.filtering {
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc => *dialog.filtering = false,
+            KeyCode::Up => move_index(dialog.selected, list.len(), -1),
+            KeyCode::Down => move_index(dialog.selected, list.len(), 1),
+            KeyCode::Backspace => {
+                if dialog.filter.pop().is_some() {
+                    *dialog.selected = 0;
+                }
+            }
+            KeyCode::Char(character)
+                if !character.is_control()
+                    && dialog.filter.chars().count() < MAX_CANDIDATE_FILTER =>
+            {
+                dialog.filter.push(character);
+                *dialog.selected = 0;
+            }
+            _ => {}
+        }
+        return CandidateKey::Handled;
+    }
+    if let Some(step) = list_step(key) {
+        move_index(dialog.selected, list.len(), step);
+        return CandidateKey::Handled;
+    }
+    match key.code {
+        KeyCode::Esc => return CandidateKey::Close,
+        KeyCode::Enter => return CandidateKey::Apply,
+        KeyCode::Char('/') => *dialog.filtering = true,
+        KeyCode::Char(' ') => {
+            if let Some(name) = list.get(*dialog.selected) {
+                toggle(dialog.selected_multi, name);
+            }
+        }
+        KeyCode::Char('*') => toggle_all(dialog.selected_multi, list),
         _ => {}
     }
+    CandidateKey::Handled
 }
 
 fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
@@ -1029,6 +1148,8 @@ fn handle_group_modify(
                     offset: 0,
                     target_gid: *target_gid,
                     selected_multi: vec![],
+                    filter: String::new(),
+                    filtering: false,
                 },
             ),
             1 => open_modal(
@@ -1038,6 +1159,8 @@ fn handle_group_modify(
                     offset: 0,
                     target_gid: *target_gid,
                     selected_multi: vec![],
+                    filter: String::new(),
+                    filtering: false,
                 },
             ),
             _ => open_modal(
@@ -1099,9 +1222,8 @@ fn handle_group_rename(
 fn handle_group_members(
     app: &mut AppState,
     adding: bool,
-    selected: &mut usize,
-    target_gid: &mut Option<u32>,
-    selected_multi: &mut Vec<usize>,
+    target_gid: Option<u32>,
+    mut dialog: CandidateDialog<'_>,
     key: KeyEvent,
 ) {
     let group = target_gid
@@ -1112,22 +1234,17 @@ fn handle_group_members(
         back(app);
         return;
     };
-    let users = app.group_member_candidates(group.gid, adding);
-    if let Some(step) = list_step(key) {
-        move_index(selected, users.len(), step);
-        return;
-    }
-    match key.code {
-        KeyCode::Esc => back(app),
-        KeyCode::Char(' ') => toggle(selected_multi, *selected),
-        KeyCode::Enter => {
-            let names: Vec<_> = if selected_multi.is_empty() {
-                users.get(*selected).cloned().into_iter().collect()
+    let users = app
+        .group_member_candidate_list(group.gid, adding, dialog.filter)
+        .names;
+    match candidate_key(&mut dialog, &users, key) {
+        CandidateKey::Handled => {}
+        CandidateKey::Close => back(app),
+        CandidateKey::Apply => {
+            let names = if dialog.selected_multi.is_empty() {
+                users.get(*dialog.selected).cloned().into_iter().collect()
             } else {
-                selected_multi
-                    .iter()
-                    .filter_map(|index| users.get(*index).cloned())
-                    .collect()
+                app.offered_group_members(group.gid, adding, dialog.selected_multi)
             };
             if !names.is_empty() {
                 start_pending_action(
@@ -1146,7 +1263,6 @@ fn handle_group_members(
                 )
             }
         }
-        _ => {}
     }
 }
 
@@ -1700,11 +1816,25 @@ fn cancel_operation(app: &mut AppState) {
     app.close_modals();
 }
 
-fn toggle(values: &mut Vec<usize>, selected: usize) {
-    if let Some(position) = values.iter().position(|value| *value == selected) {
-        values.remove(position);
+/// Tick `name`, or untick it when it is ticked already.
+fn toggle(ticked: &mut Vec<String>, name: &str) {
+    if let Some(position) = ticked.iter().position(|value| value == name) {
+        ticked.remove(position);
     } else {
-        values.push(selected);
+        ticked.push(name.to_owned());
+    }
+}
+
+/// Tick every name in `list`, or untick them all when none is missing.
+fn toggle_all(ticked: &mut Vec<String>, list: &[String]) {
+    if list.iter().all(|name| ticked.contains(name)) {
+        ticked.retain(|name| !list.contains(name));
+    } else {
+        for name in list {
+            if !ticked.contains(name) {
+                ticked.push(name.clone());
+            }
+        }
     }
 }
 
@@ -2897,8 +3027,10 @@ mod tests {
                     selected: 0,
                     offset: 0,
                     selected_multi: vec![],
+                    filter: String::new(),
+                    filtering: false,
                 },
-                "↑↓ move  Space tick  Enter apply  Esc close",
+                "↑↓ move  Space tick  * all  / filter  Enter apply highlighted  Esc close",
             ),
             (
                 ModalState::GroupAddInput {
@@ -3021,6 +3153,8 @@ mod tests {
                 offset: 0,
                 target_gid: Some(2000),
                 selected_multi: vec![],
+                filter: String::new(),
+                filtering: false,
             },
         );
         assert_eq!(rendered_candidates(&app), ["bob", "carol"]);
@@ -3043,12 +3177,170 @@ mod tests {
                 selected: 0,
                 offset: 0,
                 selected_multi: vec![],
+                filter: String::new(),
+                filtering: false,
             },
         );
         assert_eq!(rendered_candidates(&app), ["ops"]);
         press(&mut app, KeyCode::Enter);
         assert!(app.pending_operation.is_some());
         assert_eq!(app.last_preview, ["gpasswd -a alice ops"]);
+    }
+
+    fn add_members_dialog(target_gid: u32) -> ModalState {
+        ModalState::GroupModifyAddMembers {
+            selected: 0,
+            offset: 0,
+            target_gid: Some(target_gid),
+            selected_multi: vec![],
+            filter: String::new(),
+            filtering: false,
+        }
+    }
+
+    fn ticked(app: &AppState) -> Vec<String> {
+        match app.modal() {
+            Some(ModalState::GroupModifyAddMembers { selected_multi, .. }) => {
+                selected_multi.clone()
+            }
+            _ => panic!("add members dialog is not open"),
+        }
+    }
+
+    #[test]
+    fn ticks_survive_filtering() {
+        let mut app = membership_app();
+        app.active_tab = ActiveTab::Groups;
+        open_modal(&mut app, add_members_dialog(2000));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(ticked(&app), ["bob"]);
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "car");
+        assert_eq!(rendered_candidates(&app), ["carol"]);
+        assert!(rendered(&app).contains("Filter: car_"));
+        assert!(rendered(&app).contains("1 selected"));
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(rendered_candidates(&app), ["bob", "carol"]);
+        assert_eq!(ticked(&app), ["bob"]);
+        assert!(rendered(&app).contains("[x] bob"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.last_preview, ["gpasswd -a bob dev"]);
+    }
+
+    #[test]
+    fn hidden_ticks_are_still_applied() {
+        let mut app = membership_app();
+        app.active_tab = ActiveTab::Groups;
+        open_modal(&mut app, add_members_dialog(2000));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "carol");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(ticked(&app), ["bob", "carol"]);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.last_preview,
+            ["gpasswd -a bob dev", "gpasswd -a carol dev"]
+        );
+    }
+
+    #[test]
+    fn star_ticks_every_visible_entry() {
+        let mut app = membership_app();
+        app.active_tab = ActiveTab::Groups;
+        open_modal(&mut app, add_members_dialog(2001));
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "o");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(rendered_candidates(&app), ["bob", "carol"]);
+        press(&mut app, KeyCode::Char('*'));
+        assert_eq!(ticked(&app), ["bob", "carol"]);
+        assert!(rendered(&app).contains("Add members  page 1/1  2 selected"));
+        press(&mut app, KeyCode::Char('*'));
+        assert!(ticked(&app).is_empty());
+    }
+
+    #[test]
+    fn esc_while_filtering_only_leaves_filter_typing() {
+        let mut app = membership_app();
+        app.active_tab = ActiveTab::Groups;
+        open_modal(&mut app, add_members_dialog(2000));
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "j*");
+        assert!(ticked(&app).is_empty());
+        assert!(rendered(&app).contains("No matches"));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupModifyAddMembers {
+                filtering: false,
+                ..
+            })
+        ));
+        assert!(rendered(&app).contains("Filter: j*"));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
+    }
+
+    #[test]
+    fn footer_says_enter_applies_highlighted_until_something_is_ticked() {
+        let mut app = membership_app();
+        app.active_tab = ActiveTab::Groups;
+        open_modal(&mut app, add_members_dialog(2000));
+        assert!(rendered(&app).contains("Enter apply highlighted"));
+        press(&mut app, KeyCode::Char(' '));
+        let screen = rendered(&app);
+        assert!(!screen.contains("Enter apply highlighted"));
+        assert!(screen.contains("* all  / filter  Enter apply  Esc close"));
+        press(&mut app, KeyCode::Char('/'));
+        assert!(rendered(&app).contains("Enter/Esc done"));
+    }
+
+    #[test]
+    fn capped_list_says_so_and_filter_reaches_past_the_cap() {
+        let users = (0..1030u32)
+            .map(|index| AccountUser {
+                uid: Uid(2000 + index),
+                name: UserName::new(format!("user{index}")).unwrap(),
+                primary_gid: Gid(100),
+                full_name: None,
+                home_dir: format!("/home/user{index}").into(),
+                shell: ShellPath::new("/bin/sh").unwrap(),
+            })
+            .collect();
+        let snapshot = AccountSnapshot {
+            users,
+            groups: vec![AccountGroup {
+                gid: Gid(3000),
+                name: GroupName::new("dev").unwrap(),
+                members: vec![],
+            }],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(2000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.active_tab = ActiveTab::Groups;
+        let list = app.group_member_candidate_list(3000, true, "");
+        assert_eq!((list.names.len(), list.total), (1024, 1030));
+        open_modal(&mut app, add_members_dialog(3000));
+        assert!(rendered(&app).contains("page 1/86  0 selected  showing first 1024 of 1030"));
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "user1029");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(rendered_candidates(&app), ["user1029"]);
+        assert!(!rendered(&app).contains("showing first"));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.last_preview, ["gpasswd -a user1029 dev"]);
     }
 
     fn fixture_snapshot() -> AccountSnapshot {

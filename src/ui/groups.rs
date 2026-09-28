@@ -8,9 +8,9 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AppState, GroupsFocus, ModalState},
+    app::{AppState, CandidateList, GroupsFocus, ModalState},
     ui::components::{
-        MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_page, marker,
+        CandidateView, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, marker,
         render_modal_frame, text_lines, with_error_line,
     },
 };
@@ -191,30 +191,36 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             selected,
             target_gid,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => (
-            "Add members",
-            candidate_page(
-                &member_candidates(app, *target_gid, true),
-                *selected,
-                selected_multi,
-            ),
-            MULTI_FOOTER,
-        ),
-        ModalState::GroupModifyRemoveMembers {
+        }
+        | ModalState::GroupModifyRemoveMembers {
             selected,
             target_gid,
             selected_multi,
+            filter,
+            filtering,
             ..
-        } => (
-            "Remove members",
-            candidate_page(
-                &member_candidates(app, *target_gid, false),
-                *selected,
-                selected_multi,
-            ),
-            MULTI_FOOTER,
-        ),
+        } => {
+            let adding = matches!(modal, ModalState::GroupModifyAddMembers { .. });
+            let list = member_candidates(app, *target_gid, adding, filter);
+            let (title, body, footer) = candidate_dialog(&CandidateView {
+                name: if adding {
+                    "Add members"
+                } else {
+                    "Remove members"
+                },
+                list: &list,
+                selected: *selected,
+                ticked: selected_multi,
+                filter,
+                filtering: *filtering,
+            });
+            let body = with_error_line(body, modal.form_error());
+            render_modal_frame(frame, area, app, &title, body, footer);
+            return;
+        }
         _ => return,
     };
     let body = with_error_line(text_lines(body), modal.form_error());
@@ -231,11 +237,16 @@ fn choices(options: &[&str], selected: usize) -> String {
 }
 /// Candidates for the members dialog of the targeted group (or the
 /// selected one), resolved the same way as `handle_group_members`.
-fn member_candidates(app: &AppState, target_gid: Option<u32>, adding: bool) -> Vec<String> {
+fn member_candidates(
+    app: &AppState,
+    target_gid: Option<u32>,
+    adding: bool,
+    filter: &str,
+) -> CandidateList {
     target_gid
         .and_then(|gid| app.groups.iter().find(|group| group.gid == gid))
         .or_else(|| app.groups.get(app.selected_group_index))
-        .map_or_else(Vec::new, |group| {
-            app.group_member_candidates(group.gid, adding)
+        .map_or_else(CandidateList::default, |group| {
+            app.group_member_candidate_list(group.gid, adding, filter)
         })
 }

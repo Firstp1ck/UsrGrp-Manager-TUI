@@ -255,15 +255,23 @@ pub enum ModalState {
     ModifyMenu {
         selected: usize,
     },
+    /// `selected` indexes the filtered list; ticks are kept by name so they
+    /// survive filter changes.
     ModifyGroupsAdd {
         selected: usize,
         offset: usize,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        /// Keys edit `filter` until Enter or Esc.
+        filtering: bool,
     },
+    /// Same fields as `ModifyGroupsAdd`.
     ModifyGroupsRemove {
         selected: usize,
         offset: usize,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        filtering: bool,
     },
     ModifyDetailsMenu {
         selected: usize,
@@ -343,17 +351,23 @@ pub enum ModalState {
         selected: usize,
         target_gid: Option<u32>,
     },
+    /// Same list fields as `ModifyGroupsAdd`.
     GroupModifyAddMembers {
         selected: usize,
         offset: usize,
         target_gid: Option<u32>,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        filtering: bool,
     },
+    /// Same list fields as `ModifyGroupsAdd`.
     GroupModifyRemoveMembers {
         selected: usize,
         offset: usize,
         target_gid: Option<u32>,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        filtering: bool,
     },
     GroupRenameInput {
         name: String,
@@ -857,6 +871,49 @@ impl PreparedOperation {
 /// Most entries an add/remove membership dialog offers.
 pub const MAX_MEMBERSHIP_CANDIDATES: usize = 1024;
 
+/// The entries a membership dialog lists after its filter, capped at
+/// [`MAX_MEMBERSHIP_CANDIDATES`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CandidateList {
+    /// Listed names, in display order.
+    pub names: Vec<String>,
+    /// How many candidates matched the filter before the cap.
+    pub total: usize,
+}
+
+impl CandidateList {
+    /// Keep the names in `pool` that contain `filter` (ignoring case), up to
+    /// the cap, and count every match.
+    fn from_pool<'a>(pool: impl IntoIterator<Item = &'a str>, filter: &str) -> Self {
+        let filter = filter.to_lowercase();
+        let mut list = Self::default();
+        for name in pool {
+            if !filter.is_empty() && !name.to_lowercase().contains(&filter) {
+                continue;
+            }
+            list.total += 1;
+            if list.names.len() < MAX_MEMBERSHIP_CANDIDATES {
+                list.names.push(name.to_owned());
+            }
+        }
+        list
+    }
+
+    /// True when matches were left out because of the cap.
+    pub fn is_capped(&self) -> bool {
+        self.total > self.names.len()
+    }
+}
+
+/// `ticked` names that are in `pool`, in tick order.
+fn offered(pool: &[&str], ticked: &[String]) -> Vec<String> {
+    ticked
+        .iter()
+        .filter(|name| pool.contains(&name.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// In-memory application state.  It intentionally stores no sudo credential.
 pub struct AppState {
     pub started_at: Instant,
@@ -1212,11 +1269,32 @@ impl AppState {
     }
 
     /// Users the Groups-tab "Add members" (`adding`) or "Remove members"
-    /// dialog offers for group `gid`, in display order. The renderer and the
-    /// key handler both index this list, so a ticked row is always the name
-    /// that gets submitted. Adding offers users who are not members yet;
-    /// removing offers the current members.
+    /// dialog offers for group `gid`, in display order, without a filter.
     pub fn group_member_candidates(&self, gid: u32, adding: bool) -> Vec<String> {
+        self.group_member_candidate_list(gid, adding, "").names
+    }
+
+    /// The members dialog list for group `gid` narrowed by `filter`. The
+    /// renderer and the key handler both index this list, so a highlighted
+    /// row is always the name that gets submitted. Adding offers users who
+    /// are not members yet; removing offers the current members.
+    pub fn group_member_candidate_list(
+        &self,
+        gid: u32,
+        adding: bool,
+        filter: &str,
+    ) -> CandidateList {
+        CandidateList::from_pool(self.group_member_pool(gid, adding), filter)
+    }
+
+    /// Ticked names the members dialog for group `gid` still offers, in
+    /// tick order. Ticks beyond the cap or hidden by the filter count.
+    pub fn offered_group_members(&self, gid: u32, adding: bool, ticked: &[String]) -> Vec<String> {
+        offered(&self.group_member_pool(gid, adding), ticked)
+    }
+
+    /// Every candidate of the members dialog for group `gid`, uncapped.
+    fn group_member_pool(&self, gid: u32, adding: bool) -> Vec<&str> {
         let Some(group) = self
             .groups
             .iter()
@@ -1229,24 +1307,35 @@ impl AppState {
             self.users_all
                 .iter()
                 .filter(|user| !group.members.contains(&user.name))
-                .take(MAX_MEMBERSHIP_CANDIDATES)
-                .map(|user| user.name.clone())
+                .map(|user| user.name.as_str())
                 .collect()
         } else {
-            group
-                .members
-                .iter()
-                .take(MAX_MEMBERSHIP_CANDIDATES)
-                .cloned()
-                .collect()
+            group.members.iter().map(String::as_str).collect()
         }
     }
 
     /// Groups the Users-tab "Add groups" (`adding`) or "Remove groups" dialog
-    /// offers for user `uid`, in display order. Adding offers groups the user
-    /// is not in; removing offers supplementary memberships. The primary
-    /// group is never offered. Shared by renderer and key handler.
+    /// offers for user `uid`, in display order, without a filter.
     pub fn user_group_candidates(&self, uid: u32, adding: bool) -> Vec<String> {
+        self.user_group_candidate_list(uid, adding, "").names
+    }
+
+    /// The groups dialog list for user `uid` narrowed by `filter`. Adding
+    /// offers groups the user is not in; removing offers supplementary
+    /// memberships. The primary group is never offered. Shared by renderer
+    /// and key handler.
+    pub fn user_group_candidate_list(&self, uid: u32, adding: bool, filter: &str) -> CandidateList {
+        CandidateList::from_pool(self.user_group_pool(uid, adding), filter)
+    }
+
+    /// Ticked names the groups dialog for user `uid` still offers, in tick
+    /// order. Ticks beyond the cap or hidden by the filter count.
+    pub fn offered_user_groups(&self, uid: u32, adding: bool, ticked: &[String]) -> Vec<String> {
+        offered(&self.user_group_pool(uid, adding), ticked)
+    }
+
+    /// Every candidate of the groups dialog for user `uid`, uncapped.
+    fn user_group_pool(&self, uid: u32, adding: bool) -> Vec<&str> {
         // Prefer the selected row so accounts sharing a UID resolve to the
         // name the user is looking at.
         let Some(user) = self
@@ -1268,8 +1357,7 @@ impl AppState {
                 let member = group.members.iter().any(|name| name == &user.name);
                 group.gid != user.primary_gid && if adding { !member } else { member }
             })
-            .take(MAX_MEMBERSHIP_CANDIDATES)
-            .map(|group| group.name.clone())
+            .map(|group| group.name.as_str())
             .collect()
     }
 

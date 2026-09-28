@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::app::{AppState, ModalState};
+use crate::app::{AppState, CandidateList, MAX_MEMBERSHIP_CANDIDATES, ModalState};
 
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
     let stale = app
@@ -88,8 +88,14 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 pub const MENU_FOOTER: &str = "↑↓ move  Enter select  Backspace back  Esc close";
 /// Footer for single-choice lists without a Backspace binding.
 pub const LIST_FOOTER: &str = "↑↓ move  Enter select  Esc back";
-/// Footer for multi-select candidate lists.
-pub const MULTI_FOOTER: &str = "↑↓ move  Space tick  Enter apply  Esc close";
+/// Footer for multi-select candidate lists with at least one tick.
+pub const MULTI_FOOTER: &str = "↑↓ move  Space tick  * all  / filter  Enter apply  Esc close";
+/// Footer for multi-select candidate lists with nothing ticked: Enter
+/// applies to the highlighted row.
+pub const MULTI_HIGHLIGHTED_FOOTER: &str =
+    "↑↓ move  Space tick  * all  / filter  Enter apply highlighted  Esc close";
+/// Footer for multi-select candidate lists while the filter is typed.
+pub const FILTER_FOOTER: &str = "type to filter  Backspace delete  Enter/Esc done";
 /// Footer for yes/no dialogs.
 pub const YES_NO_FOOTER: &str = "←→ choose  y/n  Enter confirm  Esc cancel";
 /// Footer for single-line text inputs.
@@ -277,9 +283,9 @@ const CANDIDATE_ROWS: usize = 12;
 
 /// The page of a multi-select dialog that holds `selected`, one
 /// `▶ [x] name` row per candidate. `candidates` must be the same list the
-/// key handler indexes (see `AppState::group_member_candidates` and
-/// `AppState::user_group_candidates`).
-pub fn candidate_page(candidates: &[String], selected: usize, checked: &[usize]) -> String {
+/// key handler indexes (see `AppState::group_member_candidate_list` and
+/// `AppState::user_group_candidate_list`); `ticked` holds names.
+pub fn candidate_page(candidates: &[String], selected: usize, ticked: &[String]) -> String {
     let start = selected / CANDIDATE_ROWS * CANDIDATE_ROWS;
     candidates
         .iter()
@@ -290,9 +296,67 @@ pub fn candidate_page(candidates: &[String], selected: usize, checked: &[usize])
             format!(
                 "{} [{}] {name}",
                 marker(selected, index),
-                if checked.contains(&index) { "x" } else { " " }
+                if ticked.contains(name) { "x" } else { " " }
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// What a multi-select dialog shows, borrowed from its modal state.
+pub struct CandidateView<'a> {
+    /// Dialog name, such as "Add groups".
+    pub name: &'a str,
+    /// The filtered list the key handler indexes.
+    pub list: &'a CandidateList,
+    pub selected: usize,
+    /// Ticked names, including ones the filter hides.
+    pub ticked: &'a [String],
+    pub filter: &'a str,
+    pub filtering: bool,
+}
+
+/// Title, body, and footer of a multi-select dialog. The title reads
+/// `Add groups  page 2/9  3 selected` and notes when the list was capped.
+/// The body starts with the filter line when a filter is set or being
+/// typed.
+pub fn candidate_dialog(view: &CandidateView<'_>) -> (String, Vec<Line<'static>>, &'static str) {
+    let len = view.list.names.len();
+    let pages = len.div_ceil(CANDIDATE_ROWS).max(1);
+    let page = (view.selected / CANDIDATE_ROWS + 1).min(pages);
+    let mut title = format!(
+        "{}  page {page}/{pages}  {} selected",
+        view.name,
+        view.ticked.len()
+    );
+    if view.list.is_capped() {
+        title.push_str(&format!(
+            "  showing first {MAX_MEMBERSHIP_CANDIDATES} of {}",
+            view.list.total
+        ));
+    }
+    let mut body = Vec::new();
+    if view.filtering || !view.filter.is_empty() {
+        body.push(Line::from(format!(
+            "Filter: {}{}",
+            view.filter,
+            if view.filtering { "_" } else { "" }
+        )));
+    }
+    if len == 0 && !view.filter.is_empty() {
+        body.push(Line::from("No matches"));
+    }
+    body.extend(text_lines(candidate_page(
+        &view.list.names,
+        view.selected,
+        view.ticked,
+    )));
+    let footer = if view.filtering {
+        FILTER_FOOTER
+    } else if view.ticked.is_empty() {
+        MULTI_HIGHLIGHTED_FOOTER
+    } else {
+        MULTI_FOOTER
+    };
+    (title, body, footer)
 }
