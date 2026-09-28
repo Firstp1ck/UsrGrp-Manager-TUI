@@ -310,6 +310,8 @@ pub enum ModalState {
     SudoPrompt {
         password: SecretInput,
         error: Option<String>,
+        /// Passwords already rejected for the pending operation.
+        attempts: u8,
     },
     GroupsActions {
         selected: usize,

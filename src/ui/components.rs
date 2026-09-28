@@ -202,15 +202,16 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
             "q quit; Tab switch tabs; Shift+Tab switch pane; / search; n create; Enter action; Delete delete; f filters".to_owned(),
             "↑↓ PgUp PgDn scroll  Esc close",
         ),
-        ModalState::SudoPrompt { password, error, .. } => (
-            "Authentication required",
-            format!(
-                "Enter sudo password:\n{}{}",
-                "*".repeat(password.len()),
-                error.as_ref().map_or(String::new(), |error| format!("\n{error}"))
-            ),
-            "Enter submit  Esc cancel operation",
-        ),
+        ModalState::SudoPrompt { password, error, .. } => {
+            let operation = app.last_preview.first().map_or("", String::as_str);
+            let body = text_lines(format!(
+                "Authenticating to run: {operation}\n\nEnter sudo password:\n{}",
+                "*".repeat(password.len())
+            ));
+            let body = with_error_line(body, error.as_deref());
+            render_modal_frame(frame, area, app, "Authentication required", body, "Enter submit  Esc cancel operation");
+            return;
+        }
         ModalState::OperationConfirm { selected, action, preview } => (
             "Confirm prepared operation",
             format!(

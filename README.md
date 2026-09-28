@@ -8,7 +8,7 @@ A keyboard-driven TUI for **Linux local account files and standard account tools
 - The UI renders cached data only. Refresh, shadow reads, home diagnostics, and process execution are explicit effects.
 - Mutations use a closed, typed request bridge. The exact redacted command preview is shown before execution; targets are bound to the observed UID/GID/name and revalidated before elevation.
 - Root user UID 0 and root group GID 0 are immutable. The default fail-closed policy also blocks service UID/GID targets below 1000 and `sudo`/`wheel` membership unless a reviewed runtime policy explicitly allowlists them.
-- The application does not retain a reusable sudo password. A prompt appears only when the trusted runner returns `AuthenticationRequired`; its input is supplied once to `sudo -v`, then commands use `sudo -n`.
+- The application does not retain a reusable sudo password. A prompt appears only when the trusted runner returns `AuthenticationRequired`; its input is supplied once to `sudo -v`, then commands use `sudo -n`. If sudo rejects the password, the prompt reopens for the same prepared operation; after three rejections the operation is dropped without running.
 - Password records go only to `chpasswd` stdin. They are not put in shell commands, argv, previews, diagnostics, or logs.
 - Create-with-password/membership, password+expiry, and bulk membership actions compile into one ordered bridge-owned composite plan, one redacted confirmation, and one aggregate report. Partial reports retain completed, failed, downstream-skipped, and unverified evidence rather than claiming success.
 

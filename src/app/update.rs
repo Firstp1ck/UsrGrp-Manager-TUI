@@ -433,8 +433,10 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             handle_operation_confirm(app, selected, key)
         }
         ModalState::SudoPrompt {
-            password, error, ..
-        } => handle_sudo_prompt(app, password, error, key),
+            password,
+            error,
+            attempts,
+        } => handle_sudo_prompt(app, password, error, *attempts, key),
         ModalState::Info { .. } => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
                 back(app)
@@ -1259,6 +1261,7 @@ fn handle_sudo_prompt(
     app: &mut AppState,
     password: &mut SecretInput,
     error: &mut Option<String>,
+    attempts: u8,
     key: KeyEvent,
 ) {
     match key.code {
@@ -1277,9 +1280,10 @@ fn handle_sudo_prompt(
             app.adapter
                 .set_elevation_secret(SecretString::new(password.take()));
             // The prompt has done its job; if authentication is still
-            // required, execution opens a fresh one in its place.
+            // required or the password was rejected, execution opens a fresh
+            // one in its place that carries the attempt count forward.
             app.pop_modal();
-            execute_pending_plan(app);
+            run_pending_plan(app, attempts);
         }
         _ => {}
     }
@@ -1349,7 +1353,16 @@ fn prepare_request(app: &mut AppState, request: OperationRequest) -> CoreResult<
     }
 }
 
+/// Rejected sudo passwords allowed before the pending operation is dropped.
+const MAX_SUDO_ATTEMPTS: u8 = 3;
+
 fn execute_pending_plan(app: &mut AppState) {
+    run_pending_plan(app, 0);
+}
+
+/// Execute the pending plan; `attempts` counts passwords already rejected
+/// for it, so a rejection reopens the prompt with the next count.
+fn run_pending_plan(app: &mut AppState, attempts: u8) {
     let Some(prepared) = app.pending_operation.as_ref() else {
         show_outcome(app, "No prepared operation is available.".to_owned());
         return;
@@ -1382,6 +1395,31 @@ fn execute_pending_plan(app: &mut AppState) {
                 ModalState::SudoPrompt {
                     password: SecretInput::default(),
                     error: None,
+                    attempts,
+                },
+            );
+        }
+        Err(error @ CoreError::AuthenticationDenied) => {
+            log_error(app, &error);
+            let attempts = attempts.saturating_add(1);
+            if attempts >= MAX_SUDO_ATTEMPTS {
+                app.clear_pending_operation();
+                show_outcome(
+                    app,
+                    "Authentication failed three times. The operation was not run.".to_owned(),
+                );
+                return;
+            }
+            // The prepared operation stays pending so only the password
+            // has to be typed again.
+            open_modal(
+                app,
+                ModalState::SudoPrompt {
+                    password: SecretInput::default(),
+                    error: Some(format!(
+                        "Password rejected (attempt {attempts} of {MAX_SUDO_ATTEMPTS})"
+                    )),
+                    attempts,
                 },
             );
         }
@@ -2642,6 +2680,133 @@ mod tests {
         fn refresh(&self) -> CoreResult<AccountSnapshot> {
             Ok(self.0.clone())
         }
+    }
+
+    /// Rejects the sudo password a set number of times, then accepts it.
+    /// Commands then fail without spawning anything.
+    struct DenyingRun {
+        denials_left: std::sync::atomic::AtomicU8,
+    }
+    impl DenyingRun {
+        fn denying(times: u8) -> Self {
+            Self {
+                denials_left: std::sync::atomic::AtomicU8::new(times),
+            }
+        }
+    }
+    impl CommandRunner for DenyingRun {
+        fn authenticate(&self, _: SecretString) -> CoreResult<ElevationGrant> {
+            use std::sync::atomic::Ordering;
+            match self
+                .denials_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                }) {
+                Ok(_) => Err(CoreError::AuthenticationDenied),
+                Err(_) => Ok(ElevationGrant::SudoTimestamp),
+            }
+        }
+        fn run(&self, _: ElevationGrant, _: &crate::sys::CommandSpec) -> CoreResult<CommandResult> {
+            Err(CoreError::MissingExecutable { program: "usermod" })
+        }
+    }
+
+    /// A pending shell change waiting in the sudo prompt, with a runner
+    /// that rejects the first `denials` passwords.
+    fn app_at_sudo_prompt(denials: u8, log: &SharedLog) -> AppState {
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(DenyingRun::denying(denials)),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        execute_pending_plan(&mut app);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::SudoPrompt {
+                attempts: 0,
+                error: None,
+                ..
+            })
+        ));
+        app
+    }
+
+    fn submit_sudo_password(app: &mut AppState) {
+        for character in "wrong".chars() {
+            press(app, KeyCode::Char(character));
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn rejected_sudo_password_keeps_operation_and_reopens_prompt() {
+        let log = SharedLog::default();
+        let mut app = app_at_sudo_prompt(2, &log);
+        let depth = app.modal_depth();
+        let screen = rendered(&app);
+        assert!(screen.contains("Authenticating to run: usermod -s /bin/bash alice"));
+        assert!(screen.contains("Enter submit  Esc cancel operation"));
+        for attempt in 1..=2u8 {
+            submit_sudo_password(&mut app);
+            let expected = format!("Password rejected (attempt {attempt} of 3)");
+            match app.modal() {
+                Some(ModalState::SudoPrompt {
+                    password,
+                    error,
+                    attempts,
+                }) => {
+                    assert_eq!(*attempts, attempt);
+                    assert_eq!(error.as_deref(), Some(expected.as_str()));
+                    assert!(password.is_empty());
+                }
+                _ => panic!("expected the sudo prompt"),
+            }
+            assert!(app.pending_operation.is_some());
+            assert_eq!(app.modal_depth(), depth);
+            assert!(rendered(&app).contains(&expected));
+        }
+        submit_sudo_password(&mut app);
+        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
+        assert_eq!(app.modal_depth(), 1);
+        assert!(app.pending_operation.is_none());
+        assert!(app.last_report.is_some());
+        let denied = classified_error_message(&CoreError::AuthenticationDenied);
+        let text = log.text();
+        assert_eq!(text.matches(&denied).count(), 2);
+        assert!(!text.contains("wrong"));
+    }
+
+    #[test]
+    fn third_rejected_sudo_password_drops_the_operation() {
+        let log = SharedLog::default();
+        let mut app = app_at_sudo_prompt(u8::MAX, &log);
+        for _ in 0..3 {
+            submit_sudo_password(&mut app);
+        }
+        match app.modal() {
+            Some(ModalState::Info { message }) => assert_eq!(
+                message,
+                "Authentication failed three times. The operation was not run."
+            ),
+            _ => panic!("expected the result dialog"),
+        }
+        assert_eq!(app.modal_depth(), 1);
+        assert!(app.pending_operation.is_none());
+        assert!(app.last_report.is_none());
+        let denied = classified_error_message(&CoreError::AuthenticationDenied);
+        assert_eq!(log.text().matches(&denied).count(), 3);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
     }
 
     struct NoRun;
