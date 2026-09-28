@@ -93,7 +93,7 @@ pub const MULTI_FOOTER: &str = "↑↓ move  Space tick  * all  / filter  Enter 
 /// Footer for multi-select candidate lists with nothing ticked: Enter
 /// applies to the highlighted row.
 pub const MULTI_HIGHLIGHTED_FOOTER: &str =
-    "↑↓ move  Space tick  * all  / filter  Enter apply highlighted  Esc close";
+    "↑↓ move  Space tick  * all  / filter  Enter apply row  Esc close";
 /// Footer for multi-select candidate lists while the filter is typed.
 pub const FILTER_FOOTER: &str = "type to filter  Backspace delete  Enter/Esc done";
 /// Footer for yes/no dialogs.

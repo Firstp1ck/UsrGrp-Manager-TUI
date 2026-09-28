@@ -3042,7 +3042,7 @@ mod tests {
                     filter: String::new(),
                     filtering: false,
                 },
-                "↑↓ move  Space tick  * all  / filter  Enter apply highlighted  Esc close",
+                "↑↓ move  Space tick  * all  / filter  Enter apply row  Esc close",
             ),
             (
                 ModalState::GroupAddInput {
@@ -3403,13 +3403,36 @@ mod tests {
         let mut app = membership_app();
         app.active_tab = ActiveTab::Groups;
         open_modal(&mut app, add_members_dialog(2000));
-        assert!(rendered(&app).contains("Enter apply highlighted"));
+        assert!(rendered(&app).contains("Enter apply row"));
         press(&mut app, KeyCode::Char(' '));
         let screen = rendered(&app);
-        assert!(!screen.contains("Enter apply highlighted"));
+        assert!(!screen.contains("Enter apply row"));
         assert!(screen.contains("* all  / filter  Enter apply  Esc close"));
         press(&mut app, KeyCode::Char('/'));
         assert!(rendered(&app).contains("Enter/Esc done"));
+    }
+
+    #[test]
+    fn add_groups_footer_fits_an_80_column_dialog() {
+        let mut app = membership_app();
+        open_modal(
+            &mut app,
+            ModalState::ModifyGroupsAdd {
+                selected: 0,
+                offset: 0,
+                selected_multi: vec![],
+                filter: String::new(),
+                filtering: false,
+            },
+        );
+        let rows = rendered_rows(&app, 80, 24);
+        let footer = rows
+            .iter()
+            .find(|row| row.contains("Space tick"))
+            .expect("footer row");
+        // Drop the dialog border, the table border behind it, and padding.
+        let footer = footer.trim_end_matches([' ', '│']);
+        assert!(footer.ends_with("Enter apply row  Esc close"), "{footer:?}");
     }
 
     #[test]
