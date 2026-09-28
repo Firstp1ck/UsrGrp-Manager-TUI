@@ -1213,6 +1213,9 @@ fn handle_user_add(
             )
         }
         KeyCode::Enter if *selected == 5 => {
+            // Submitting counts as touching the name, so later password
+            // edits keep reporting an empty one instead of clearing it.
+            *name_touched = true;
             // Both fields empty means no password. Otherwise both must be
             // filled and equal: a filled confirm with an empty password is
             // an error, not an account without a password.
@@ -2259,6 +2262,22 @@ mod tests {
         assert_eq!(app.modal().and_then(ModalState::form_error), empty_name);
         press(&mut app, KeyCode::Backspace);
         assert_eq!(app.modal().and_then(ModalState::form_error), empty_name);
+    }
+
+    #[test]
+    fn create_user_keeps_username_error_after_an_empty_submission() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal().and_then(ModalState::form_error).is_some());
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Up);
+        }
+        type_text(&mut app, "x");
+        assert!(app.modal().and_then(ModalState::form_error).is_some());
     }
 
     #[test]
