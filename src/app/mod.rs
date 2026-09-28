@@ -313,10 +313,16 @@ pub enum ModalState {
         error: Option<String>,
     },
     /// The exact redacted bridge plan is visible before it can run.
+    /// Long previews scroll; Apply is refused until the last step has been
+    /// on screen.
     OperationConfirm {
         selected: usize,
         action: String,
         preview: Vec<String>,
+        /// Index of the first preview line shown.
+        scroll: usize,
+        /// Every preview line has been displayed at least once.
+        seen_all: bool,
     },
     Info {
         /// Dialog title; None shows the default "Result".

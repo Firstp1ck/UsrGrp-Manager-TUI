@@ -514,9 +514,23 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             error,
             key,
         ),
-        ModalState::OperationConfirm { selected, .. } => {
-            handle_operation_confirm(app, selected, key)
-        }
+        ModalState::OperationConfirm {
+            selected,
+            action,
+            preview,
+            scroll,
+            seen_all,
+        } => handle_operation_confirm(
+            app,
+            selected,
+            PreviewReview {
+                action,
+                preview,
+                scroll,
+                seen_all,
+            },
+            key,
+        ),
         ModalState::SudoPrompt {
             password,
             error,
@@ -1434,9 +1448,61 @@ fn handle_user_add(
     }
 }
 
-fn handle_operation_confirm(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
+/// The scrollable preview of an open operation confirmation.
+struct PreviewReview<'a> {
+    action: &'a str,
+    preview: &'a [String],
+    scroll: &'a mut usize,
+    seen_all: &'a mut bool,
+}
+
+impl PreviewReview<'_> {
+    /// Preview lines on screen at `scroll`, from the renderer's own math.
+    fn window(&self, app: &AppState, scroll: usize) -> std::ops::Range<usize> {
+        ui::components::operation_preview_window(
+            app.terminal_size,
+            self.action,
+            self.preview,
+            scroll,
+        )
+    }
+
+    /// Show the lines from `scroll` on and remember when the last step has
+    /// been on screen.
+    fn show(&mut self, app: &AppState, scroll: usize) {
+        let shown = self.window(app, scroll);
+        *self.scroll = shown.start;
+        *self.seen_all |= shown.end >= self.preview.len();
+    }
+}
+
+/// Up/Down (k/j) and PgUp/PgDn scroll the preview; Left/Right, y/n, Enter,
+/// and Esc answer. Apply is refused until every step has been on screen.
+fn handle_operation_confirm(
+    app: &mut AppState,
+    selected: &mut usize,
+    mut review: PreviewReview<'_>,
+    key: KeyEvent,
+) {
+    let page = review.window(app, *review.scroll).len().max(1);
+    let scroll = *review.scroll;
+    let target = match key.code {
+        KeyCode::Up | KeyCode::Char('k') => Some(scroll.saturating_sub(1)),
+        KeyCode::Down | KeyCode::Char('j') => Some(scroll.saturating_add(1)),
+        KeyCode::PageUp => Some(scroll.saturating_sub(page)),
+        KeyCode::PageDown => Some(scroll.saturating_add(page)),
+        _ => None,
+    };
+    // Without a scroll key, re-check the current view: a resize may have
+    // brought the last step on screen.
+    review.show(app, target.unwrap_or(scroll));
+    if target.is_some() {
+        return;
+    }
     match yes_no_answer(selected, key) {
         Answer::Cancel | Answer::Decline => cancel_operation(app),
+        // Refused: the dialog stays open and its review line says why.
+        Answer::Confirm if *selected == 0 && !*review.seen_all => {}
         Answer::Confirm if *selected == 0 => execute_pending_plan(app),
         Answer::Confirm => cancel_operation(app),
         Answer::Other => {}
@@ -1525,12 +1591,18 @@ fn prepare_request(app: &mut AppState, request: OperationRequest) -> CoreResult<
             } else {
                 "Apply the exact prepared operation"
             };
+            let shown =
+                ui::components::operation_preview_window(app.terminal_size, action, &preview, 0);
+            let seen_all = preview.len() <= ui::components::PREVIEW_SEEN_IMMEDIATELY
+                || shown.end >= preview.len();
             open_modal(
                 app,
                 ModalState::OperationConfirm {
                     selected: 1,
                     action: action.to_owned(),
                     preview,
+                    scroll: 0,
+                    seen_all,
                 },
             );
             Ok(())
@@ -2251,6 +2323,141 @@ mod tests {
             Arc::new(FixedIdentityProvider::uid(Uid(1000))),
         ));
         isolated_app(adapter, snapshot)
+    }
+
+    /// Alice at UID 1000 with `count` extra groups, and a confirmation open
+    /// for adding her to all of them: one preview step per group.
+    fn app_confirming_group_adds(count: u32) -> AppState {
+        let mut snapshot = fixture_snapshot();
+        let groupnames: Vec<String> = (0..count).map(|index| format!("team{index:02}")).collect();
+        for (index, name) in (0u32..).zip(&groupnames) {
+            snapshot.groups.push(AccountGroup {
+                gid: Gid(2000 + index),
+                name: GroupName::new(name).unwrap(),
+                members: vec![],
+            });
+        }
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.terminal_size = (100, 30);
+        start_pending_action(
+            &mut app,
+            PendingAction::AddUserToGroups {
+                username: "alice".to_owned(),
+                groupnames,
+            },
+        );
+        app
+    }
+
+    /// (scroll, seen_all, preview length) of the open confirmation.
+    fn preview_state(app: &AppState) -> (usize, bool, usize) {
+        match app.modal() {
+            Some(ModalState::OperationConfirm {
+                scroll,
+                seen_all,
+                preview,
+                ..
+            }) => (*scroll, *seen_all, preview.len()),
+            _ => panic!("expected the operation confirmation"),
+        }
+    }
+
+    #[test]
+    fn long_preview_refuses_apply_until_scrolled_to_the_end() {
+        let mut app = app_confirming_group_adds(20);
+        assert_eq!(preview_state(&app), (0, false, 20));
+        let screen = rendered(&app);
+        // 30 rows: an 18-row body keeps 5 rows for the action, blanks, the
+        // review line, and the choices, so 13 steps show.
+        assert!(screen.contains("Confirm (steps 1-13 of 20)"));
+        assert!(screen.contains("team12"));
+        assert!(!screen.contains("team13"));
+        assert!(screen.contains(ui::components::PREVIEW_REFUSAL));
+        assert!(screen.contains("PgUp PgDn scroll"));
+
+        // `y` and Enter on Apply are refused while steps are unseen.
+        press(&mut app, KeyCode::Char('y'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { selected: 0, .. })
+        ));
+        assert!(app.pending_operation.is_some());
+
+        for down in 1..=7 {
+            assert!(!preview_state(&app).1);
+            press(&mut app, KeyCode::Down);
+            assert_eq!(preview_state(&app).0, down);
+        }
+        assert_eq!(preview_state(&app), (7, true, 20));
+        // Scrolling stops at the last full page.
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(preview_state(&app), (7, true, 20));
+        let screen = rendered(&app);
+        assert!(screen.contains("Confirm (steps 8-20 of 20)"));
+        assert!(screen.contains("team19"));
+        assert!(screen.contains("All 20 steps shown."));
+        assert!(!screen.contains(ui::components::PREVIEW_REFUSAL));
+
+        // Scrolling back keeps the preview reviewed.
+        press(&mut app, KeyCode::Up);
+        assert_eq!(preview_state(&app), (6, true, 20));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::SudoPrompt { .. })));
+        assert!(app.pending_operation.is_some());
+    }
+
+    #[test]
+    fn preview_pages_by_its_window_and_short_previews_are_seen_at_once() {
+        let mut app = app_confirming_group_adds(20);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(preview_state(&app), (7, true, 20));
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(preview_state(&app), (0, true, 20));
+
+        let mut app = app_confirming_group_adds(12);
+        assert_eq!(preview_state(&app), (0, true, 12));
+        let screen = rendered(&app);
+        assert!(screen.contains("Confirm (steps 1-12 of 12)"));
+        assert!(!screen.contains(ui::components::PREVIEW_REFUSAL));
+        assert!(!screen.contains("All 12 steps shown."));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.modal(), Some(ModalState::SudoPrompt { .. })));
+    }
+
+    #[test]
+    fn preview_window_matches_the_rendered_dialog_on_a_small_terminal() {
+        let mut app = app_confirming_group_adds(20);
+        app.terminal_size = (40, 12);
+        press(&mut app, KeyCode::Down);
+        let (scroll, seen_all, _) = preview_state(&app);
+        assert_eq!(scroll, 1);
+        assert!(!seen_all);
+        let window = match app.modal() {
+            Some(ModalState::OperationConfirm {
+                action, preview, ..
+            }) => ui::components::operation_preview_window((40, 12), action, preview, scroll),
+            _ => unreachable!(),
+        };
+        assert!(!window.is_empty());
+        let rows = rendered_rows(&app, 40, 12);
+        let title = format!("steps {}-{} of 20", window.start + 1, window.end);
+        assert!(rows.iter().any(|row| row.contains(&title)), "{rows:#?}");
+        for index in window.clone() {
+            let step = format!("team{index:02}");
+            assert!(rows.iter().any(|row| row.contains(&step)), "{step} missing");
+        }
+        assert!(rows.iter().any(|row| row.contains("Apply")));
+        // Paging to the end on this terminal marks the preview seen.
+        for _ in 0..20 {
+            press(&mut app, KeyCode::PageDown);
+        }
+        assert!(preview_state(&app).1);
     }
 
     /// Actions > Modify > Modify details > Shell > Enter: the confirm dialog

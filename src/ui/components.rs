@@ -359,8 +359,83 @@ pub const TEXT_FOOTER: &str = "type to edit  Enter submit  Esc back";
 /// Footer for forms with several fields.
 pub const FORM_FOOTER: &str = "↑↓ field  Space tick  Enter on Submit  Esc back";
 
+/// Footer for an operation confirmation whose preview scrolls.
+pub const PREVIEW_FOOTER: &str = "↑↓ PgUp PgDn scroll  ←→ choose  y/n  Enter confirm  Esc cancel";
+
 /// Tallest dialog: 18 body rows, the footer row, and two border rows.
 const MAX_MODAL_HEIGHT: u16 = 21;
+/// Rows a dialog spends outside its body: two borders and the footer.
+const MODAL_CHROME_ROWS: u16 = 3;
+
+/// Previews with at most this many steps count as reviewed as soon as the
+/// confirmation opens.
+pub const PREVIEW_SEEN_IMMEDIATELY: usize = 12;
+/// Shown under a longer preview until its last step has been on screen.
+pub const PREVIEW_REFUSAL: &str = "Scroll to the end to review every step before applying.";
+
+/// Dialog width on a terminal `area_width` columns wide, borders included.
+fn modal_width(area_width: u16) -> u16 {
+    area_width.saturating_sub(8).min(76)
+}
+
+/// Body rows of the tallest dialog that fits a terminal `area_height` rows
+/// high.
+fn modal_body_rows(area_height: u16) -> usize {
+    usize::from(
+        MAX_MODAL_HEIGHT
+            .min(area_height)
+            .saturating_sub(MODAL_CHROME_ROWS),
+    )
+}
+
+/// Preview lines an operation confirmation shows on a terminal of
+/// `terminal` (width, height), starting at `scroll`.
+///
+/// This is the one place that decides how many steps fit: the renderer draws
+/// exactly this range and the key handler scrolls by it and marks the
+/// preview seen when the range reaches the last step. The start is clamped
+/// so the last page is full, and at least one line is always shown so every
+/// step can be reached on any terminal. Wrapped lines count by their rows.
+pub fn operation_preview_window(
+    terminal: (u16, u16),
+    action: &str,
+    preview: &[String],
+    scroll: usize,
+) -> std::ops::Range<usize> {
+    let (width, height) = terminal;
+    let inner = usize::from(modal_width(width).saturating_sub(2));
+    let rows = |text: &str| wrap_line(&Line::raw(text), inner).len();
+    // Action, blank, blank before the choices, and the choices; long
+    // previews also keep a row for the review line.
+    let mut fixed = rows(action) + 3;
+    if preview.len() > PREVIEW_SEEN_IMMEDIATELY {
+        fixed += rows(PREVIEW_REFUSAL);
+    }
+    let available = modal_body_rows(height).saturating_sub(fixed);
+    let fits = |used: usize, next: usize, any: bool| !any || used + next <= available;
+    let mut last_start = preview.len();
+    let mut used = 0;
+    for (index, line) in preview.iter().enumerate().rev() {
+        let next = rows(line);
+        if !fits(used, next, used > 0) {
+            break;
+        }
+        used += next;
+        last_start = index;
+    }
+    let start = scroll.min(last_start);
+    let mut end = start;
+    used = 0;
+    for line in &preview[start..] {
+        let next = rows(line);
+        if !fits(used, next, end > start) {
+            break;
+        }
+        used += next;
+        end += 1;
+    }
+    start..end
+}
 /// Marks the highlighted row in every dialog body.
 pub const CURSOR_MARKER: &str = "▶";
 
@@ -379,7 +454,7 @@ pub fn render_modal_frame(
     body: Vec<Line<'_>>,
     footer: &str,
 ) {
-    let width = area.width.saturating_sub(8).min(76);
+    let width = modal_width(area.width);
     let wrapped: Vec<Vec<Line<'static>>> = body
         .iter()
         .map(|line| wrap_line(line, usize::from(width.saturating_sub(2))))
@@ -393,7 +468,7 @@ pub fn render_modal_frame(
     let body: Vec<Line<'static>> = wrapped.into_iter().flatten().collect();
     let body_rows = u16::try_from(body.len()).unwrap_or(u16::MAX);
     let height = body_rows
-        .saturating_add(3)
+        .saturating_add(MODAL_CHROME_ROWS)
         .min(MAX_MODAL_HEIGHT)
         .min(area.height);
     let rect = centered_rect(width, height, area);
@@ -514,26 +589,19 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
             selected,
             action,
             preview,
-        } => (
-            "Confirm prepared operation",
-            format!(
-                "{action}\n\n{}{}\n\n{} Apply   {} Cancel",
-                preview
-                    .iter()
-                    .take(12)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                if preview.len() > 12 {
-                    "\n… additional steps omitted from this modal"
-                } else {
-                    ""
-                },
-                marker(*selected, 0),
-                marker(*selected, 1)
-            ),
-            YES_NO_FOOTER,
-        ),
+            scroll,
+            seen_all,
+        } => {
+            render_operation_confirm(
+                frame,
+                area,
+                app,
+                (*selected, *scroll, *seen_all),
+                action,
+                preview,
+            );
+            return;
+        }
         ModalState::FilterMenu { selected } => {
             let body = filter_menu_rows(app)
                 .iter()
@@ -561,6 +629,56 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
         _ => return,
     };
     render_modal_frame(frame, area, app, title, text_lines(body), footer);
+}
+
+/// Operation confirmation: the action, the window of preview steps that
+/// fits, the review line for long previews, and Apply/Cancel. `state` is
+/// the modal's (selected, scroll, seen_all).
+fn render_operation_confirm(
+    frame: &mut Frame,
+    area: Rect,
+    app: &AppState,
+    state: (usize, usize, bool),
+    action: &str,
+    preview: &[String],
+) {
+    let (selected, scroll, seen_all) = state;
+    let shown = operation_preview_window((area.width, area.height), action, preview, scroll);
+    let title = if preview.is_empty() {
+        "Confirm".to_owned()
+    } else {
+        format!(
+            "Confirm (steps {}-{} of {})",
+            shown.start + 1,
+            shown.end,
+            preview.len()
+        )
+    };
+    let reached_end = shown.end >= preview.len();
+    let mut body = vec![Line::raw(action.to_owned()), Line::default()];
+    body.extend(preview[shown.clone()].iter().cloned().map(Line::raw));
+    body.push(Line::default());
+    if preview.len() > PREVIEW_SEEN_IMMEDIATELY {
+        body.push(if seen_all || reached_end {
+            Line::styled(
+                format!("All {} steps shown.", preview.len()),
+                Style::default().fg(app.theme._muted),
+            )
+        } else {
+            Line::styled(PREVIEW_REFUSAL, Style::default().fg(Color::Yellow))
+        });
+    }
+    body.push(Line::raw(format!(
+        "{} Apply   {} Cancel",
+        marker(selected, 0),
+        marker(selected, 1)
+    )));
+    let footer = if shown.len() < preview.len() {
+        PREVIEW_FOOTER
+    } else {
+        YES_NO_FOOTER
+    };
+    render_modal_frame(frame, area, app, &title, body, footer);
 }
 
 /// Help modal text. Recorded configuration problems follow the key summary
