@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ratatui::{Terminal, backend::TestBackend};
 use usrgrp_manager::{
-    app::{AppState, InputMode},
+    app::AppState,
     search::apply_filters_and_search,
     sys::{
         AccountGroup, AccountSnapshot, AccountUser, Gecos, Gid, GroupName, ShellPath,
@@ -70,8 +70,7 @@ fn pure_construction_and_render_do_not_require_host_data() {
 fn search_preserves_selected_stable_identity() {
     let mut app = app();
     app.selected_user_index = 1;
-    app.input_mode = InputMode::SearchUsers;
-    app.search_query = "bob".to_owned();
+    app.users_query = "bob".to_owned();
     apply_filters_and_search(&mut app);
     assert_eq!(app.users[app.selected_user_index].name, "bob");
 }

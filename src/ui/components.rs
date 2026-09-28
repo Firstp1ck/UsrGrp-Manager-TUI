@@ -10,7 +10,23 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::app::{AppState, CandidateList, MAX_MEMBERSHIP_CANDIDATES, ModalState};
+use crate::app::{AppState, CandidateList, InputMode, MAX_MEMBERSHIP_CANDIDATES, ModalState};
+
+/// Build a table title from its name, its search query, and the row count.
+/// The `/query` part is left out when the query is empty and not being
+/// edited; while editing, a `_` marks the cursor after the query.
+pub fn search_title(name: &str, query: &str, editing: bool, shown: usize, total: usize) -> String {
+    let mut title = name.to_owned();
+    if editing || !query.is_empty() {
+        title.push_str("  /");
+        title.push_str(query);
+        if editing {
+            title.push('_');
+        }
+    }
+    title.push_str(&format!("  {shown} of {total}"));
+    title
+}
 
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
     let stale = app
@@ -23,8 +39,13 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
     } else {
         " config-error"
     };
+    let mode = match app.input_mode {
+        InputMode::SearchUsers => "SEARCH(users) ",
+        InputMode::SearchGroups => "SEARCH(groups) ",
+        InputMode::Normal | InputMode::Modal => "",
+    };
     let text = format!(
-        "users:{} groups:{} data:{} shadow:{}{}",
+        "{mode}users:{} groups:{} data:{} shadow:{}{}",
         app.users.len(),
         app.groups.len(),
         stale,

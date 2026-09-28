@@ -14,7 +14,6 @@ use crate::{
         filterconf::FiltersConfig, keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
-    search::apply_filters_and_search,
     sys::{GroupName, OperationRequest, PasswordRecord, SecretString, UserName},
     ui,
 };
@@ -81,13 +80,8 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
         Some(KeyAction::OpenHelp) => open_modal(app, ModalState::Help { scroll: 0 }),
         Some(KeyAction::ToggleKeybindsPane) => app.show_keybinds = !app.show_keybinds,
         Some(KeyAction::OpenFilterMenu) => open_modal(app, ModalState::FilterMenu { selected: 0 }),
-        Some(KeyAction::StartSearch) => {
-            app.search_query.clear();
-            app.input_mode = match app.active_tab {
-                ActiveTab::Users => InputMode::SearchUsers,
-                ActiveTab::Groups => InputMode::SearchGroups,
-            };
-        }
+        Some(KeyAction::StartSearch) => app.start_search(),
+        Some(KeyAction::ClearSearch) => app.clear_search(),
         Some(KeyAction::NewUser) => match app.active_tab {
             ActiveTab::Users => open_modal(
                 app,
@@ -145,21 +139,19 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
     }
 }
 
+/// Keys while editing a table's query. Enter keeps the query, Esc restores
+/// the one from before `/`; the filter applies on every keystroke.
 fn handle_search_key(app: &mut AppState, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => {
-            app.search_query.clear();
-            app.input_mode = InputMode::Normal;
-            apply_filters_and_search(app);
-        }
-        KeyCode::Enter => app.input_mode = InputMode::Normal,
-        KeyCode::Backspace => {
-            app.search_query.pop();
-            app.sort_and_filter();
-        }
-        KeyCode::Char(character) if !character.is_control() && app.search_query.len() < 256 => {
-            app.search_query.push(character);
-            app.sort_and_filter();
+        KeyCode::Esc => app.cancel_search(),
+        KeyCode::Enter => app.finish_search(),
+        KeyCode::Backspace => app.edit_search(|query| {
+            query.pop();
+        }),
+        KeyCode::Char(character)
+            if !character.is_control() && app.query(app.search_tab()).len() < 256 =>
+        {
+            app.edit_search(|query| query.push(character))
         }
         _ => {}
     }
@@ -3036,9 +3028,103 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::SearchUsers);
         press(&mut app, KeyCode::Char('\u{7}'));
         press(&mut app, KeyCode::Char('\u{1b}'));
-        assert_eq!(app.search_query, "");
+        assert_eq!(app.users_query, "");
         press(&mut app, KeyCode::Char('a'));
-        assert_eq!(app.search_query, "a");
+        assert_eq!(app.users_query, "a");
+    }
+
+    fn user_names(app: &AppState) -> Vec<&str> {
+        app.users.iter().map(|user| user.name.as_str()).collect()
+    }
+
+    #[test]
+    fn search_survives_enter_and_filter_toggle_until_esc_clears_it() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = membership_app();
+        // The filter menu saves filter.conf; keep it out of the working tree.
+        app.config_root_provider = Arc::new(crate::app::FixedConfigRootProvider(
+            config.path().to_path_buf(),
+        ));
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "bob");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(user_names(&app), ["bob"]);
+
+        // Toggle "Human users" in the filter menu, then close it.
+        press(&mut app, KeyCode::Char('f'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.users_filter_chips.human_only);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.users_query, "bob");
+        assert_eq!(user_names(&app), ["bob"]);
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.users_query, "");
+        assert_eq!(user_names(&app), ["alice", "bob", "carol"]);
+    }
+
+    #[test]
+    fn slash_edits_the_query_in_place_and_esc_restores_it() {
+        let mut app = membership_app();
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "bo");
+        press(&mut app, KeyCode::Enter);
+
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.users_query, "bo");
+        type_text(&mut app, "x");
+        assert!(app.users.is_empty());
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.users_query, "bo");
+        assert_eq!(user_names(&app), ["bob"]);
+    }
+
+    #[test]
+    fn each_tab_keeps_its_own_query() {
+        let mut app = membership_app();
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "bob");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.input_mode, InputMode::SearchGroups);
+        assert_eq!(app.groups_query, "");
+        type_text(&mut app, "ops");
+        press(&mut app, KeyCode::Enter);
+        let groups: Vec<_> = app.groups.iter().map(|group| group.name.as_str()).collect();
+        assert_eq!(groups, ["ops"]);
+        assert_eq!(user_names(&app), ["bob"]);
+
+        // Esc on the groups tab clears only the groups query.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.groups.len(), 3);
+        assert_eq!(app.users_query, "bob");
+    }
+
+    #[test]
+    fn table_title_and_status_bar_show_the_search() {
+        let mut app = membership_app();
+        assert!(rendered_at(&app, 100, 30).contains("[Users]  3 of 3"));
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "bob");
+        let screen = rendered_at(&app, 100, 30);
+        assert!(screen.contains("[Users]  /bob_  1 of 3"));
+        assert!(screen.contains("SEARCH(users)"));
+
+        press(&mut app, KeyCode::Enter);
+        let screen = rendered_at(&app, 100, 30);
+        assert!(screen.contains("[Users]  /bob  1 of 3"));
+        assert!(!screen.contains("SEARCH("));
+
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('/'));
+        let screen = rendered_at(&app, 100, 30);
+        assert!(screen.contains("[Groups]  /_  3 of 3"));
+        assert!(screen.contains("SEARCH(groups)"));
     }
 
     #[test]

@@ -8,13 +8,30 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AppState, CandidateList, GroupsFocus, ModalState},
+    app::{AppState, CandidateList, GroupsFocus, InputMode, ModalState},
     ui::components::{
         CandidateView, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, marker,
-        render_modal_frame, text_lines, with_error_line,
+        render_modal_frame, search_title, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
+
+/// Groups table title: focus marker, the search query while it applies, and
+/// how many groups are listed out of all loaded (`[Groups]  /dev  3 of 89`).
+pub fn groups_table_title(app: &AppState) -> String {
+    let name = if app.groups_focus == GroupsFocus::GroupsList {
+        "[Groups]"
+    } else {
+        "Groups"
+    };
+    search_title(
+        name,
+        &app.groups_query,
+        app.input_mode == InputMode::SearchGroups,
+        app.groups.len(),
+        app.groups_all.len(),
+    )
+}
 
 pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
     let per_page = table_rows(area);
@@ -44,11 +61,7 @@ pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
             .header(Row::new(["GID", "GROUP"]).style(Style::default().fg(app.theme.title)))
             .block(
                 Block::default()
-                    .title(if app.groups_focus == GroupsFocus::GroupsList {
-                        "[Groups]"
-                    } else {
-                        "Groups"
-                    })
+                    .title(groups_table_title(app))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.border)),
             ),

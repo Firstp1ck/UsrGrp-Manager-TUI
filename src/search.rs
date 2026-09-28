@@ -11,7 +11,7 @@ const MAX_SHADOW_BYTES: usize = 1024 * 1024;
 const MAX_SHADOW_RECORD_BYTES: usize = 8192;
 const MAX_QUERY_BYTES: usize = 256;
 
-use crate::app::{AppState, GroupsFilter, InputMode, UsersFilter};
+use crate::app::{AppState, GroupsFilter, UsersFilter};
 
 /// Password status cached during an explicit refresh.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -183,8 +183,11 @@ pub fn apply_filters_and_search(app: &mut AppState) {
         .groups
         .get(app.selected_group_index)
         .map(|group| group.gid);
-    app.search_query = truncate_query_bytes(&app.search_query).to_ascii_lowercase();
-    let query = app.search_query.as_str();
+    // Queries persist across input modes; each tab applies its own query.
+    app.users_query = truncate_query_bytes(&app.users_query);
+    app.groups_query = truncate_query_bytes(&app.groups_query);
+    let query = app.users_query.to_ascii_lowercase();
+    let query = query.as_str();
 
     let mut users = app.users_all.clone();
     if let Some(filter) = app.users_filter {
@@ -233,7 +236,7 @@ pub fn apply_filters_and_search(app: &mut AppState) {
             }
         }
     }
-    if matches!(app.input_mode, InputMode::SearchUsers) && !query.is_empty() {
+    if !query.is_empty() {
         users.retain(|user| {
             user.name.to_ascii_lowercase().contains(query)
                 || user
@@ -261,7 +264,9 @@ pub fn apply_filters_and_search(app: &mut AppState) {
             GroupsFilter::OnlySystemGids => groups.retain(|group| group.gid < 1000),
         }
     }
-    if matches!(app.input_mode, InputMode::SearchGroups) && !query.is_empty() {
+    let query = app.groups_query.to_ascii_lowercase();
+    let query = query.as_str();
+    if !query.is_empty() {
         groups.retain(|group| {
             group.name.to_ascii_lowercase().contains(query)
                 || group.gid.to_string().contains(query)

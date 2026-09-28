@@ -55,7 +55,7 @@ fn run_d7_benchmark() {
     let mut render_samples = Vec::with_capacity(SAMPLES);
     for sample in 0..SAMPLES {
         app.input_mode = InputMode::SearchUsers;
-        app.search_query = format!("user{:05}", sample % DATASET_SIZE as usize);
+        app.users_query = format!("user{:05}", sample % DATASET_SIZE as usize);
         let search_start = Instant::now();
         app.sort_and_filter();
         search_samples.push(search_start.elapsed());

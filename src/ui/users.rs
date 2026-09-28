@@ -10,15 +10,32 @@ use ratatui::{
 
 use crate::{
     app::{
-        AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, ModalState,
-        ModifyField, UsersFocus,
+        AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, InputMode,
+        ModalState, ModifyField, UsersFocus,
     },
     ui::components::{
         CandidateView, FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
-        candidate_dialog, marker, render_modal_frame, text_lines, with_error_line,
+        candidate_dialog, marker, render_modal_frame, search_title, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
+
+/// Users table title: focus marker, the search query while it applies, and
+/// how many users are listed out of all loaded (`[Users]  /alice  12 of 45`).
+pub fn users_table_title(app: &AppState) -> String {
+    let name = if app.users_focus == UsersFocus::UsersList {
+        "[Users]"
+    } else {
+        "Users"
+    };
+    search_title(
+        name,
+        &app.users_query,
+        app.input_mode == InputMode::SearchUsers,
+        app.users.len(),
+        app.users_all.len(),
+    )
+}
 
 pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
     let per_page = table_rows(area);
@@ -63,11 +80,7 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
         )
         .block(
             Block::default()
-                .title(if app.users_focus == UsersFocus::UsersList {
-                    "[Users]"
-                } else {
-                    "Users"
-                })
+                .title(users_table_title(app))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(app.theme.border)),
         ),

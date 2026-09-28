@@ -944,7 +944,13 @@ pub struct AppState {
     pub terminal_size: (u16, u16),
     pub _table_state: TableState,
     pub input_mode: InputMode,
-    pub search_query: String,
+    /// Search text for the Users table. It stays applied in every input
+    /// mode until the user clears it.
+    pub users_query: String,
+    /// Search text for the Groups table, independent of `users_query`.
+    pub groups_query: String,
+    /// The query as it was when `/` started editing, restored by Esc.
+    search_before_edit: String,
     pub theme: Theme,
     pub keymap: keymap::Keymap,
     /// Open dialogs, innermost last. Only the top is rendered and receives keys.
@@ -1031,7 +1037,9 @@ impl AppState {
             terminal_size: (80, 24),
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
-            search_query: String::new(),
+            users_query: String::new(),
+            groups_query: String::new(),
+            search_before_edit: String::new(),
             theme: Theme::mocha(),
             keymap: keymap::Keymap::default(),
             modals: Vec::new(),
@@ -1411,6 +1419,71 @@ impl AppState {
         if let Err(error) = logger.write_event(seconds, kind, message) {
             self.logger = None;
             self.record_diagnostic_message(format!("log file disabled: {error}"));
+        }
+    }
+
+    /// The tab whose query is being edited, or the active tab outside search.
+    pub fn search_tab(&self) -> ActiveTab {
+        match self.input_mode {
+            InputMode::SearchUsers => ActiveTab::Users,
+            InputMode::SearchGroups => ActiveTab::Groups,
+            InputMode::Normal | InputMode::Modal => self.active_tab,
+        }
+    }
+
+    /// The search query that applies to `tab`.
+    pub fn query(&self, tab: ActiveTab) -> &str {
+        match tab {
+            ActiveTab::Users => &self.users_query,
+            ActiveTab::Groups => &self.groups_query,
+        }
+    }
+
+    fn query_mut(&mut self, tab: ActiveTab) -> &mut String {
+        match tab {
+            ActiveTab::Users => &mut self.users_query,
+            ActiveTab::Groups => &mut self.groups_query,
+        }
+    }
+
+    /// `/`: edit the active tab's query in place, remembering it for Esc.
+    pub fn start_search(&mut self) {
+        let tab = self.active_tab;
+        self.search_before_edit = self.query(tab).to_owned();
+        self.input_mode = match tab {
+            ActiveTab::Users => InputMode::SearchUsers,
+            ActiveTab::Groups => InputMode::SearchGroups,
+        };
+    }
+
+    /// Enter while searching: keep the query and return to the table.
+    pub fn finish_search(&mut self) {
+        self.search_before_edit.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Esc while searching: put back the query from before `/` was pressed.
+    pub fn cancel_search(&mut self) {
+        let tab = self.search_tab();
+        let previous = std::mem::take(&mut self.search_before_edit);
+        *self.query_mut(tab) = previous;
+        self.input_mode = InputMode::Normal;
+        self.sort_and_filter();
+    }
+
+    /// Edit the query being searched and re-run the filters.
+    pub fn edit_search(&mut self, edit: impl FnOnce(&mut String)) {
+        let tab = self.search_tab();
+        edit(self.query_mut(tab));
+        self.sort_and_filter();
+    }
+
+    /// Clear the active tab's query (Esc in the main view).
+    pub fn clear_search(&mut self) {
+        let tab = self.active_tab;
+        if !self.query(tab).is_empty() {
+            self.query_mut(tab).clear();
+            self.sort_and_filter();
         }
     }
 

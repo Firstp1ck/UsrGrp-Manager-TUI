@@ -10,6 +10,7 @@ pub enum KeyAction {
     OpenFilterMenu,
     OpenHelp,
     StartSearch,
+    ClearSearch,
     NewUser,
     DeleteSelection,
     SwitchTab,
@@ -38,7 +39,9 @@ impl Keymap {
         use KeyModifiers as Modifiers;
         let entries = [
             ((Modifiers::NONE, Char('q')), Quit),
-            ((Modifiers::NONE, Esc), Ignore),
+            // Esc in the main view clears the active tab's search. `Ignore`
+            // stays valid in keybinds.conf but is no longer bound by default.
+            ((Modifiers::NONE, Esc), ClearSearch),
             ((Modifiers::NONE, Char('f')), OpenFilterMenu),
             ((Modifiers::NONE, Char('/')), StartSearch),
             ((Modifiers::NONE, Char('n')), NewUser),
@@ -229,6 +232,7 @@ fn parse_action(value: &str) -> Option<KeyAction> {
         "OpenFilterMenu" => OpenFilterMenu,
         "OpenHelp" => OpenHelp,
         "StartSearch" => StartSearch,
+        "ClearSearch" => ClearSearch,
         "NewUser" => NewUser,
         "DeleteSelection" => DeleteSelection,
         "SwitchTab" => SwitchTab,
@@ -254,6 +258,7 @@ pub fn format_action(action: KeyAction) -> &'static str {
         OpenFilterMenu => "OpenFilterMenu",
         OpenHelp => "OpenHelp",
         StartSearch => "StartSearch",
+        ClearSearch => "ClearSearch",
         NewUser => "NewUser",
         DeleteSelection => "DeleteSelection",
         SwitchTab => "SwitchTab",
@@ -314,6 +319,22 @@ mod tests {
         assert_eq!(
             keymap.resolve(&key(KeyCode::Left)),
             Some(KeyAction::ToggleUsersFocus)
+        );
+    }
+
+    #[test]
+    fn esc_clears_search_by_default_and_ignore_stays_parseable() {
+        assert_eq!(
+            Keymap::default().resolve(&key(KeyCode::Esc)),
+            Some(KeyAction::ClearSearch)
+        );
+        assert_eq!(parse_action("ClearSearch"), Some(KeyAction::ClearSearch));
+        assert_eq!(format_action(KeyAction::ClearSearch), "ClearSearch");
+        assert_eq!(parse_action("Ignore"), Some(KeyAction::Ignore));
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&key(KeyCode::Esc)),
+            Some(KeyAction::ClearSearch)
         );
     }
 
