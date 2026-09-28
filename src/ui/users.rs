@@ -328,7 +328,10 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         }
         ModalState::ModifyPasswordMenu { selected } => (
             "Password",
-            choices(&["Set/change password", "Expire password"], *selected),
+            choices(
+                &["Set or change password", "Force change at next login"],
+                *selected,
+            ),
             Some(*selected),
             MENU_FOOTER,
         ),
@@ -347,7 +350,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 (1, "Confirm", confirm, &shown_confirm),
             );
             body.extend(text_lines(format!(
-                "{} [{}] Must change next login\n{} Submit",
+                "{} [{}] Must change at next login\n{} Submit",
                 marker(*selected, 2),
                 if *must_change { "x" } else { " " },
                 marker(*selected, 3)
@@ -380,11 +383,12 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         }
         ModalState::ConfirmRemoveUserFromGroup {
             selected,
-            group_name,
+            username,
+            groupname,
         } => (
             "Confirm membership removal",
             format!(
-                "Remove {group_name}?\n{} Yes   {} No",
+                "Remove {username} from {groupname}?\n{} Yes   {} No",
                 marker(*selected, 0),
                 marker(*selected, 1)
             ),
@@ -489,9 +493,7 @@ fn delete_confirm_body(modal: &ModalState) -> (Vec<Line<'static>>, Option<usize>
     let buttons = if *allowed {
         format!("{yes} Yes   {no} No")
     } else {
-        format!(
-            "{yes} Cannot delete: root and system accounts (UID below 1000) are protected.\n{no} No"
-        )
+        format!("{yes} {}\n{no} No", crate::app::PROTECTED_USER_MESSAGE)
     };
     // A blank line, the checkbox, then the buttons: Yes and No share a
     // line unless the refusal puts No on its own.

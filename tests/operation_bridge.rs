@@ -325,11 +325,11 @@ fn service_and_elevation_membership_require_explicit_injected_policy() {
     // rule first.
     assert_eq!(
         denied.membership_allowed("wheel", 10),
-        Err("elevation-group membership requires explicit policy allowlist")
+        Err("sudo group, protected")
     );
     assert_eq!(
         denied.membership_allowed("audio", 10),
-        Err("service group is protected by policy")
+        Err("system group, protected")
     );
     assert_eq!(
         denied.membership_allowed("root", 0),
@@ -346,7 +346,7 @@ fn service_and_elevation_membership_require_explicit_injected_policy() {
     );
     assert_eq!(
         elevation_only.membership_allowed("wheel", 10),
-        Err("service group is protected by policy")
+        Err("system group, protected")
     );
     assert!(elevation_only.prepare_operation(request()).is_err());
 

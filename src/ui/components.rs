@@ -388,6 +388,30 @@ pub const PREVIEW_SEEN_IMMEDIATELY: usize = 12;
 /// Shown under a longer preview until its last step has been on screen.
 pub const PREVIEW_REFUSAL: &str = "Scroll to the end to review every step before applying.";
 
+/// First body line of an operation confirmation, above the preview.
+pub const CONFIRM_INTRO: &str = "The following commands will run:";
+/// First body line of an operation confirmation under `--dry-run`.
+pub const DRY_RUN_INTRO: &str = "Dry run: nothing will be executed. These commands would run:";
+
+/// The line an operation confirmation opens with.
+pub fn confirm_intro(dry_run: bool) -> &'static str {
+    if dry_run {
+        DRY_RUN_INTRO
+    } else {
+        CONFIRM_INTRO
+    }
+}
+
+/// `Confirm: <description><suffix>` cut to a dialog on a terminal
+/// `area_width` columns wide. Only the description is shortened, so the
+/// step range in `suffix` stays readable.
+pub fn confirm_title(description: &str, suffix: &str, area_width: u16) -> String {
+    const PREFIX: &str = "Confirm: ";
+    let room = usize::from(modal_width(area_width).saturating_sub(2))
+        .saturating_sub(text_width(PREFIX) + text_width(suffix));
+    format!("{PREFIX}{}{suffix}", truncate_to_width(description, room))
+}
+
 /// Dialog width on a terminal `area_width` columns wide, borders included.
 fn modal_width(area_width: u16) -> u16 {
     area_width.saturating_sub(8).min(76)
@@ -408,7 +432,7 @@ fn modal_body_rows(area_height: u16) -> usize {
 pub enum PreviewWindow {
     /// The terminal is below the minimum size, so no dialog is drawn.
     Hidden,
-    /// Not even the tallest step fits beside the action and the choices.
+    /// Not even the tallest step fits beside the intro and the choices.
     /// No step is drawn; the dialog asks for `need_rows` terminal rows.
     TooSmall { need_rows: usize },
     /// These preview lines are drawn in full.
@@ -447,14 +471,14 @@ pub fn preview_too_small_message(need_rows: usize) -> String {
 /// This is the one place that decides how many steps fit: the renderer draws
 /// exactly this range and the key handler scrolls by it and marks the
 /// preview seen when the range reaches the last step. Rows are budgeted for
-/// the action, the two blank lines, the review line of long previews, and
+/// the intro line, the two blank lines, the review line of long previews, and
 /// the choices (the frame's borders and footer are outside the body), and
 /// only steps whose every wrapped row fits are counted, so the dialog frame
 /// never has to scroll the body. The start is clamped so the last page is
 /// full. When the tallest step cannot fit, no step is shown at all.
 pub fn operation_preview_window(
     terminal: (u16, u16),
-    action: &str,
+    intro: &str,
     preview: &[String],
     scroll: usize,
 ) -> PreviewWindow {
@@ -464,9 +488,9 @@ pub fn operation_preview_window(
     }
     let inner = usize::from(modal_width(width).saturating_sub(2));
     let rows = |text: &str| wrap_line(&Line::raw(text), inner).len();
-    // Action, blank, blank before the choices, and the choices; long
+    // Intro, blank, blank before the choices, and the choices; long
     // previews also keep rows for the review line.
-    let mut fixed = rows(action) + 2 + rows(&confirm_choices(0));
+    let mut fixed = rows(intro) + 2 + rows(&confirm_choices(0));
     if preview.len() > PREVIEW_SEEN_IMMEDIATELY {
         fixed += rows(PREVIEW_REFUSAL);
     }
@@ -705,39 +729,46 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
     render_modal_frame(frame, area, app, title, text_lines(body), None, footer);
 }
 
-/// Operation confirmation: the action, the window of preview steps that
-/// fits, the review line for long previews, and Apply/Cancel. `state` is
-/// the modal's (selected, scroll, seen_all).
+/// Operation confirmation titled with what the action does: the intro line,
+/// the window of preview steps that fits, the review line for long previews,
+/// and Apply/Cancel. `state` is the modal's (selected, scroll, seen_all).
 fn render_operation_confirm(
     frame: &mut Frame,
     area: Rect,
     app: &AppState,
     state: (usize, usize, bool),
-    action: &str,
+    description: &str,
     preview: &[String],
 ) {
     let (selected, scroll, seen_all) = state;
-    let window = operation_preview_window((area.width, area.height), action, preview, scroll);
+    let intro = confirm_intro(app.dry_run);
+    let window = operation_preview_window((area.width, area.height), intro, preview, scroll);
     let shown = match window {
         PreviewWindow::Hidden => return,
         PreviewWindow::TooSmall { need_rows } => {
-            render_preview_too_small(frame, area, app, selected, preview.len(), need_rows);
+            let title = confirm_title(
+                description,
+                &format!(" ({} steps)", preview.len()),
+                area.width,
+            );
+            render_preview_too_small(frame, area, app, selected, &title, need_rows);
             return;
         }
         PreviewWindow::Steps(shown) => shown,
     };
-    let title = if preview.is_empty() {
-        "Confirm".to_owned()
+    let suffix = if preview.is_empty() {
+        String::new()
     } else {
         format!(
-            "Confirm (steps {}-{} of {})",
+            " (steps {}-{} of {})",
             shown.start + 1,
             shown.end,
             preview.len()
         )
     };
+    let title = confirm_title(description, &suffix, area.width);
     let reached_end = shown.end >= preview.len();
-    let mut body = vec![Line::raw(action.to_owned()), Line::default()];
+    let mut body = vec![Line::raw(intro), Line::default()];
     body.extend(preview[shown.clone()].iter().cloned().map(Line::raw));
     body.push(Line::default());
     if preview.len() > PREVIEW_SEEN_IMMEDIATELY {
@@ -767,7 +798,7 @@ fn render_preview_too_small(
     area: Rect,
     app: &AppState,
     selected: usize,
-    steps: usize,
+    title: &str,
     need_rows: usize,
 ) {
     let message = preview_too_small_message(need_rows);
@@ -784,8 +815,7 @@ fn render_preview_too_small(
     }
     body.push(Line::raw(choices));
     let focus = body.len() - 1;
-    let title = format!("Confirm ({steps} steps)");
-    render_modal_frame(frame, area, app, &title, body, Some(focus), YES_NO_FOOTER);
+    render_modal_frame(frame, area, app, title, body, Some(focus), YES_NO_FOOTER);
 }
 
 /// Help modal text. Recorded configuration problems follow the key summary

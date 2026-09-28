@@ -333,6 +333,8 @@ pub enum ModalState {
     /// on screen.
     OperationConfirm {
         selected: usize,
+        /// What the operation does, from [`PendingAction::describe`]; the
+        /// dialog is titled `Confirm: <action>`.
         action: String,
         preview: Vec<String>,
         /// Index of the first preview line shown.
@@ -369,7 +371,8 @@ pub enum ModalState {
     },
     ConfirmRemoveUserFromGroup {
         selected: usize,
-        group_name: String,
+        username: String,
+        groupname: String,
     },
     GroupModifyMenu {
         selected: usize,
@@ -450,6 +453,14 @@ pub const MAX_GECOS_CHARS: usize = 256;
 pub const MAX_PASSWORD_CHARS: usize = 1024;
 /// Form error shown when a keystroke would pass a field's limit.
 pub const MAX_LENGTH_REACHED: &str = "Maximum length reached";
+
+/// Why root and system accounts cannot be deleted: replaces Yes in their
+/// delete dialog and answers Enter on it.
+pub const PROTECTED_USER_MESSAGE: &str =
+    "Root and system accounts (UID below 1000) cannot be deleted from this tool.";
+/// Why root and system groups cannot be deleted or renamed.
+pub const PROTECTED_GROUP_MESSAGE: &str =
+    "Root and system groups (GID below 1000) cannot be changed from this tool.";
 
 /// "Also delete home" checkbox row of the user delete dialog.
 pub const DELETE_ROW_HOME: usize = 0;
@@ -562,7 +573,8 @@ pub enum PendingAction {
         username: String,
         set_password: bool,
         create_home: bool,
-        add_to_wheel: bool,
+        /// The sudo group to join, when the box was ticked.
+        sudo_group: Option<String>,
     },
     DeleteUser {
         username: String,
@@ -575,6 +587,115 @@ pub enum PendingAction {
     ResetPassword {
         username: String,
     },
+}
+
+/// Most names an action description lists before summarizing the rest.
+const DESCRIBE_MAX_NAMES: usize = 5;
+
+/// `wheel, docker`; past [`DESCRIBE_MAX_NAMES`] the rest become `and 3 more`.
+fn describe_names(names: &[String]) -> String {
+    let mut text = names
+        .iter()
+        .take(DESCRIBE_MAX_NAMES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > DESCRIBE_MAX_NAMES {
+        text.push_str(&format!(" and {} more", names.len() - DESCRIBE_MAX_NAMES));
+    }
+    text
+}
+
+impl PendingAction {
+    /// What the action does, as one sentence for the confirmation title and
+    /// the result dialog: `Change shell of alice to /bin/zsh`.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::AddUserToGroup {
+                username,
+                groupname,
+            } => format!("Add {username} to {groupname}"),
+            Self::RemoveUserFromGroup {
+                username,
+                groupname,
+            } => format!("Remove {username} from {groupname}"),
+            Self::AddUserToGroups {
+                username,
+                groupnames,
+            } => format!("Add {username} to {}", describe_names(groupnames)),
+            Self::RemoveUserFromGroups {
+                username,
+                groupnames,
+            } => format!("Remove {username} from {}", describe_names(groupnames)),
+            Self::AddMembersToGroup {
+                groupname,
+                usernames,
+            } => format!("Add {} to {groupname}", describe_names(usernames)),
+            Self::RemoveMembersFromGroup {
+                groupname,
+                usernames,
+            } => format!("Remove {} from {groupname}", describe_names(usernames)),
+            Self::ChangeShell {
+                username,
+                new_shell,
+            } => format!("Change shell of {username} to {new_shell}"),
+            Self::ChangeFullname { username, .. } => format!("Set full name of {username}"),
+            Self::ChangeUsername {
+                old_username,
+                new_username,
+            } => format!("Rename user {old_username} to {new_username}"),
+            Self::CreateGroup { groupname } => format!("Create group {groupname}"),
+            Self::DeleteGroup { groupname } => format!("Delete group {groupname}"),
+            Self::RenameGroup { old_name, new_name } => {
+                format!("Rename group {old_name} to {new_name}")
+            }
+            Self::CreateUserWithOptions {
+                username,
+                set_password,
+                create_home,
+                sudo_group,
+            } => {
+                let mut options = Vec::new();
+                if *create_home {
+                    options.push("home".to_owned());
+                }
+                if *set_password {
+                    options.push("password".to_owned());
+                }
+                if let Some(group) = sudo_group {
+                    options.push(format!("sudo group {group}"));
+                }
+                if options.is_empty() {
+                    format!("Create user {username}")
+                } else {
+                    format!("Create user {username} ({})", options.join(", "))
+                }
+            }
+            Self::DeleteUser {
+                username,
+                delete_home,
+            } => {
+                if *delete_home {
+                    format!("Delete user {username} and its home")
+                } else {
+                    format!("Delete user {username}")
+                }
+            }
+            Self::SetPassword {
+                username,
+                must_change,
+            } => {
+                if *must_change {
+                    format!("Set password for {username} (must change at next login)")
+                } else {
+                    format!("Set password for {username}")
+                }
+            }
+            Self::ResetPassword { username } => {
+                format!("Force {username} to change password at next login")
+            }
+        }
+    }
 }
 
 /// Password input which cannot be cloned or formatted and is zeroized when
@@ -963,6 +1084,8 @@ impl OneShotPassword {
 /// separate from generic UI requests/reports and drops it on cancellation.
 pub struct PreparedOperation {
     pub(crate) plan: OperationPlan,
+    /// What the plan does, from [`PendingAction::describe`].
+    pub description: String,
 }
 impl PreparedOperation {
     pub fn preview(&self) -> Vec<String> {

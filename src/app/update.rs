@@ -194,7 +194,8 @@ fn open_actions(app: &mut AppState) {
                         app,
                         ModalState::ConfirmRemoveUserFromGroup {
                             selected: 1,
-                            group_name: format!("{}:{member}", group.name),
+                            username: member.clone(),
+                            groupname: group.name.clone(),
                         },
                     );
                 }
@@ -242,7 +243,8 @@ fn open_delete(app: &mut AppState) {
                     app,
                     ModalState::ConfirmRemoveUserFromGroup {
                         selected: 1,
-                        group_name: format!("{}:{}", group.name, user.name),
+                        username: user.name.clone(),
+                        groupname: group.name,
                     },
                 );
             }
@@ -454,8 +456,9 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
         } => handle_user_delete(app, selected, *allowed, username, delete_home, key),
         ModalState::ConfirmRemoveUserFromGroup {
             selected,
-            group_name,
-        } => handle_member_delete(app, selected, group_name, key),
+            username,
+            groupname,
+        } => handle_member_delete(app, selected, username, groupname, key),
         ModalState::GroupsActions {
             selected,
             target_gid,
@@ -545,21 +548,24 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
         ),
         ModalState::OperationConfirm {
             selected,
-            action,
             preview,
             scroll,
             seen_all,
-        } => handle_operation_confirm(
-            app,
-            selected,
-            PreviewReview {
-                action,
-                preview,
-                scroll,
-                seen_all,
-            },
-            key,
-        ),
+            ..
+        } => {
+            let intro = ui::components::confirm_intro(app.dry_run);
+            handle_operation_confirm(
+                app,
+                selected,
+                PreviewReview {
+                    intro,
+                    preview,
+                    scroll,
+                    seen_all,
+                },
+                key,
+            )
+        }
         ModalState::SudoPrompt {
             password,
             error,
@@ -1152,27 +1158,29 @@ fn handle_user_delete(
             app,
             ModalState::Info {
                 title: None,
-                message: "Protected identities require explicit policy allowlisting.".to_owned(),
+                message: crate::app::PROTECTED_USER_MESSAGE.to_owned(),
             },
         ),
         Answer::Other => {}
     }
 }
 
-fn handle_member_delete(app: &mut AppState, selected: &mut usize, encoded: &str, key: KeyEvent) {
+fn handle_member_delete(
+    app: &mut AppState,
+    selected: &mut usize,
+    username: &str,
+    groupname: &str,
+    key: KeyEvent,
+) {
     match yes_no_answer(selected, key) {
         Answer::Cancel | Answer::Decline => back(app),
-        Answer::Confirm if *selected == 0 => {
-            if let Some((group, user)) = encoded.split_once(':') {
-                start_pending_action(
-                    app,
-                    PendingAction::RemoveUserFromGroup {
-                        username: user.to_owned(),
-                        groupname: group.to_owned(),
-                    },
-                )
-            }
-        }
+        Answer::Confirm if *selected == 0 => start_pending_action(
+            app,
+            PendingAction::RemoveUserFromGroup {
+                username: username.to_owned(),
+                groupname: groupname.to_owned(),
+            },
+        ),
         // Enter on No closes the dialog, like `n`.
         Answer::Confirm => back(app),
         Answer::Other => {}
@@ -1274,9 +1282,7 @@ fn handle_group_delete(
                         app,
                         ModalState::Info {
                             title: None,
-                            message:
-                                "Protected group mutations require explicit policy allowlisting."
-                                    .to_owned(),
+                            message: crate::app::PROTECTED_GROUP_MESSAGE.to_owned(),
                         },
                     );
                 } else {
@@ -1377,10 +1383,7 @@ fn handle_group_rename(
                 .or_else(|| app.groups.get(app.selected_group_index));
             if let Some(group) = group {
                 if crate::app::is_default_protected_group(group) {
-                    *error = Some(
-                        "Protected group mutations require explicit policy allowlisting."
-                            .to_owned(),
-                    );
+                    *error = Some(crate::app::PROTECTED_GROUP_MESSAGE.to_owned());
                 } else {
                     start_form_action(
                         app,
@@ -1550,7 +1553,7 @@ fn handle_user_add(
                     username: name.clone(),
                     set_password: !password.is_empty(),
                     create_home: *create_home,
-                    add_to_wheel: *add_to_wheel,
+                    sudo_group: add_to_wheel.then(|| app.sudo_group.clone()),
                 };
                 if password.is_empty() {
                     start_form_action(app, action, error);
@@ -1577,7 +1580,8 @@ fn handle_user_add(
 
 /// The scrollable preview of an open operation confirmation.
 struct PreviewReview<'a> {
-    action: &'a str,
+    /// First body line, from [`ui::components::confirm_intro`].
+    intro: &'static str,
     preview: &'a [String],
     scroll: &'a mut usize,
     seen_all: &'a mut bool,
@@ -1586,7 +1590,7 @@ struct PreviewReview<'a> {
 impl PreviewReview<'_> {
     /// What the renderer shows at `scroll` on `terminal`, from its own math.
     fn window(&self, terminal: (u16, u16), scroll: usize) -> PreviewWindow {
-        ui::components::operation_preview_window(terminal, self.action, self.preview, scroll)
+        ui::components::operation_preview_window(terminal, self.intro, self.preview, scroll)
     }
 
     /// Show the lines from `scroll` on and remember when the last step has
@@ -1612,8 +1616,8 @@ impl PreviewReview<'_> {
 /// since the renderer already reports every step shown.
 fn review_preview_after_resize(app: &mut AppState) {
     let terminal = app.terminal_size;
+    let intro = ui::components::confirm_intro(app.dry_run);
     if let Some(ModalState::OperationConfirm {
-        action,
         preview,
         scroll,
         seen_all,
@@ -1622,7 +1626,7 @@ fn review_preview_after_resize(app: &mut AppState) {
     {
         let current = *scroll;
         PreviewReview {
-            action,
+            intro,
             preview,
             scroll,
             seen_all,
@@ -1730,34 +1734,41 @@ fn start_form_action(app: &mut AppState, action: PendingAction, error: &mut Opti
 /// Build and prepare the request, opening its confirmation on success. On
 /// failure nothing stays pending and the caller reports the error.
 fn try_start_pending_action(app: &mut AppState, action: PendingAction) -> CoreResult<()> {
-    let result = operation_request(app, action).and_then(|request| prepare_request(app, request));
+    let description = action.describe();
+    let result = operation_request(app, action)
+        .and_then(|request| prepare_request(app, request, description));
     if result.is_err() {
         app.clear_pending_operation();
     }
     result
 }
 
-fn prepare_request(app: &mut AppState, request: OperationRequest) -> CoreResult<()> {
+/// Prepare `request` and open its confirmation, titled with `description`
+/// (what the action does, from [`PendingAction::describe`]).
+fn prepare_request(
+    app: &mut AppState,
+    request: OperationRequest,
+    description: String,
+) -> CoreResult<()> {
     match app.adapter.prepare_operation(request) {
         Ok(plan) => {
-            let prepared = crate::app::PreparedOperation { plan };
+            let prepared = crate::app::PreparedOperation {
+                plan,
+                description: description.clone(),
+            };
             let preview = prepared.preview();
             app.log_event("prepared", &preview.join("; "));
             app.last_preview = preview.clone();
             app.pending_operation = Some(prepared);
-            let action = if app.dry_run {
-                "Dry run: preview only, nothing will be executed"
-            } else {
-                "Apply the exact prepared operation"
-            };
+            let intro = ui::components::confirm_intro(app.dry_run);
             let seen_all = preview.len() <= ui::components::PREVIEW_SEEN_IMMEDIATELY
-                || ui::components::operation_preview_window(app.terminal_size, action, &preview, 0)
+                || ui::components::operation_preview_window(app.terminal_size, intro, &preview, 0)
                     .shows_last(preview.len());
             open_modal(
                 app,
                 ModalState::OperationConfirm {
                     selected: 1,
-                    action: action.to_owned(),
+                    action: description,
                     preview,
                     scroll: 0,
                     seen_all,
@@ -1780,30 +1791,36 @@ fn execute_pending_plan(app: &mut AppState) {
 /// for it, so a rejection reopens the prompt with the next count.
 fn run_pending_plan(app: &mut AppState, attempts: u8) {
     let Some(prepared) = app.pending_operation.as_ref() else {
-        show_outcome(app, "No prepared operation is available.".to_owned());
+        show_outcome(app, None, "No prepared operation is available.".to_owned());
         return;
     };
-    let description = prepared.preview().join("; ");
+    let steps = prepared.preview().join("; ");
+    let intent = prepared.description.clone();
     if app.dry_run {
         // The adapter is never consulted, so no sudo prompt and no command.
         app.clear_pending_operation();
-        app.log_event("dry-run", &description);
-        show_outcome(app, "Dry run: nothing was executed.".to_owned());
+        app.log_event("dry-run", &steps);
+        show_outcome(
+            app,
+            Some("Dry run"),
+            format!("{intent}\nDry run: nothing was executed."),
+        );
         return;
     }
     match app.adapter.execute_prepared_operation(&prepared.plan) {
         Ok(report) => {
             let message = report_message(&report);
-            app.log_event("executed", &format!("{description} => {message}"));
+            app.log_event("executed", &format!("{steps} => {message}"));
             if let Some(failed) = &report.failed {
                 // A long preview can push the failure past the line cap, so
                 // the classified error also gets a line of its own.
                 app.log_event("error", &classified_error_message(&failed.error));
             }
+            let title = report_title(&report);
             app.last_report = Some(report);
             app.pending_operation = None;
             app.refresh_accounts();
-            show_outcome(app, message);
+            show_outcome(app, Some(title), format!("{intent}\n{message}"));
         }
         Err(CoreError::AuthenticationRequired) => {
             open_modal(
@@ -1822,7 +1839,10 @@ fn run_pending_plan(app: &mut AppState, attempts: u8) {
                 app.clear_pending_operation();
                 show_outcome(
                     app,
-                    "Authentication failed three times. The operation was not run.".to_owned(),
+                    Some(FAILED_TITLE),
+                    format!(
+                        "{intent}\nAuthentication failed three times. The operation was not run."
+                    ),
                 );
                 return;
             }
@@ -1842,7 +1862,7 @@ fn run_pending_plan(app: &mut AppState, attempts: u8) {
         Err(error) => {
             app.clear_pending_operation();
             let message = log_error(app, &error);
-            show_outcome(app, message);
+            show_outcome(app, Some(FAILED_TITLE), format!("{intent}\n{message}"));
         }
     }
 }
@@ -1937,7 +1957,7 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
             username,
             set_password,
             create_home,
-            add_to_wheel,
+            sudo_group,
         } => {
             let mut requests = vec![OperationRequest::CreateUser {
                 username: username.clone(),
@@ -1952,10 +1972,10 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
                     })?;
                 requests.push(OperationRequest::SetUserPassword { record });
             }
-            if add_to_wheel {
+            if let Some(groupname) = sudo_group {
                 requests.push(OperationRequest::AddUserToGroup {
                     username,
-                    groupname: app.sudo_group.clone(),
+                    groupname,
                 });
             }
             requests
@@ -1994,28 +2014,48 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
     })
 }
 
+/// Title of the result dialog. A failure before any step completed is a
+/// failure; a failure after some steps, or a run whose requested state the
+/// account files do not show, is partial; anything else is done.
+fn report_title(report: &crate::sys::OperationReport) -> &'static str {
+    let partial = matches!(
+        report.reconciliation,
+        crate::sys::ReconciliationStatus::Partial { .. }
+    );
+    match &report.failed {
+        Some(_) if report.completed.is_empty() => FAILED_TITLE,
+        Some(_) => "Partially done",
+        None if partial => "Partially done",
+        None => "Done",
+    }
+}
+
+/// Result lines after the description: step counts, the failed step, and
+/// whether the account files confirm the outcome.
 fn report_message(report: &crate::sys::OperationReport) -> String {
+    let completed = report.completed.len();
     let mut message = format!(
-        "completed: {}, skipped: {}",
-        report.completed.len(),
+        "{completed} {} completed, {} skipped",
+        if completed == 1 { "step" } else { "steps" },
         report.skipped.len()
     );
     if let Some(failed) = &report.failed {
         message.push_str(&format!(
-            "\nfailed step {}: {}",
+            "\nFailed at {}: {}",
             failed.id,
             classified_error_message(&failed.error)
         ));
     }
     match &report.reconciliation {
         crate::sys::ReconciliationStatus::Verified => {
-            message.push_str("\nreconciliation: verified")
+            message.push_str("\nVerified against the account files.")
         }
         crate::sys::ReconciliationStatus::Partial { detail } => {
-            message.push_str(&format!("\npartial outcome: {detail}"))
+            // `detail` names the requested state that was not observed.
+            message.push_str(&format!("\nPartial: not confirmed that {detail}"))
         }
         crate::sys::ReconciliationStatus::Unavailable { detail } => {
-            message.push_str(&format!("\nreconciliation unavailable: {detail}"))
+            message.push_str(&format!("\nCould not verify: {detail}"))
         }
     }
     message
@@ -2039,7 +2079,7 @@ fn classified_error_message(error: &CoreError) -> String {
         CoreError::PartialCompletion { .. } => "E-PARTIAL",
         CoreError::PostconditionFailed { .. } => "E-POSTCONDITION",
     };
-    format!("{code}: {error}")
+    format!("{error} [{code}]")
 }
 
 /// Show a classified error above the current dialog and append it to the
@@ -2049,7 +2089,7 @@ fn show_error(app: &mut AppState, error: &CoreError) {
     open_modal(
         app,
         ModalState::Info {
-            title: None,
+            title: Some(FAILED_TITLE.to_owned()),
             message,
         },
     );
@@ -2101,16 +2141,19 @@ fn log_error(app: &mut AppState, error: &CoreError) -> String {
 
 /// Report how an operation ended. Every dialog that led to it is closed
 /// first, so Esc from the result lands on the main view.
-fn show_outcome(app: &mut AppState, message: String) {
+fn show_outcome(app: &mut AppState, title: Option<&str>, message: String) {
     app.close_modals();
     open_modal(
         app,
         ModalState::Info {
-            title: None,
+            title: title.map(str::to_owned),
             message,
         },
     );
 }
+
+/// Result dialog title when nothing, or nothing useful, was done.
+const FAILED_TITLE: &str = "Failed";
 
 fn save_filters(app: &mut AppState) {
     let path = app.configuration_write_path("filter.conf");
@@ -2226,7 +2269,314 @@ mod tests {
                 detail: "shadow unavailable".to_owned(),
             },
         };
-        assert!(report_message(&report).contains("unavailable"));
+        assert_eq!(
+            report_message(&report),
+            "0 steps completed, 0 skipped\nCould not verify: shadow unavailable"
+        );
+    }
+
+    #[test]
+    fn pending_actions_describe_their_intent() {
+        let names = |list: &[&str]| list.iter().map(|name| (*name).to_owned()).collect();
+        let cases = [
+            (
+                PendingAction::AddUserToGroups {
+                    username: "alice".into(),
+                    groupnames: names(&["wheel", "docker"]),
+                },
+                "Add alice to wheel, docker",
+            ),
+            (
+                PendingAction::RemoveUserFromGroup {
+                    username: "alice".into(),
+                    groupname: "wheel".into(),
+                },
+                "Remove alice from wheel",
+            ),
+            (
+                PendingAction::AddMembersToGroup {
+                    groupname: "dev".into(),
+                    usernames: names(&["a", "b", "c", "d", "e", "f", "g"]),
+                },
+                "Add a, b, c, d, e and 2 more to dev",
+            ),
+            (
+                PendingAction::ChangeShell {
+                    username: "alice".into(),
+                    new_shell: "/bin/zsh".into(),
+                },
+                "Change shell of alice to /bin/zsh",
+            ),
+            (
+                PendingAction::ChangeUsername {
+                    old_username: "alice".into(),
+                    new_username: "alicia".into(),
+                },
+                "Rename user alice to alicia",
+            ),
+            (
+                PendingAction::ChangeFullname {
+                    username: "alice".into(),
+                    new_fullname: "Alice L".into(),
+                },
+                "Set full name of alice",
+            ),
+            (
+                PendingAction::CreateUserWithOptions {
+                    username: "alice".into(),
+                    set_password: true,
+                    create_home: true,
+                    sudo_group: Some("wheel".into()),
+                },
+                "Create user alice (home, password, sudo group wheel)",
+            ),
+            (
+                PendingAction::CreateUserWithOptions {
+                    username: "alice".into(),
+                    set_password: false,
+                    create_home: false,
+                    sudo_group: None,
+                },
+                "Create user alice",
+            ),
+            (
+                PendingAction::DeleteUser {
+                    username: "alice".into(),
+                    delete_home: true,
+                },
+                "Delete user alice and its home",
+            ),
+            (
+                PendingAction::CreateGroup {
+                    groupname: "dev".into(),
+                },
+                "Create group dev",
+            ),
+            (
+                PendingAction::DeleteGroup {
+                    groupname: "dev".into(),
+                },
+                "Delete group dev",
+            ),
+            (
+                PendingAction::RenameGroup {
+                    old_name: "dev".into(),
+                    new_name: "devs".into(),
+                },
+                "Rename group dev to devs",
+            ),
+            (
+                PendingAction::SetPassword {
+                    username: "alice".into(),
+                    must_change: true,
+                },
+                "Set password for alice (must change at next login)",
+            ),
+            (
+                PendingAction::ResetPassword {
+                    username: "alice".into(),
+                },
+                "Force alice to change password at next login",
+            ),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(action.describe(), expected);
+        }
+    }
+
+    fn report(
+        completed: usize,
+        failed: bool,
+        reconciliation: crate::sys::ReconciliationStatus,
+    ) -> crate::sys::OperationReport {
+        let preview = crate::sys::CommandSpec::new(crate::sys::KnownProgram::GroupAdd)
+            .group_name(&GroupName::new("dev").unwrap())
+            .redacted_preview();
+        crate::sys::OperationReport {
+            completed: (0..completed)
+                .map(|_| crate::sys::CompletedStep {
+                    id: "create group".to_owned(),
+                    preview: preview.clone(),
+                    verification: crate::sys::StepVerification::Verified,
+                })
+                .collect(),
+            skipped: vec![],
+            compensated: vec![],
+            failed: failed.then(|| crate::sys::FailedStep {
+                id: "add member".to_owned(),
+                error: CoreError::MissingExecutable { program: "gpasswd" },
+            }),
+            reconciliation,
+        }
+    }
+
+    #[test]
+    fn result_titles_and_lines_are_plain_words() {
+        use crate::sys::ReconciliationStatus::{Partial, Unavailable, Verified};
+        let partial = || Partial {
+            detail: "alice is in dev".to_owned(),
+        };
+        let done = report(2, false, Verified);
+        assert_eq!(report_title(&done), "Done");
+        assert_eq!(
+            report_message(&done),
+            "2 steps completed, 0 skipped\nVerified against the account files."
+        );
+        let unverified = report(
+            1,
+            false,
+            Unavailable {
+                detail: "shadow unavailable".to_owned(),
+            },
+        );
+        assert_eq!(report_title(&unverified), "Done");
+        assert!(report_message(&unverified).starts_with("1 step completed, 0 skipped\n"));
+
+        let failed = report(0, true, Verified);
+        assert_eq!(report_title(&failed), "Failed");
+        assert_eq!(report_title(&report(0, true, partial())), "Failed");
+        let missing =
+            classified_error_message(&CoreError::MissingExecutable { program: "gpasswd" });
+        assert!(missing.ends_with(" [E-EXEC-MISSING]"));
+        assert!(report_message(&failed).contains(&format!("\nFailed at add member: {missing}\n")));
+
+        let halfway = report(1, true, partial());
+        assert_eq!(report_title(&halfway), "Partially done");
+        assert!(
+            report_message(&halfway).ends_with("\nPartial: not confirmed that alice is in dev")
+        );
+        assert_eq!(report_title(&report(0, false, partial())), "Partially done");
+    }
+
+    #[test]
+    fn error_codes_trail_the_message_in_brackets() {
+        let error = CoreError::Validation {
+            field: "user name",
+            reason: "must contain 1 to 32 bytes",
+        };
+        assert_eq!(
+            classified_error_message(&error),
+            "invalid user name: must contain 1 to 32 bytes [E-VALIDATION]"
+        );
+    }
+
+    #[test]
+    fn confirmation_is_titled_with_the_intent() {
+        let mut app = user_app();
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, .. })
+                if action == "Change shell of alice to /bin/bash"
+        ));
+        let rows = rendered_rows(&app, 100, 30);
+        assert!(rows.iter().any(|row| {
+            row.contains("Confirm: Change shell of alice to /bin/bash (steps 1-1 of 1)")
+        }));
+        let intro = rows
+            .iter()
+            .position(|row| row.contains(ui::components::CONFIRM_INTRO))
+            .expect("intro line");
+        assert!(rows[intro + 2].contains("usermod -s /bin/bash alice"));
+    }
+
+    #[test]
+    fn failed_run_reports_the_intent_under_a_failed_title() {
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(FailRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        execute_pending_plan(&mut app);
+        match app.modal() {
+            Some(ModalState::Info { title, message }) => {
+                assert_eq!(title.as_deref(), Some("Failed"), "{message}");
+                let lines: Vec<&str> = message.lines().collect();
+                assert_eq!(lines[0], "Change shell of alice to /bin/bash");
+                assert_eq!(lines[1], "0 steps completed, 0 skipped");
+                assert!(lines[2].starts_with("Failed at "));
+                assert!(lines[2].ends_with("[E-EXEC-MISSING]"));
+            }
+            _ => panic!("expected the result dialog"),
+        }
+        assert!(rendered(&app).contains("Failed"));
+    }
+
+    #[test]
+    fn member_removal_names_the_user_and_the_group() {
+        let mut app = wheel_app();
+        app.active_tab = ActiveTab::Groups;
+        app.groups_focus = GroupsFocus::Members;
+        app.selected_group_index = app
+            .groups
+            .iter()
+            .position(|group| group.name == "dev")
+            .unwrap();
+        app.selected_group_member_index = 0;
+        open_actions(&mut app);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ConfirmRemoveUserFromGroup { username, groupname, .. })
+                if username == "alice" && groupname == "dev"
+        ));
+        assert!(rendered(&app).contains("Remove alice from dev?"));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, .. }) if action == "Remove alice from dev"
+        ));
+    }
+
+    #[test]
+    fn protected_group_changes_explain_the_uid_range() {
+        let mut app = wheel_app();
+        open_modal(
+            &mut app,
+            ModalState::GroupDeleteConfirm {
+                selected: 1,
+                target_gid: Some(998),
+            },
+        );
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::Info { message, .. }) if message == crate::app::PROTECTED_GROUP_MESSAGE
+        ));
+        assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
+    fn password_menu_says_what_each_entry_does() {
+        let mut app = user_app();
+        open_modal(&mut app, ModalState::ModifyPasswordMenu { selected: 0 });
+        let screen = rendered(&app);
+        assert!(screen.contains("Set or change password"));
+        assert!(screen.contains("Force change at next login"));
+        press(&mut app, KeyCode::Enter);
+        assert!(rendered(&app).contains("[ ] Must change at next login"));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, .. })
+                if action == "Force alice to change password at next login"
+        ));
     }
 
     #[test]
@@ -2328,12 +2678,16 @@ mod tests {
         assert!(matches!(
             app.modal(),
             Some(ModalState::OperationConfirm { action, preview, .. })
-                if action.starts_with("Dry run") && preview == &["usermod -s /bin/bash alice"]
+                if action == "Change shell of alice to /bin/bash"
+                    && preview == &["usermod -s /bin/bash alice"]
         ));
+        assert!(rendered(&app).contains(ui::components::DRY_RUN_INTRO));
         execute_pending_plan(&mut app);
         assert!(matches!(
             app.modal(),
-            Some(ModalState::Info { message, .. }) if message.contains("Dry run: nothing was executed")
+            Some(ModalState::Info { title: Some(title), message })
+                if title == "Dry run"
+                    && message == "Change shell of alice to /bin/bash\nDry run: nothing was executed."
         ));
         assert!(app.pending_operation.is_none());
         assert!(app.last_report.is_none());
@@ -2379,7 +2733,7 @@ mod tests {
         assert!(lines[0].ends_with("prepared: usermod -s /bin/bash alice"));
         assert!(lines[1].ends_with("dry-run: usermod -s /bin/bash alice"));
         assert!(lines[2].contains("prepared: ") && lines[2].contains("chpasswd"));
-        assert!(lines[3].contains("error: E-VALIDATION"));
+        assert!(lines[3].contains("error: ") && lines[3].ends_with("[E-VALIDATION]"));
         assert_eq!(lines.len(), 4);
         assert!(!text.contains("fixture-password"));
     }
@@ -2559,9 +2913,12 @@ mod tests {
         let mut app = app_confirming_group_adds(20);
         assert_eq!(preview_state(&app), (0, false, 20));
         let screen = rendered(&app);
-        // 30 rows: an 18-row body keeps 5 rows for the action, blanks, the
-        // review line, and the choices, so 13 steps show.
-        assert!(screen.contains("Confirm (steps 1-13 of 20)"));
+        // 30 rows: an 18-row body keeps 5 rows for the intro, blanks, the
+        // review line, and the choices, so 13 steps show. The title says
+        // what happens, shortened so the step range still fits.
+        assert!(screen.contains("Confirm: Add alice to team00, team01, team02,"));
+        assert!(screen.contains("… (steps 1-13 of 20)"));
+        assert!(screen.contains(ui::components::CONFIRM_INTRO));
         assert!(screen.contains("team12"));
         assert!(!screen.contains("team13"));
         assert!(screen.contains(ui::components::PREVIEW_REFUSAL));
@@ -2586,7 +2943,7 @@ mod tests {
         press(&mut app, KeyCode::Char('j'));
         assert_eq!(preview_state(&app), (7, true, 20));
         let screen = rendered(&app);
-        assert!(screen.contains("Confirm (steps 8-20 of 20)"));
+        assert!(screen.contains("(steps 8-20 of 20)"));
         assert!(screen.contains("team19"));
         assert!(screen.contains("All 20 steps shown."));
         assert!(!screen.contains(ui::components::PREVIEW_REFUSAL));
@@ -2610,7 +2967,7 @@ mod tests {
         let mut app = app_confirming_group_adds(12);
         assert_eq!(preview_state(&app), (0, true, 12));
         let screen = rendered(&app);
-        assert!(screen.contains("Confirm (steps 1-12 of 12)"));
+        assert!(screen.contains("(steps 1-12 of 12)"));
         assert!(!screen.contains(ui::components::PREVIEW_REFUSAL));
         assert!(!screen.contains("All 12 steps shown."));
         press(&mut app, KeyCode::Char('y'));
@@ -2625,10 +2982,11 @@ mod tests {
         let (scroll, seen_all, _) = preview_state(&app);
         assert_eq!(scroll, 1);
         assert!(!seen_all);
+        let intro = ui::components::CONFIRM_INTRO;
         let window = match app.modal() {
-            Some(ModalState::OperationConfirm {
-                action, preview, ..
-            }) => ui::components::operation_preview_window((40, 12), action, preview, scroll),
+            Some(ModalState::OperationConfirm { preview, .. }) => {
+                ui::components::operation_preview_window((40, 12), intro, preview, scroll)
+            }
             _ => unreachable!(),
         };
         let PreviewWindow::Steps(window) = window else {
@@ -2638,8 +2996,8 @@ mod tests {
         let rows = rendered_rows(&app, 40, 12);
         let title = format!("steps {}-{} of 20", window.start + 1, window.end);
         assert!(rows.iter().any(|row| row.contains(&title)), "{rows:#?}");
-        // The body is not scrolled: the action's first row is still drawn.
-        assert!(rows.iter().any(|row| row.contains("Apply the exact")));
+        // The body is not scrolled: the intro's first row is still drawn.
+        assert!(rows.iter().any(|row| row.contains("The following")));
         for index in window.clone() {
             let step = format!("gpasswd -a alice team{index:02}");
             assert!(rows.iter().any(|row| row.contains(&step)), "{step} missing");
@@ -2667,14 +3025,14 @@ mod tests {
     fn preview_too_small_for_one_step_is_never_reviewed() {
         let mut app = app_confirming_group_adds(20);
         app.terminal_size = (30, 8);
-        let action = "Apply the exact prepared operation";
+        let intro = ui::components::CONFIRM_INTRO;
         let window = match app.modal() {
             Some(ModalState::OperationConfirm { preview, .. }) => {
-                ui::components::operation_preview_window((30, 8), action, preview, 0)
+                ui::components::operation_preview_window((30, 8), intro, preview, 0)
             }
             _ => unreachable!(),
         };
-        // 30 columns leave 20 per row: action 2 rows, blanks 2, review line
+        // 30 columns leave 20 per row: intro 2 rows, blanks 2, review line
         // 3, choices 1, one step 2 rows, plus borders and footer.
         assert_eq!(window, PreviewWindow::TooSmall { need_rows: 13 });
         for _ in 0..40 {
@@ -2710,9 +3068,14 @@ mod tests {
         // Short previews count as reviewed at once, but no step is drawn.
         assert_eq!(preview_state(&app), (0, true, 1));
         let window = match app.modal() {
-            Some(ModalState::OperationConfirm {
-                action, preview, ..
-            }) => ui::components::operation_preview_window((30, 8), action, preview, 0),
+            Some(ModalState::OperationConfirm { preview, .. }) => {
+                ui::components::operation_preview_window(
+                    (30, 8),
+                    ui::components::CONFIRM_INTRO,
+                    preview,
+                    0,
+                )
+            }
             _ => unreachable!(),
         };
         assert!(
@@ -3209,11 +3572,9 @@ mod tests {
         for _ in 0..4 {
             press(&mut app, KeyCode::Down);
         }
-        // The rest of the reason wraps onto the next line of the dialog.
+        // The reason fits on the row, next to the group it concerns.
         let screen = rendered(&app);
-        assert!(
-            screen.contains("▶     Add to sudo group (wheel): blocked, elevation-group membership")
-        );
+        assert!(screen.contains("▶     Add to sudo group (wheel): blocked, sudo group, protected"));
         assert!(!screen.contains("[ ] Add to sudo group"));
         press(&mut app, KeyCode::Char(' '));
         assert!(!add_to_wheel(&app));
@@ -3245,6 +3606,26 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         assert!(add_to_wheel(&app));
         assert!(rendered(&app).contains("[x] Add to sudo group (ops)"));
+    }
+
+    #[test]
+    fn create_user_confirmation_lists_the_chosen_options() {
+        let mut app = wheel_app();
+        app.sudo_group = "ops".to_owned();
+        open_user_add(&mut app);
+        type_text(&mut app, "erin");
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
+                if action == "Create user erin (home, sudo group ops)"
+                    && preview.iter().any(|line| line.ends_with("ops"))
+        ));
     }
 
     #[test]
@@ -3292,7 +3673,7 @@ mod tests {
             },
         );
         let screen = rendered(&app);
-        assert!(screen.contains("[ ] wheel (blocked: elevation-group membership"));
+        assert!(screen.contains("[ ] wheel (blocked: sudo group, protected)"));
         assert!(screen.contains("[ ] ops "));
         assert!(!screen.contains("ops (blocked"));
 
@@ -3307,7 +3688,7 @@ mod tests {
         assert!(user_groups_ticked(&app).is_empty());
         assert_eq!(
             app.modal().and_then(ModalState::form_error),
-            Some("elevation-group membership requires explicit policy allowlist")
+            Some("sudo group, protected")
         );
         // Enter with nothing ticked on the blocked row prepares nothing.
         press(&mut app, KeyCode::Enter);
@@ -3330,7 +3711,7 @@ mod tests {
         open_modal(&mut app, add_members_dialog(998));
         let screen = rendered(&app);
         for name in ["alice", "bob", "carol"] {
-            assert!(screen.contains(&format!("{name} (blocked: elevation-group")));
+            assert!(screen.contains(&format!("{name} (blocked: sudo group, protected)")));
         }
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Char('*'));
@@ -3404,7 +3785,8 @@ mod tests {
         for modal in [
             ModalState::ConfirmRemoveUserFromGroup {
                 selected: 1,
-                group_name: "dev:alice".to_owned(),
+                username: "alice".to_owned(),
+                groupname: "dev".to_owned(),
             },
             ModalState::GroupDeleteConfirm {
                 selected: 1,
@@ -3438,7 +3820,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             app.modal(),
-            Some(ModalState::Info { message, .. }) if message.contains("Protected identities")
+            Some(ModalState::Info { message, .. }) if message == crate::app::PROTECTED_USER_MESSAGE
         ));
         assert!(app.pending_operation.is_none());
     }
@@ -3613,7 +3995,7 @@ mod tests {
         app.close_modals();
         open_modal(&mut app, delete_dialog(false));
         let screen = rendered(&app);
-        assert!(screen.contains("Cannot delete: root and system accounts"));
+        assert!(screen.contains("Root and system accounts (UID below 1000) cannot be deleted"));
         assert!(!screen.contains(" Yes "));
     }
 
@@ -5149,10 +5531,14 @@ mod tests {
             submit_sudo_password(&mut app);
         }
         match app.modal() {
-            Some(ModalState::Info { message, .. }) => assert_eq!(
-                message,
-                "Authentication failed three times. The operation was not run."
-            ),
+            Some(ModalState::Info { title, message }) => {
+                assert_eq!(title.as_deref(), Some("Failed"));
+                assert!(
+                    message.ends_with(
+                        "\nAuthentication failed three times. The operation was not run."
+                    )
+                );
+            }
             _ => panic!("expected the result dialog"),
         }
         assert_eq!(app.modal_depth(), 1);

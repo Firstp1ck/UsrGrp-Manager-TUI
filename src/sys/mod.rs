@@ -154,7 +154,7 @@ impl ProtectedIdentityPolicy {
         if target.uid < self.minimum_mutable_uid
             && !self.allowed_service_users.contains(&target.uid)
         {
-            return Err(target_error("service user is protected by policy"));
+            return Err(target_error("system user, protected"));
         }
         Ok(())
     }
@@ -179,7 +179,7 @@ impl ProtectedIdentityPolicy {
             return Some("root group is immutable");
         }
         if gid < self.minimum_mutable_gid && !self.allowed_service_groups.contains(&gid) {
-            return Some("service group is protected by policy");
+            return Some("system group, protected");
         }
         None
     }
@@ -189,7 +189,7 @@ impl ProtectedIdentityPolicy {
     fn elevation_rejection(&self, group: &GroupName) -> Option<&'static str> {
         (self.elevation_groups.contains(group)
             && !self.allowed_elevation_membership_groups.contains(group))
-        .then_some("elevation-group membership requires explicit policy allowlist")
+        .then_some("sudo group, protected")
     }
 }
 
