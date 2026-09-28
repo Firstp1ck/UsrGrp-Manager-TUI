@@ -11,6 +11,7 @@ use crate::{
     app::{AppState, GroupsFocus, ModalState},
     ui::components::{
         MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, render_modal_frame, text_lines,
+        with_error_line,
     },
 };
 
@@ -157,7 +158,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             },
             MENU_FOOTER,
         ),
-        ModalState::GroupAddInput { name } => {
+        ModalState::GroupAddInput { name, .. } => {
             ("Create group", format!("Group name:\n{name}"), TEXT_FOOTER)
         }
         ModalState::GroupDeleteConfirm {
@@ -221,7 +222,8 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
         }
         _ => return,
     };
-    render_modal_frame(frame, area, app, title, text_lines(body), footer);
+    let body = with_error_line(text_lines(body), modal.form_error());
+    render_modal_frame(frame, area, app, title, body, footer);
 }
 
 fn choices(options: &[&str], selected: usize) -> String {

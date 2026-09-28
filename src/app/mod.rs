@@ -276,6 +276,8 @@ pub enum ModalState {
     ModifyTextInput {
         field: ModifyField,
         value: String,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
     DeleteConfirm {
         selected: usize,
@@ -290,6 +292,8 @@ pub enum ModalState {
         password: SecretInput,
         confirm: SecretInput,
         must_change: bool,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
     /// The exact redacted bridge plan is visible before it can run.
     OperationConfirm {
@@ -313,6 +317,8 @@ pub enum ModalState {
     },
     GroupAddInput {
         name: String,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
     GroupDeleteConfirm {
         selected: usize,
@@ -341,6 +347,8 @@ pub enum ModalState {
     GroupRenameInput {
         name: String,
         target_gid: Option<u32>,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
     UserAddInput {
         selected: usize,
@@ -353,7 +361,23 @@ pub enum ModalState {
         /// password is typed, submitting is refused, so a failed attempt
         /// cannot be retried as an account without a password.
         password_reentry_required: bool,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
+}
+
+impl ModalState {
+    /// The inline validation message of a form dialog, if it has one.
+    pub fn form_error(&self) -> Option<&str> {
+        match self {
+            Self::ModifyTextInput { error, .. }
+            | Self::ChangePassword { error, .. }
+            | Self::GroupAddInput { error, .. }
+            | Self::GroupRenameInput { error, .. }
+            | Self::UserAddInput { error, .. } => error.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

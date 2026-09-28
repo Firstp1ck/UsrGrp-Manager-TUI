@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -146,6 +146,17 @@ pub fn render_modal_frame(
 /// Split newline-separated modal text into body lines.
 pub fn text_lines(text: String) -> Vec<Line<'static>> {
     Text::from(text).lines
+}
+
+/// Append a form's inline validation message as the last body line, in red.
+pub fn with_error_line(mut lines: Vec<Line<'static>>, error: Option<&str>) -> Vec<Line<'static>> {
+    if let Some(error) = error {
+        lines.push(Line::styled(
+            error.to_owned(),
+            Style::default().fg(Color::Red),
+        ));
+    }
+    lines
 }
 
 pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {

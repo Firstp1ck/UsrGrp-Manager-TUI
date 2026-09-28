@@ -11,7 +11,7 @@ use crate::{
     app::{AppState, ModalState, ModifyField, UsersFocus},
     ui::components::{
         FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
-        render_modal_frame, text_lines,
+        render_modal_frame, text_lines, with_error_line,
     },
 };
 
@@ -186,7 +186,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             choices(&["Username", "Full name", "Shell"], *selected),
             MENU_FOOTER,
         ),
-        ModalState::ModifyTextInput { field, value } => (
+        ModalState::ModifyTextInput { field, value, .. } => (
             match field {
                 ModifyField::Username => "Change username",
                 ModifyField::Fullname => "Change full name",
@@ -225,6 +225,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             password,
             confirm,
             must_change,
+            ..
         } => (
             "Set password",
             format!(
@@ -294,7 +295,8 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         ),
         _ => return,
     };
-    render_modal_frame(frame, area, app, title, text_lines(body), footer);
+    let body = with_error_line(text_lines(body), modal.form_error());
+    render_modal_frame(frame, area, app, title, body, footer);
 }
 
 const MAX_MODAL_CANDIDATES: usize = 1024;

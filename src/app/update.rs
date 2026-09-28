@@ -14,7 +14,7 @@ use crate::{
     },
     error::{CoreError, CoreResult, Result},
     search::apply_filters_and_search,
-    sys::{OperationRequest, PasswordRecord, SecretString, UserName},
+    sys::{GroupName, OperationRequest, PasswordRecord, SecretString, UserName},
     ui,
 };
 
@@ -93,12 +93,14 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
                     create_home: true,
                     add_to_wheel: false,
                     password_reentry_required: false,
+                    error: None,
                 },
             ),
             ActiveTab::Groups => open_modal(
                 app,
                 ModalState::GroupAddInput {
                     name: String::new(),
+                    error: None,
                 },
             ),
         },
@@ -338,7 +340,11 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
         ModalState::Actions { selected } => handle_user_actions(app, selected, key),
         ModalState::ModifyMenu { selected } => handle_modify_menu(app, selected, key),
         ModalState::ModifyDetailsMenu { selected } => handle_modify_details(app, selected, key),
-        ModalState::ModifyTextInput { field, value } => handle_text_input(app, field, value, key),
+        ModalState::ModifyTextInput {
+            field,
+            value,
+            error,
+        } => handle_text_input(app, field, value, error, key),
         ModalState::ModifyShell {
             selected, shells, ..
         } => handle_shell_modal(app, selected, shells, key),
@@ -358,7 +364,8 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             password,
             confirm,
             must_change,
-        } => handle_password_input(app, selected, password, confirm, must_change, key),
+            error,
+        } => handle_password_input(app, selected, password, confirm, must_change, error, key),
         ModalState::DeleteConfirm {
             selected,
             allowed,
@@ -372,7 +379,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected,
             target_gid,
         } => handle_group_actions(app, selected, target_gid, key),
-        ModalState::GroupAddInput { name } => handle_group_add(app, name, key),
+        ModalState::GroupAddInput { name, error } => handle_group_add(app, name, error, key),
         ModalState::GroupDeleteConfirm {
             selected,
             target_gid,
@@ -381,9 +388,11 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected,
             target_gid,
         } => handle_group_modify(app, selected, target_gid, key),
-        ModalState::GroupRenameInput { name, target_gid } => {
-            handle_group_rename(app, name, target_gid, key)
-        }
+        ModalState::GroupRenameInput {
+            name,
+            target_gid,
+            error,
+        } => handle_group_rename(app, name, target_gid, error, key),
         ModalState::GroupModifyAddMembers {
             selected,
             target_gid,
@@ -404,6 +413,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             create_home,
             add_to_wheel,
             password_reentry_required,
+            error,
         } => handle_user_add(
             app,
             selected,
@@ -413,6 +423,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             create_home,
             add_to_wheel,
             password_reentry_required,
+            error,
             key,
         ),
         ModalState::OperationConfirm { selected, .. } => {
@@ -539,6 +550,7 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                 ModalState::ModifyTextInput {
                     field: ModifyField::Username,
                     value: String::new(),
+                    error: None,
                 },
             ),
             1 => open_modal(
@@ -546,6 +558,7 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                 ModalState::ModifyTextInput {
                     field: ModifyField::Fullname,
                     value: String::new(),
+                    error: None,
                 },
             ),
             _ => {
@@ -573,14 +586,26 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
     }
 }
 
-fn handle_text_input(app: &mut AppState, field: &ModifyField, value: &mut String, key: KeyEvent) {
+fn handle_text_input(
+    app: &mut AppState,
+    field: &ModifyField,
+    value: &mut String,
+    error: &mut Option<String>,
+    key: KeyEvent,
+) {
+    let live_error = |value: &str| match field {
+        ModifyField::Username => live_name_error(UserName::new(value)),
+        ModifyField::Fullname => None,
+    };
     match key.code {
         KeyCode::Esc => back(app),
         KeyCode::Backspace => {
             value.pop();
+            *error = live_error(value);
         }
         KeyCode::Char(character) if !character.is_control() && value.len() < 4096 => {
-            value.push(character)
+            value.push(character);
+            *error = live_error(value);
         }
         KeyCode::Enter => {
             if let Some(user) = app.users.get(app.selected_user_index) {
@@ -594,7 +619,7 @@ fn handle_text_input(app: &mut AppState, field: &ModifyField, value: &mut String
                         new_fullname: value.clone(),
                     },
                 };
-                start_pending_action(app, action);
+                start_form_action(app, action, error);
             }
         }
         _ => {}
@@ -704,6 +729,7 @@ fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent)
                         password: SecretInput::default(),
                         confirm: SecretInput::default(),
                         must_change: false,
+                        error: None,
                     },
                 )
             } else if let Some(user) = app.users.get(app.selected_user_index) {
@@ -725,6 +751,7 @@ fn handle_password_input(
     password: &mut SecretInput,
     confirm: &mut SecretInput,
     must_change: &mut bool,
+    error: &mut Option<String>,
     key: KeyEvent,
 ) {
     match key.code {
@@ -735,9 +762,11 @@ fn handle_password_input(
         KeyCode::Backspace => match *selected {
             0 => {
                 password.pop();
+                *error = None;
             }
             1 => {
                 confirm.pop();
+                *error = None;
             }
             _ => {}
         },
@@ -751,15 +780,11 @@ fn handle_password_input(
             } else {
                 confirm.push(character)
             }
+            *error = None;
         }
         KeyCode::Enter if *selected == 3 => {
             if password.is_empty() || !password.matches(confirm) {
-                open_modal(
-                    app,
-                    ModalState::Info {
-                        message: "Passwords do not match or are empty.".to_owned(),
-                    },
-                )
+                *error = Some("Passwords do not match or are empty.".to_owned());
             } else if let Some(user) = app.users.get(app.selected_user_index) {
                 let username = user.name.clone();
                 let secret = SecretString::new(password.take());
@@ -778,8 +803,9 @@ fn handle_password_input(
                             must_change: *must_change,
                         },
                         record,
+                        error,
                     ),
-                    Err(error) => show_error(app, &error),
+                    Err(problem) => show_form_error(app, error, &problem),
                 }
             }
         }
@@ -857,6 +883,7 @@ fn handle_group_actions(
                 app,
                 ModalState::GroupAddInput {
                     name: String::new(),
+                    error: None,
                 },
             ),
             (1, target) => open_modal(
@@ -886,20 +913,28 @@ fn handle_group_actions(
     }
 }
 
-fn handle_group_add(app: &mut AppState, name: &mut String, key: KeyEvent) {
+fn handle_group_add(
+    app: &mut AppState,
+    name: &mut String,
+    error: &mut Option<String>,
+    key: KeyEvent,
+) {
     match key.code {
         KeyCode::Esc => back(app),
         KeyCode::Backspace => {
             name.pop();
+            *error = live_name_error(GroupName::new(&*name));
         }
         KeyCode::Char(character) if !character.is_control() && name.len() < 32 => {
-            name.push(character)
+            name.push(character);
+            *error = live_name_error(GroupName::new(&*name));
         }
-        KeyCode::Enter => start_pending_action(
+        KeyCode::Enter => start_form_action(
             app,
             PendingAction::CreateGroup {
                 groupname: name.clone(),
             },
+            error,
         ),
         _ => {}
     }
@@ -977,6 +1012,7 @@ fn handle_group_modify(
                 ModalState::GroupRenameInput {
                     name: String::new(),
                     target_gid: *target_gid,
+                    error: None,
                 },
             ),
         },
@@ -988,15 +1024,18 @@ fn handle_group_rename(
     app: &mut AppState,
     name: &mut String,
     target_gid: &mut Option<u32>,
+    error: &mut Option<String>,
     key: KeyEvent,
 ) {
     match key.code {
         KeyCode::Esc => back(app),
         KeyCode::Backspace => {
             name.pop();
+            *error = live_name_error(GroupName::new(&*name));
         }
         KeyCode::Char(character) if !character.is_control() && name.len() < 32 => {
-            name.push(character)
+            name.push(character);
+            *error = live_name_error(GroupName::new(&*name));
         }
         KeyCode::Enter => {
             let group = target_gid
@@ -1004,21 +1043,18 @@ fn handle_group_rename(
                 .or_else(|| app.groups.get(app.selected_group_index));
             if let Some(group) = group {
                 if crate::app::is_default_protected_group(group) {
-                    open_modal(
-                        app,
-                        ModalState::Info {
-                            message:
-                                "Protected group mutations require explicit policy allowlisting."
-                                    .to_owned(),
-                        },
+                    *error = Some(
+                        "Protected group mutations require explicit policy allowlisting."
+                            .to_owned(),
                     );
                 } else {
-                    start_pending_action(
+                    start_form_action(
                         app,
                         PendingAction::RenameGroup {
                             old_name: group.name.clone(),
                             new_name: name.clone(),
                         },
+                        error,
                     );
                 }
             }
@@ -1105,8 +1141,18 @@ fn handle_user_add(
     create_home: &mut bool,
     add_to_wheel: &mut bool,
     password_reentry_required: &mut bool,
+    error: &mut Option<String>,
     key: KeyEvent,
 ) {
+    // Edits refresh the message: a bad username stays visible, anything
+    // else is cleared once the user changes the input.
+    let live_error = |name: &str| {
+        if name.is_empty() {
+            None
+        } else {
+            live_name_error(UserName::new(name))
+        }
+    };
     match key.code {
         KeyCode::Esc => back(app),
         KeyCode::Up => *selected = selected.saturating_sub(1),
@@ -1116,19 +1162,23 @@ fn handle_user_add(
         KeyCode::Backspace => match *selected {
             0 => {
                 name.pop();
+                *error = live_name_error(UserName::new(&*name));
             }
             1 => {
                 password.pop();
+                *error = live_error(name);
             }
             2 => {
                 confirm.pop();
+                *error = live_error(name);
             }
             _ => {}
         },
         KeyCode::Char(character)
             if !character.is_control() && *selected == 0 && name.len() < 32 =>
         {
-            name.push(character)
+            name.push(character);
+            *error = live_name_error(UserName::new(&*name));
         }
         KeyCode::Char(character)
             if !character.is_control()
@@ -1141,10 +1191,12 @@ fn handle_user_add(
             } else {
                 confirm.push(character)
             }
+            *error = live_error(name);
         }
         KeyCode::Enter if *selected == 5 && *password_reentry_required && password.is_empty() => {
-            show_error(
+            show_form_error(
                 app,
+                error,
                 &CoreError::Validation {
                     field: "password",
                     reason: "Re-enter the password before submitting.",
@@ -1156,12 +1208,7 @@ fn handle_user_add(
             // filled and equal: a filled confirm with an empty password is
             // an error, not an account without a password.
             if name.is_empty() || !password.matches(confirm) {
-                open_modal(
-                    app,
-                    ModalState::Info {
-                        message: "Username is required and passwords must match.".to_owned(),
-                    },
-                )
+                *error = Some("Username is required and passwords must match.".to_owned());
             } else {
                 let action = PendingAction::CreateUserWithOptions {
                     username: name.clone(),
@@ -1170,7 +1217,7 @@ fn handle_user_add(
                     add_to_wheel: *add_to_wheel,
                 };
                 if password.is_empty() {
-                    start_pending_action(app, action);
+                    start_form_action(app, action, error);
                 } else {
                     let secret = SecretString::new(password.take());
                     // The password has left the form. If the submission
@@ -1182,8 +1229,8 @@ fn handle_user_add(
                     match UserName::new(name.clone())
                         .and_then(|username| PasswordRecord::new(username, secret))
                     {
-                        Ok(record) => start_password_action(app, action, record),
-                        Err(error) => show_error(app, &error),
+                        Ok(record) => start_password_action(app, action, record, error),
+                        Err(problem) => show_form_error(app, error, &problem),
                     }
                 }
             }
@@ -1231,22 +1278,44 @@ fn handle_sudo_prompt(
     }
 }
 
-fn start_password_action(app: &mut AppState, action: PendingAction, record: PasswordRecord) {
+/// Start an action from a form that just consumed a password.
+fn start_password_action(
+    app: &mut AppState,
+    action: PendingAction,
+    record: PasswordRecord,
+    error: &mut Option<String>,
+) {
     app.set_password_capability(record);
-    start_pending_action(app, action);
+    start_form_action(app, action, error);
 }
 
 fn start_pending_action(app: &mut AppState, action: PendingAction) {
-    match operation_request(app, action) {
-        Ok(request) => prepare_request(app, request),
-        Err(error) => {
-            app.clear_pending_operation();
-            show_error(app, &error);
-        }
+    if let Err(error) = try_start_pending_action(app, action) {
+        show_error(app, &error);
     }
 }
 
-fn prepare_request(app: &mut AppState, request: OperationRequest) {
+/// Start an action submitted from a form dialog. Validation problems stay in
+/// the form as its inline error; anything else is shown above it.
+fn start_form_action(app: &mut AppState, action: PendingAction, error: &mut Option<String>) {
+    match try_start_pending_action(app, action) {
+        Ok(()) => *error = None,
+        Err(problem @ CoreError::Validation { .. }) => show_form_error(app, error, &problem),
+        Err(problem) => show_error(app, &problem),
+    }
+}
+
+/// Build and prepare the request, opening its confirmation on success. On
+/// failure nothing stays pending and the caller reports the error.
+fn try_start_pending_action(app: &mut AppState, action: PendingAction) -> CoreResult<()> {
+    let result = operation_request(app, action).and_then(|request| prepare_request(app, request));
+    if result.is_err() {
+        app.clear_pending_operation();
+    }
+    result
+}
+
+fn prepare_request(app: &mut AppState, request: OperationRequest) -> CoreResult<()> {
     match app.adapter.prepare_operation(request) {
         Ok(plan) => {
             let prepared = crate::app::PreparedOperation { plan };
@@ -1267,11 +1336,9 @@ fn prepare_request(app: &mut AppState, request: OperationRequest) {
                     preview,
                 },
             );
+            Ok(())
         }
-        Err(error) => {
-            app.clear_pending_operation();
-            show_error(app, &error);
-        }
+        Err(error) => Err(error),
     }
 }
 
@@ -1521,6 +1588,21 @@ fn show_error(app: &mut AppState, error: &CoreError) {
     open_modal(app, ModalState::Info { message });
 }
 
+/// Keep a validation problem in the form that caused it, logged the same
+/// way `show_error` logs.
+fn show_form_error(app: &mut AppState, error: &mut Option<String>, problem: &CoreError) {
+    *error = Some(log_error(app, problem));
+}
+
+/// Inline message for a name typed so far: the rule it breaks, or None.
+fn live_name_error<T>(result: CoreResult<T>) -> Option<String> {
+    match result {
+        Ok(_) => None,
+        Err(CoreError::Validation { reason, .. }) => Some(reason.to_owned()),
+        Err(error) => Some(error.to_string()),
+    }
+}
+
 fn log_error(app: &mut AppState, error: &CoreError) -> String {
     let message = classified_error_message(error);
     app.log_event("error", &message);
@@ -1763,6 +1845,7 @@ mod tests {
                 must_change: false,
             },
             record,
+            &mut None,
         );
         start_pending_action(
             &mut app,
@@ -2026,23 +2109,126 @@ mod tests {
     }
 
     #[test]
-    fn validation_message_returns_to_the_form_on_esc() {
+    fn group_name_validation_stays_inline_in_the_form() {
         let mut app = user_app();
         open_modal(
             &mut app,
             ModalState::GroupAddInput {
                 name: String::new(),
+                error: None,
             },
         );
         press(&mut app, KeyCode::Char('!'));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some("must start with an ASCII letter or underscore")
+        );
         press(&mut app, KeyCode::Enter);
-        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
-        assert_eq!(app.modal_depth(), 2);
-        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.modal_depth(), 1);
+        assert!(app.pending_operation.is_none());
         assert!(matches!(
             app.modal(),
-            Some(ModalState::GroupAddInput { name }) if name == "!"
+            Some(ModalState::GroupAddInput { name, error: Some(error) })
+                if name == "!" && error.contains("E-VALIDATION")
         ));
+        // Fixing the name clears the message while typing.
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
+    }
+
+    fn open_user_add(app: &mut AppState) {
+        open_modal(
+            app,
+            ModalState::UserAddInput {
+                selected: 0,
+                name: String::new(),
+                password: SecretInput::default(),
+                confirm: SecretInput::default(),
+                create_home: true,
+                add_to_wheel: false,
+                password_reentry_required: false,
+                error: None,
+            },
+        );
+    }
+
+    fn type_text(app: &mut AppState, text: &str) {
+        for character in text.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn create_user_password_mismatch_keeps_the_form_open() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        type_text(&mut app, "bob");
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "first-secret");
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "other-secret");
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.modal_depth(), 1);
+        assert!(app.pending_operation.is_none());
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::UserAddInput { name, error: Some(_), .. }) if name == "bob"
+        ));
+        let screen = rendered(&app);
+        assert!(screen.contains("Username is required and passwords must match."));
+    }
+
+    #[test]
+    fn create_user_username_is_validated_while_typing() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        type_text(&mut app, "1bob");
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some("must start with an ASCII letter or underscore")
+        );
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_text(&mut app, "bob");
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
+    }
+
+    #[test]
+    fn set_password_mismatch_keeps_the_form_open() {
+        let mut app = root_app();
+        open_modal(
+            &mut app,
+            ModalState::ChangePassword {
+                selected: 0,
+                password: SecretInput::default(),
+                confirm: SecretInput::default(),
+                must_change: false,
+                error: None,
+            },
+        );
+        type_text(&mut app, "first-secret");
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, "other-secret");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.modal_depth(), 1);
+        assert!(app.pending_operation.is_none());
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ChangePassword { error: Some(_), .. })
+        ));
+        assert!(rendered(&app).contains("Passwords do not match or are empty."));
+        // Editing either field clears the message.
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
     }
 
     #[test]
@@ -2061,23 +2247,7 @@ mod tests {
             Arc::new(FixedIdentityProvider::uid(Uid(0))),
         ));
         let mut app = isolated_app(adapter, snapshot);
-        open_modal(
-            &mut app,
-            ModalState::UserAddInput {
-                selected: 0,
-                name: String::new(),
-                password: SecretInput::default(),
-                confirm: SecretInput::default(),
-                create_home: true,
-                add_to_wheel: false,
-                password_reentry_required: false,
-            },
-        );
-        let type_text = |app: &mut AppState, text: &str| {
-            for character in text.chars() {
-                press(app, KeyCode::Char(character));
-            }
-        };
+        open_user_add(&mut app);
         type_text(&mut app, "bob");
         press(&mut app, KeyCode::Down);
         type_text(&mut app, "fixture-password");
@@ -2087,16 +2257,16 @@ mod tests {
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Down);
-        // The sudo group is blocked by policy, so preparation fails.
+        // The sudo group is blocked by policy, so preparation fails and the
+        // reason is shown inside the form.
         press(&mut app, KeyCode::Enter);
-        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
         assert!(app.pending_operation.is_none());
-
-        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.modal_depth(), 1);
         assert!(matches!(
             app.modal(),
             Some(ModalState::UserAddInput {
                 password_reentry_required: true,
+                error: Some(_),
                 ..
             })
         ));
@@ -2109,11 +2279,11 @@ mod tests {
         assert!(app.pending_operation.is_none());
         assert!(matches!(
             app.modal(),
-            Some(ModalState::Info { message }) if message.contains("Re-enter the password")
+            Some(ModalState::UserAddInput { error: Some(message), .. })
+                if message.contains("Re-enter the password")
         ));
 
         // Typing the password again lets the submission through with it set.
-        press(&mut app, KeyCode::Esc);
         for _ in 0..4 {
             press(&mut app, KeyCode::Up);
         }
@@ -2227,6 +2397,7 @@ mod tests {
             &mut app,
             ModalState::GroupAddInput {
                 name: String::new(),
+                error: None,
             },
         );
         for character in ['j', 'k', 'h', 'l', 'y', 'n', '\u{7}'] {
@@ -2234,7 +2405,7 @@ mod tests {
         }
         assert!(matches!(
             app.modal(),
-            Some(ModalState::GroupAddInput { name }) if name == "jkhlyn"
+            Some(ModalState::GroupAddInput { name, .. }) if name == "jkhlyn"
         ));
     }
 
@@ -2296,6 +2467,7 @@ mod tests {
             (
                 ModalState::GroupAddInput {
                     name: String::new(),
+                    error: None,
                 },
                 "Enter submit  Esc back",
             ),
