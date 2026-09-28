@@ -16,11 +16,11 @@ use crate::{
     search::AccountShadowState,
     sys::SystemUser,
     ui::components::{
-        CandidateView, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER, PASSWORD_FORM_FOOTER, TEXT_FOOTER,
-        YES_NO_FOOTER, candidate_dialog, char_budget, details_lines, input_cursor, marker,
-        no_match_text, nothing_loaded_lines, push_filter_labels, render_empty_state,
-        render_modal_frame, row_style, search_title, shadow_skipped_note, text_lines,
-        with_error_line,
+        CandidateView, DetailLine, DetailPart, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER,
+        PASSWORD_FORM_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, char_budget,
+        details_lines, details_plain_text, input_cursor, marker, no_match_text,
+        nothing_loaded_lines, push_filter_labels, render_empty_state, render_modal_frame,
+        row_style, search_title, shadow_skipped_note, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -113,12 +113,12 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 pub fn render_user_details(frame: &mut Frame, area: Rect, app: &AppState) {
-    let text = app.users.get(app.selected_user_index).map_or_else(
-        || "No user selected.".to_owned(),
-        |user| user_details_text(app, user),
+    let lines = app.users.get(app.selected_user_index).map_or_else(
+        || vec![vec![DetailPart::Text("No user selected.".to_owned())]],
+        |user| user_details(app, user),
     );
     frame.render_widget(
-        Paragraph::new(details_lines(app, &text))
+        Paragraph::new(details_lines(app, &lines))
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
@@ -130,10 +130,18 @@ pub fn render_user_details(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 }
 
-/// Details pane text for `user`, one fact per line. Anything the last
-/// refresh could not read says "unavailable" and renders muted.
+/// Details pane text for `user`, one fact per line.
 pub fn user_details_text(app: &AppState, user: &SystemUser) -> String {
+    details_plain_text(&user_details(app, user))
+}
+
+/// Details pane lines for `user`, one fact per line. Anything the last
+/// refresh could not read says "unavailable" and is a muted
+/// [`DetailPart::Missing`]; account data is always [`DetailPart::Text`].
+pub fn user_details(app: &AppState, user: &SystemUser) -> Vec<DetailLine> {
     const UNAVAILABLE: &str = "unavailable";
+    let text = |value: &str| DetailPart::Text(value.to_owned());
+    let missing = || DetailPart::Missing(UNAVAILABLE.to_owned());
     let name = match user.full_name.as_deref().map(str::trim) {
         Some(full_name) if !full_name.is_empty() => format!("{} ({full_name})", user.name),
         _ => user.name.clone(),
@@ -147,50 +155,65 @@ pub fn user_details_text(app: &AppState, user: &SystemUser) -> String {
     let home = app.diagnostics.homes.get(&user.name);
     let exists = home.and_then(|diagnostic| diagnostic.exists);
     let permissions = match exists {
-        Some(false) => "-",
+        Some(false) => text("-"),
         _ => home
             .and_then(|diagnostic| diagnostic.permissions.as_deref())
-            .unwrap_or(UNAVAILABLE),
+            .map_or_else(missing, text),
     };
-    let count = |value: Option<usize>| value.map_or(UNAVAILABLE.to_owned(), |n| n.to_string());
+    let count = |value: Option<usize>| value.map_or_else(missing, |n| text(&n.to_string()));
     let keys = count(home.and_then(|diagnostic| diagnostic.authorized_key_count));
     let processes = count(home.and_then(|diagnostic| diagnostic.process_count));
 
     let listed = app
         .account_snapshot
         .as_ref()
-        .map_or(UNAVAILABLE, |snapshot| {
-            yes_no(
+        .map_or_else(missing, |snapshot| {
+            text(yes_no(
                 snapshot
                     .shells
                     .iter()
                     .any(|shell| shell.as_ref() == user.shell),
-            )
+            ))
         });
 
     let (password, dates) = match app.diagnostics.shadow.account_status(&user.name) {
         AccountShadowState::Known(status) => (
-            format!(
+            vec![text(&format!(
                 "locked {}  empty {}  expired {}",
                 yes_no(status.locked),
                 yes_no(status.no_password),
                 yes_no(status.expired)
-            ),
-            format!(
-                "Last change: {}  Expires: {}",
+            ))],
+            vec![
+                text("Last change: "),
                 last_change_label(status.last_change_days),
-                status
-                    .expire_abs_days
-                    .map_or("never".to_owned(), civil_date_label)
-            ),
+                text(&format!(
+                    "  Expires: {}",
+                    status
+                        .expire_abs_days
+                        .map_or("never".to_owned(), civil_date_label)
+                )),
+            ],
         ),
         AccountShadowState::Unknown { .. } => (
-            format!("{UNAVAILABLE} (no shadow record)"),
-            format!("Last change: {UNAVAILABLE}  Expires: {UNAVAILABLE}"),
+            vec![DetailPart::Missing(format!(
+                "{UNAVAILABLE} (no shadow record)"
+            ))],
+            vec![
+                text("Last change: "),
+                missing(),
+                text("  Expires: "),
+                missing(),
+            ],
         ),
         AccountShadowState::Unavailable { .. } => (
-            UNAVAILABLE.to_owned(),
-            format!("Last change: {UNAVAILABLE}  Expires: {UNAVAILABLE}"),
+            vec![missing()],
+            vec![
+                text("Last change: "),
+                missing(),
+                text("  Expires: "),
+                missing(),
+            ],
         ),
     };
 
@@ -199,29 +222,34 @@ pub fn user_details_text(app: &AppState, user: &SystemUser) -> String {
     } else {
         "not member"
     };
-    [
-        format!("User: {name}"),
-        format!(
+    let mut password_line = vec![text("Password: ")];
+    password_line.extend(password);
+    vec![
+        vec![text(&format!("User: {name}"))],
+        vec![text(&format!(
             "UID {}  GID {} ({primary_group})",
             user.uid, user.primary_gid
-        ),
-        format!(
-            "Home: {}  exists: {}  perms: {permissions}",
-            user.home_dir,
-            exists.map_or(UNAVAILABLE, yes_no)
-        ),
-        format!(
-            "Shell: {}  listed: {listed}  interactive: {}",
-            user.shell,
-            yes_no(is_interactive_shell(&user.shell))
-        ),
-        format!("Password: {password}"),
+        ))],
+        vec![
+            text(&format!("Home: {}  exists: ", user.home_dir)),
+            exists.map_or_else(missing, |value| text(yes_no(value))),
+            text("  perms: "),
+            permissions,
+        ],
+        vec![
+            text(&format!("Shell: {}  listed: ", user.shell)),
+            listed,
+            text(&format!(
+                "  interactive: {}",
+                yes_no(is_interactive_shell(&user.shell))
+            )),
+        ],
+        password_line,
         dates,
-        format!("Sudo group ({}): {sudo}", app.sudo_group),
-        format!("SSH keys: {keys}"),
-        format!("Processes: {processes}"),
+        vec![text(&format!("Sudo group ({}): {sudo}", app.sudo_group))],
+        vec![text("SSH keys: "), keys],
+        vec![text("Processes: "), processes],
     ]
-    .join("\n")
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -236,11 +264,11 @@ fn is_interactive_shell(shell: &str) -> bool {
 
 /// Shadow last-change day: day zero forces a change at the next login and an
 /// empty field turns password aging off.
-fn last_change_label(days: Option<i64>) -> String {
+fn last_change_label(days: Option<i64>) -> DetailPart {
     match days {
-        Some(0) => "must change at next login".to_owned(),
-        Some(days) => civil_date_label(days),
-        None => "not set".to_owned(),
+        Some(0) => DetailPart::Text("must change at next login".to_owned()),
+        Some(days) => DetailPart::Text(civil_date_label(days)),
+        None => DetailPart::Missing("not set".to_owned()),
     }
 }
 
@@ -394,18 +422,21 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         } => {
             let adding = matches!(modal, ModalState::ModifyGroupsAdd { .. });
             let list = group_candidates(app, adding, filter);
-            let (title, body, focus, footer) = candidate_dialog(&CandidateView {
-                name: if adding {
-                    "Add groups"
-                } else {
-                    "Remove groups"
+            let (title, body, focus, footer) = candidate_dialog(
+                app,
+                &CandidateView {
+                    name: if adding {
+                        "Add groups"
+                    } else {
+                        "Remove groups"
+                    },
+                    list: &list,
+                    selected: *selected,
+                    ticked: selected_multi,
+                    filter,
+                    filtering: *filtering,
                 },
-                list: &list,
-                selected: *selected,
-                ticked: selected_multi,
-                filter,
-                filtering: *filtering,
-            });
+            );
             let body = with_error_line(body, modal.form_error());
             render_modal_frame(frame, area, app, &title, body, focus, footer);
             return;
@@ -504,25 +535,39 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             // A blocked group has no checkbox. One ticked before the block
             // appeared keeps its box so it can still be cleared.
             let group = &app.sudo_group;
-            let sudo_row = match (app.membership_block(group), *add_to_wheel) {
-                (Some(reason), false) => {
-                    format!("    Add to sudo group ({group}): blocked, {reason}")
-                }
-                (Some(reason), true) => {
-                    format!("[x] Add to sudo group ({group}): blocked, {reason}")
-                }
-                (None, ticked) => format!(
-                    "[{}] Add to sudo group ({group})",
-                    if ticked { "x" } else { " " }
+            let (sudo_row, blocked) = match (app.membership_block(group), *add_to_wheel) {
+                (Some(reason), false) => (
+                    format!("    Add to sudo group ({group}): blocked, {reason}"),
+                    true,
+                ),
+                (Some(reason), true) => (
+                    format!("[x] Add to sudo group ({group}): blocked, {reason}"),
+                    true,
+                ),
+                (None, ticked) => (
+                    format!(
+                        "[{}] Add to sudo group ({group})",
+                        if ticked { "x" } else { " " }
+                    ),
+                    false,
                 ),
             };
-            body.extend(text_lines(format!(
-                "{} [{}] Create home\n{} {sudo_row}\n{} Submit",
+            // A blocked sudo row is drawn in the muted color.
+            let sudo_style = if blocked {
+                Style::default().fg(app.theme.muted)
+            } else {
+                Style::default()
+            };
+            body.push(Line::from(format!(
+                "{} [{}] Create home",
                 marker(*selected, 3),
-                if *create_home { "x" } else { " " },
-                marker(*selected, 4),
-                marker(*selected, 5)
+                if *create_home { "x" } else { " " }
             )));
+            body.push(Line::styled(
+                format!("{} {sudo_row}", marker(*selected, 4)),
+                sudo_style,
+            ));
+            body.push(Line::from(format!("{} Submit", marker(*selected, 5))));
             let focus = password_form_focus(*selected, 1, password);
             let body = with_error_line(body, modal.form_error());
             render_modal_frame(

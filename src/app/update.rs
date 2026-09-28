@@ -5343,6 +5343,135 @@ mod tests {
         assert!(text.ends_with("/etc/group changed: unavailable"));
     }
 
+    /// Buffer of a TestBackend render at `width` x `height`.
+    fn rendered_buffer(app: &AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::render(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn details_mute_only_missing_diagnostics_never_account_data() {
+        use ratatui::style::Color;
+        let snapshot = AccountSnapshot {
+            users: vec![AccountUser {
+                uid: Uid(1000),
+                name: UserName::new("unavailable").unwrap(),
+                primary_gid: Gid(100),
+                full_name: None,
+                home_dir: "/home/unavailable-user".into(),
+                shell: ShellPath::new("/bin/sh").unwrap(),
+            }],
+            groups: vec![AccountGroup {
+                gid: Gid(100),
+                name: GroupName::new("staff").unwrap(),
+                members: vec![],
+            }],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.theme.text = Color::Rgb(7, 8, 9);
+        app.theme.muted = Color::Rgb(10, 11, 12);
+        let rows = rendered_rows(&app, 100, 30);
+        let buffer = rendered_buffer(&app, 100, 30);
+        let fg = |text: &str, skip: u16| {
+            let (x, y) = find_text(&rows, text)
+                .unwrap_or_else(|| panic!("{text:?} not shown in\n{}", rows.join("\n")));
+            buffer[(x + skip, y)].fg
+        };
+        let text = Color::Rgb(7, 8, 9);
+        let muted = Color::Rgb(10, 11, 12);
+        assert_eq!(fg("User: unavailable", 6), text, "user name");
+        assert_eq!(fg("Home: /home/unavailable-user", 12), text, "home dir");
+        assert_eq!(fg("Home: /home/unavailable-user", 0), text, "label");
+        // Shadow data is unavailable in this fixture.
+        assert_eq!(fg("Password: unavailable", 10), muted, "missing shadow");
+        assert_eq!(fg("Password: unavailable", 0), text, "password label");
+        assert_eq!(fg("exists: unavailable", 8), muted, "missing home check");
+    }
+
+    #[test]
+    fn blocked_candidates_and_the_blocked_sudo_row_are_muted() {
+        use ratatui::style::Color;
+        let muted = Color::Rgb(10, 11, 12);
+        let mut app = wheel_app();
+        app.theme.muted = muted;
+        let alice = app.users.iter().position(|user| user.name == "alice");
+        app.selected_user_index = alice.unwrap();
+        open_modal(
+            &mut app,
+            ModalState::ModifyGroupsAdd {
+                selected: 0,
+                offset: 0,
+                selected_multi: vec![],
+                filter: String::new(),
+                filtering: false,
+                error: None,
+            },
+        );
+        let rows = rendered_rows(&app, 100, 30);
+        let buffer = rendered_buffer(&app, 100, 30);
+        let (x, y) = find_text(&rows, "wheel (blocked: sudo group, protected)").unwrap();
+        assert_eq!(buffer[(x, y)].fg, muted, "blocked candidate");
+        let (x, y) = find_text(&rows, "[ ] ops").unwrap();
+        assert_ne!(buffer[(x, y)].fg, muted, "allowed candidate");
+
+        let mut app = wheel_app();
+        app.theme.muted = muted;
+        open_user_add(&mut app);
+        let rows = rendered_rows(&app, 100, 30);
+        let buffer = rendered_buffer(&app, 100, 30);
+        let (x, y) = find_text(&rows, "Add to sudo group (wheel): blocked").unwrap();
+        assert_eq!(buffer[(x, y)].fg, muted, "blocked sudo row");
+        let (x, y) = find_text(&rows, "Create home").unwrap();
+        assert_ne!(buffer[(x, y)].fg, muted, "other form rows");
+    }
+
+    #[test]
+    fn status_bar_mutes_the_help_hint_and_unavailable_shadow() {
+        use ratatui::style::Color;
+        let mut app = single_account_app();
+        app.theme.status_fg = Color::Rgb(1, 2, 3);
+        app.theme.status_bg = Color::Rgb(4, 5, 6);
+        app.theme.muted = Color::Rgb(10, 11, 12);
+        app.diagnostics
+            .config_messages
+            .push("theme configuration line 3: unknown color".to_owned());
+        app.last_refresh_label = "22:13:20 UTC".to_owned();
+        let (width, height) = (120, 12);
+        let rows = rendered_rows(&app, width, height);
+        let buffer = rendered_buffer(&app, width, height);
+        let y = height - 1;
+        let status = &rows[usize::from(y)];
+        assert_eq!(
+            status.trim_end(),
+            "refreshed 22:13:20 UTC · users 1/1 · groups 1 · config: 1 error (see ? help) · shadow unavailable"
+        );
+        let x_of = |text: &str| {
+            let byte = status.find(text).unwrap();
+            u16::try_from(status[..byte].chars().count()).unwrap()
+        };
+        for (text, fg) in [
+            ("refreshed", Color::Rgb(1, 2, 3)),
+            ("config: 1 error", Color::Rgb(1, 2, 3)),
+            ("(see ? help)", Color::Rgb(10, 11, 12)),
+            ("help)", Color::Rgb(10, 11, 12)),
+            ("shadow ", Color::Rgb(1, 2, 3)),
+            ("unavailable", Color::Rgb(10, 11, 12)),
+        ] {
+            let cell = &buffer[(x_of(text), y)];
+            assert_eq!(cell.fg, fg, "{text}");
+            assert_eq!(cell.bg, Color::Rgb(4, 5, 6), "{text} background");
+        }
+    }
+
     #[test]
     fn empty_snapshot_shows_nothing_loaded_with_the_stale_reason() {
         let snapshot = AccountSnapshot {

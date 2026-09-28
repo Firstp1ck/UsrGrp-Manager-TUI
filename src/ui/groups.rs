@@ -15,10 +15,10 @@ use crate::{
     search::ShadowState,
     sys::SystemGroup,
     ui::components::{
-        CandidateView, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog,
-        char_budget, details_lines, marker, no_match_text, nothing_loaded_lines,
-        push_filter_labels, render_empty_state, render_modal_frame, row_style, search_title,
-        text_lines, with_error_line,
+        CandidateView, DetailLine, DetailPart, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER,
+        YES_NO_FOOTER, candidate_dialog, char_budget, details_lines, details_plain_text, marker,
+        no_match_text, nothing_loaded_lines, push_filter_labels, render_empty_state,
+        render_modal_frame, row_style, search_title, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -100,12 +100,12 @@ pub fn render_groups_table(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 pub fn render_group_details(frame: &mut Frame, area: Rect, app: &AppState) {
-    let text = app.groups.get(app.selected_group_index).map_or_else(
-        || "No group selected.".to_owned(),
-        |group| group_details_text(app, group),
+    let lines = app.groups.get(app.selected_group_index).map_or_else(
+        || vec![vec![DetailPart::Text("No group selected.".to_owned())]],
+        |group| group_details(app, group),
     );
     frame.render_widget(
-        Paragraph::new(details_lines(app, &text))
+        Paragraph::new(details_lines(app, &lines))
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
@@ -117,9 +117,16 @@ pub fn render_group_details(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 }
 
-/// Details pane text for `group`, one fact per line. Anything the last
-/// refresh could not read says "unavailable" and renders muted.
+/// Details pane text for `group`, one fact per line.
 pub fn group_details_text(app: &AppState, group: &SystemGroup) -> String {
+    details_plain_text(&group_details(app, group))
+}
+
+/// Details pane lines for `group`, one fact per line. Anything the last
+/// refresh could not read says "unavailable" and is a muted
+/// [`DetailPart::Missing`]; account data is always [`DetailPart::Text`].
+pub fn group_details(app: &AppState, group: &SystemGroup) -> Vec<DetailLine> {
+    let text = |value: String| DetailPart::Text(value);
     let diagnostics = app.diagnostics.groups.get(&group.gid);
     let count = |field: fn(&GroupDiagnostics) -> usize| diagnostics.map_or(0, field);
     let kind = if group.gid < 1000 { "system" } else { "user" };
@@ -129,54 +136,56 @@ pub fn group_details_text(app: &AppState, group: &SystemGroup) -> String {
         ""
     };
     let passwords = match app.diagnostics.shadow {
-        ShadowState::Known(_) => format!(
+        ShadowState::Known(_) => text(format!(
             "{} locked, {} empty, {} expired (shadow known)",
             count(|value| value.locked_members),
             count(|value| value.empty_password_members),
             count(|value| value.expired_members)
-        ),
-        ShadowState::Unavailable { .. } => "unavailable".to_owned(),
+        )),
+        ShadowState::Unavailable { .. } => DetailPart::Missing("unavailable".to_owned()),
     };
     let mut lines = vec![
-        format!(
+        vec![text(format!(
             "Group: {} (GID {}, {kind}{protected})",
             group.name, group.gid
-        ),
-        format!(
+        ))],
+        vec![text(format!(
             "Members: {} primary, {} secondary, {} orphaned",
             count(|value| value.primary_members),
             group.members.len(),
             count(|value| value.orphan_members)
-        ),
-        format!("Password status of members: {passwords}"),
-        format!(
-            "/etc/group changed: {}",
+        ))],
+        vec![text("Password status of members: ".to_owned()), passwords],
+        vec![
+            text("/etc/group changed: ".to_owned()),
             changed_label(
                 app.diagnostics.group_mtime_days,
-                app.diagnostics.refreshed_days
-            )
-        ),
+                app.diagnostics.refreshed_days,
+            ),
+        ],
     ];
     if diagnostics.is_some_and(|value| value.members_truncated) {
-        lines.push("Member diagnostics bounded at 100000 records.".to_owned());
+        lines.push(vec![text(
+            "Member diagnostics bounded at 100000 records.".to_owned(),
+        )]);
     }
-    lines.join("\n")
+    lines
 }
 
 /// `2026-09-01 (27 days ago)` for a file changed on day `changed`, counted
 /// back from the refresh day. No age is shown when the change day is later
 /// than the refresh day.
-fn changed_label(changed: Option<u64>, refreshed: u64) -> String {
+fn changed_label(changed: Option<u64>, refreshed: u64) -> DetailPart {
     let Some(changed) = changed else {
-        return "unavailable".to_owned();
+        return DetailPart::Missing("unavailable".to_owned());
     };
     let date = civil_date_label(i64::try_from(changed).unwrap_or(i64::MAX));
-    match refreshed.checked_sub(changed) {
+    DetailPart::Text(match refreshed.checked_sub(changed) {
         Some(0) => format!("{date} (today)"),
         Some(1) => format!("{date} (1 day ago)"),
         Some(days) => format!("{date} ({days} days ago)"),
         None => date,
-    }
+    })
 }
 
 pub fn render_group_members(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -296,18 +305,21 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
         } => {
             let adding = matches!(modal, ModalState::GroupModifyAddMembers { .. });
             let list = member_candidates(app, *target_gid, adding, filter);
-            let (title, body, focus, footer) = candidate_dialog(&CandidateView {
-                name: if adding {
-                    "Add members"
-                } else {
-                    "Remove members"
+            let (title, body, focus, footer) = candidate_dialog(
+                app,
+                &CandidateView {
+                    name: if adding {
+                        "Add members"
+                    } else {
+                        "Remove members"
+                    },
+                    list: &list,
+                    selected: *selected,
+                    ticked: selected_multi,
+                    filter,
+                    filtering: *filtering,
                 },
-                list: &list,
-                selected: *selected,
-                ticked: selected_multi,
-                filter,
-                filtering: *filtering,
-            });
+            );
             let body = with_error_line(body, modal.form_error());
             render_modal_frame(frame, area, app, &title, body, focus, footer);
             return;

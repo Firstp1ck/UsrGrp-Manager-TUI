@@ -63,11 +63,15 @@ pub struct StatusSegments {
     /// Segment that may be shortened down to `STALE_MARKER` (the stale
     /// label). It gets the width the other kept segments leave over.
     pub shrinkable: Option<usize>,
+    /// Per segment, how many trailing bytes are secondary text drawn in the
+    /// muted color (`(see ? help)`, the shadow `unavailable` value).
+    pub muted_tails: Vec<usize>,
 }
 
 /// Status bar segments for the current state.
 pub fn status_segments(app: &AppState) -> StatusSegments {
     let mut segments = Vec::new();
+    let mut muted_tails = Vec::new();
     match app.input_mode {
         InputMode::SearchUsers => segments.push("SEARCH(users)".to_owned()),
         InputMode::SearchGroups => segments.push("SEARCH(groups)".to_owned()),
@@ -117,19 +121,26 @@ pub fn status_segments(app: &AppState) -> StatusSegments {
             }
         },
     }
+    muted_tails.resize(segments.len(), 0);
+    const HELP_HINT: &str = "(see ? help)";
     match app.diagnostics.config_messages.len() {
         0 => {}
-        1 => segments.push("config: 1 error (see ? help)".to_owned()),
-        count => segments.push(format!("config: {count} errors (see ? help)")),
+        1 => segments.push(format!("config: 1 error {HELP_HINT}")),
+        count => segments.push(format!("config: {count} errors {HELP_HINT}")),
     }
-    segments.push(format!(
-        "shadow {}",
-        app.diagnostics.shadow.availability_label()
-    ));
+    muted_tails.resize(segments.len(), HELP_HINT.len());
+    let shadow = &app.diagnostics.shadow;
+    let label = shadow.availability_label();
+    segments.push(format!("shadow {label}"));
+    muted_tails.push(match shadow {
+        crate::search::ShadowState::Known(_) => 0,
+        crate::search::ShadowState::Unavailable { .. } => label.len(),
+    });
     StatusSegments {
         segments,
         essential,
         shrinkable,
+        muted_tails,
     }
 }
 
@@ -150,7 +161,7 @@ fn position(name: &str, selected: usize, len: usize) -> String {
 /// out. Trailing segments beyond the essential ones are dropped only when
 /// they do not fit next to that marker. The shrinkable segment then gets
 /// the width left over and ends in `…` when cut.
-pub fn fit_status_line(status: &StatusSegments, width: usize) -> String {
+pub fn fit_status_line(status: &StatusSegments, width: usize) -> Vec<(String, bool)> {
     let segments = &status.segments;
     let widths: Vec<usize> = segments
         .iter()
@@ -174,20 +185,59 @@ pub fn fit_status_line(status: &StatusSegments, width: usize) -> String {
         kept -= 1;
     }
     let mut leftover = width.saturating_sub(line_width(kept));
-    let parts: Vec<String> = segments[..kept]
-        .iter()
-        .enumerate()
-        .map(|(index, segment)| {
-            if status.shrinkable == Some(index) {
-                let room = widths[index] + leftover;
-                leftover = 0;
-                truncate_to_width(segment, room)
-            } else {
-                segment.clone()
-            }
-        })
-        .collect();
-    truncate_to_width(&parts.join(STATUS_SEPARATOR), width)
+    // (text, muted) pieces in display order, separators included.
+    let mut pieces = Vec::new();
+    for (index, segment) in segments[..kept].iter().enumerate() {
+        if index > 0 {
+            pieces.push((STATUS_SEPARATOR.to_owned(), false));
+        }
+        if status.shrinkable == Some(index) {
+            let room = widths[index] + leftover;
+            leftover = 0;
+            pieces.push((truncate_to_width(segment, room), false));
+            continue;
+        }
+        let tail = status.muted_tails.get(index).copied().unwrap_or(0);
+        let split = segment.len().saturating_sub(tail);
+        let split = if segment.is_char_boundary(split) {
+            split
+        } else {
+            segment.len()
+        };
+        let (plain, muted) = segment.split_at(split);
+        pieces.push((plain.to_owned(), false));
+        pieces.push((muted.to_owned(), true));
+    }
+    pieces.retain(|(text, _)| !text.is_empty());
+    truncate_pieces(pieces, width)
+}
+
+/// Cut the joined pieces to at most `width` columns like
+/// [`truncate_to_width`], keeping each surviving character's piece and
+/// putting the `…` in the last kept piece's style.
+fn truncate_pieces(pieces: Vec<(String, bool)>, width: usize) -> Vec<(String, bool)> {
+    let joined: String = pieces.iter().map(|(text, _)| text.as_str()).collect();
+    let cut = truncate_to_width(&joined, width);
+    if cut == joined {
+        return pieces;
+    }
+    let mut keep = cut.strip_suffix('…').unwrap_or(&cut).len();
+    let mut out = Vec::new();
+    for (text, muted) in pieces {
+        if keep == 0 {
+            break;
+        }
+        let take = keep.min(text.len());
+        out.push((text[..take].to_owned(), muted));
+        keep -= take;
+    }
+    if cut.ends_with('…') {
+        match out.last_mut() {
+            Some((text, _)) => text.push('…'),
+            None => out.push(("…".to_owned(), false)),
+        }
+    }
+    out
 }
 
 /// Display width of `text` in terminal columns.
@@ -217,10 +267,22 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     out
 }
 
+/// Status bar in `status_fg` on `status_bg`, with the help hint and an
+/// unavailable shadow value in the muted color.
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &AppState) {
-    let text = fit_status_line(&status_segments(app), usize::from(area.width));
+    let muted = Style::default().fg(app.theme.muted);
+    let spans: Vec<Span<'static>> = fit_status_line(&status_segments(app), usize::from(area.width))
+        .into_iter()
+        .map(|(text, is_muted)| {
+            if is_muted {
+                Span::styled(text, muted)
+            } else {
+                Span::raw(text)
+            }
+        })
+        .collect();
     frame.render_widget(
-        Paragraph::new(text).style(
+        Paragraph::new(Line::from(spans)).style(
             Style::default()
                 .fg(app.theme.status_fg)
                 .bg(app.theme.status_bg),
@@ -674,25 +736,52 @@ pub fn row_style(app: &AppState, selected: bool) -> Style {
     }
 }
 
-/// Details pane text in the theme's text color, with every `unavailable`
-/// value in the muted color.
-pub fn details_lines(app: &AppState, text: &str) -> Vec<Line<'static>> {
-    const UNAVAILABLE: &str = "unavailable";
+/// A piece of a details pane line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetailPart {
+    /// Labels and account data, in the theme's text color.
+    Text(String),
+    /// Placeholder for a diagnostic the last refresh could not read
+    /// (`unavailable`, `not set`), in the muted color.
+    Missing(String),
+}
+
+/// One details pane line.
+pub type DetailLine = Vec<DetailPart>;
+
+/// Details pane lines styled per part: account data in the text color and
+/// only [`DetailPart::Missing`] placeholders in the muted color.
+pub fn details_lines(app: &AppState, lines: &[DetailLine]) -> Vec<Line<'static>> {
+    let text = Style::default().fg(app.theme.text);
     let muted = Style::default().fg(app.theme.muted);
-    text.lines()
+    lines
+        .iter()
         .map(|line| {
-            let mut spans = Vec::new();
-            for (index, part) in line.split(UNAVAILABLE).enumerate() {
-                if index > 0 {
-                    spans.push(Span::styled(UNAVAILABLE, muted));
-                }
-                if !part.is_empty() {
-                    spans.push(Span::raw(part.to_owned()));
-                }
-            }
-            Line::from(spans).style(Style::default().fg(app.theme.text))
+            let spans: Vec<Span<'static>> = line
+                .iter()
+                .map(|part| match part {
+                    DetailPart::Text(value) => Span::styled(value.clone(), text),
+                    DetailPart::Missing(value) => Span::styled(value.clone(), muted),
+                })
+                .collect();
+            Line::from(spans).style(text)
         })
         .collect()
+}
+
+/// Details pane lines as plain text, one line per row.
+pub fn details_plain_text(lines: &[DetailLine]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|part| match part {
+                    DetailPart::Text(value) | DetailPart::Missing(value) => value.as_str(),
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Append a form's inline validation message as the last body line, in red.
@@ -1035,8 +1124,15 @@ const CANDIDATE_ROWS: usize = 12;
 /// the policy refuses. `candidates` must be the same list the key handler
 /// indexes (see `AppState::group_member_candidate_list` and
 /// `AppState::user_group_candidate_list`); `ticked` holds names.
-pub fn candidate_page(candidates: &CandidateList, selected: usize, ticked: &[String]) -> String {
+/// Blocked rows are drawn in the muted color.
+pub fn candidate_page(
+    app: &AppState,
+    candidates: &CandidateList,
+    selected: usize,
+    ticked: &[String],
+) -> Vec<Line<'static>> {
     let start = selected / CANDIDATE_ROWS * CANDIDATE_ROWS;
+    let muted = Style::default().fg(app.theme.muted);
     candidates
         .names
         .iter()
@@ -1044,18 +1140,22 @@ pub fn candidate_page(candidates: &CandidateList, selected: usize, ticked: &[Str
         .skip(start)
         .take(CANDIDATE_ROWS)
         .map(|(index, name)| {
-            let blocked = candidates
-                .blocked_reason(index)
+            let reason = candidates.blocked_reason(index);
+            let blocked = reason
                 .map(|reason| format!(" (blocked: {reason})"))
                 .unwrap_or_default();
-            format!(
+            let row = format!(
                 "{} [{}] {name}{blocked}",
                 marker(selected, index),
                 if ticked.contains(name) { "x" } else { " " }
-            )
+            );
+            if reason.is_some() {
+                Line::styled(row, muted)
+            } else {
+                Line::from(row)
+            }
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
 /// What a multi-select dialog shows, borrowed from its modal state.
@@ -1076,6 +1176,7 @@ pub struct CandidateView<'a> {
 /// capped. The body starts with the filter line when a filter is set or
 /// being typed. The focus row is the highlighted candidate's body line.
 pub fn candidate_dialog(
+    app: &AppState,
     view: &CandidateView<'_>,
 ) -> (String, Vec<Line<'static>>, Option<usize>, &'static str) {
     let len = view.list.names.len();
@@ -1104,11 +1205,7 @@ pub fn candidate_dialog(
         body.push(Line::from("No matches"));
     }
     let focus = (len > 0).then(|| body.len() + view.selected % CANDIDATE_ROWS);
-    body.extend(text_lines(candidate_page(
-        view.list,
-        view.selected,
-        view.ticked,
-    )));
+    body.extend(candidate_page(app, view.list, view.selected, view.ticked));
     let footer = if view.filtering {
         FILTER_FOOTER
     } else if view.ticked.is_empty() {
