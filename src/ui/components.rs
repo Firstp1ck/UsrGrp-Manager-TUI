@@ -1180,6 +1180,17 @@ fn bound_keys(app: &AppState, actions: &[KeyAction]) -> String {
         .join(", ")
 }
 
+/// `label: path` for config file `name`, from the paths cached when the
+/// configuration was loaded. Rendering never resolves config roots itself.
+fn config_path_line(app: &AppState, label: &str, name: &str) -> String {
+    let path = app
+        .config_paths
+        .iter()
+        .find(|(file, _)| file == name)
+        .map_or("not loaded", |(_, path)| path.as_str());
+    format!("{label}: {path}")
+}
+
 /// Help modal lines: recorded configuration problems first, then the keys
 /// by section, then where the configuration files are. Main-view keys come
 /// from the keymap, so a rebinding shows up here.
@@ -1273,15 +1284,9 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
     section(
         "Configuration",
         vec![
-            format!("Theme file: {}", app.configuration_write_path("theme.conf")),
-            format!(
-                "Keys file: {}",
-                app.configuration_write_path("keybinds.conf")
-            ),
-            format!(
-                "Filters file: {}",
-                app.configuration_write_path("filter.conf")
-            ),
+            config_path_line(app, "Theme file", "theme.conf"),
+            config_path_line(app, "Keys file", "keybinds.conf"),
+            config_path_line(app, "Filters file", "filter.conf"),
             "--config-dir <PATH> reads and writes these files in PATH only".to_owned(),
             "--dry-run shows every command preview and never runs it".to_owned(),
             "--log-file <PATH> appends operations and results to PATH".to_owned(),
@@ -1290,51 +1295,42 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
     lines
 }
 
-/// Index range of the help lines shown at `scroll` on a terminal of
-/// `area` (width, height). The start is clamped so the last page is full,
-/// and as many whole lines follow as fit the tallest dialog, counting the
-/// rows each wraps to. At least one line is shown.
-pub fn help_window(lines: &[Line<'_>], area: (u16, u16), scroll: usize) -> std::ops::Range<usize> {
+/// Help rows on a terminal of `area` (width, height) and the range shown
+/// at `scroll`. Every help line is first wrapped by character to the
+/// dialog's inner width, so each returned row is one screen row and a line
+/// longer than the dialog can be scrolled through row by row. The start is
+/// clamped so the last page is full. At least one row is shown.
+pub fn help_window<'a>(
+    lines: &'a [Line<'_>],
+    area: (u16, u16),
+    scroll: usize,
+) -> (Vec<Line<'a>>, std::ops::Range<usize>) {
     let inner = usize::from(modal_width(area.0).saturating_sub(2));
-    let rows = modal_body_rows(area.1);
-    let heights: Vec<usize> = lines
-        .iter()
-        .map(|line| wrap_line(line, inner).len())
-        .collect();
-    // Smallest start from which the rest of the help fits.
-    let mut last_start = heights.len();
-    let mut used = 0;
-    while last_start > 0 && used + heights[last_start - 1] <= rows {
-        last_start -= 1;
-        used += heights[last_start];
-    }
-    let start = scroll.min(last_start).min(heights.len().saturating_sub(1));
-    let mut end = start;
-    let mut used = 0;
-    while end < heights.len() && (end == start || used + heights[end] <= rows) {
-        used += heights[end];
-        end += 1;
-    }
-    start..end
+    let rows = wrap_details(lines, inner);
+    let visible = modal_body_rows(area.1).max(1);
+    let start = scroll.min(rows.len().saturating_sub(visible));
+    let end = (start + visible).min(rows.len());
+    (rows, start..end)
 }
 
 /// Largest useful help scroll on a terminal of `area` (width, height): the
-/// one that shows the last page.
+/// one that shows the last page of wrapped rows.
 pub fn help_max_scroll(app: &AppState, area: (u16, u16)) -> usize {
-    help_window(&help_lines(app), area, usize::MAX).start
+    help_window(&help_lines(app), area, usize::MAX).1.start
 }
 
-/// Help dialog at `scroll`, titled with the visible line range.
+/// Help dialog at `scroll`, titled with the visible row range.
 fn render_help(frame: &mut Frame, area: Rect, app: &AppState, scroll: u16) {
     let lines = help_lines(app);
-    let shown = help_window(&lines, (area.width, area.height), usize::from(scroll));
+    let (rows, shown) = help_window(&lines, (area.width, area.height), usize::from(scroll));
     let title = format!(
-        "Help (lines {}-{} of {})",
+        "Help (rows {}-{} of {})",
         shown.start + 1,
         shown.end,
-        lines.len()
+        rows.len()
     );
-    let body = lines[shown].to_vec();
+    // The rows already fit the dialog's width, so the frame does not re-wrap them.
+    let body = rows[shown].to_vec();
     render_modal_frame(
         frame,
         area,

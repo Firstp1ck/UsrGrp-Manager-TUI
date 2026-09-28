@@ -4259,27 +4259,85 @@ mod tests {
         }
     }
 
+    /// Body rows of the help dialog, between its title and footer, borders
+    /// stripped, from a TestBackend render at `width` x `height`.
+    fn help_body(app: &AppState, width: u16, height: u16) -> Vec<String> {
+        let rows: Vec<Vec<String>> = rendered_rows(app, width, height)
+            .iter()
+            .map(|row| row.chars().map(String::from).collect())
+            .collect();
+        let top = rows
+            .iter()
+            .position(|row| row.concat().contains("┌Help (rows"))
+            .expect("help dialog title row");
+        // Panels behind the dialog have corners on the same row, so anchor
+        // on the corner right before the title.
+        let left = rows[top]
+            .windows(2)
+            .position(|pair| pair[0] == "┌" && pair[1] == "H")
+            .unwrap();
+        let right = left
+            + rows[top][left..]
+                .iter()
+                .position(|cell| cell == "┐")
+                .unwrap();
+        // The footer is the row above the bottom border; it may be clipped
+        // on a narrow terminal, so find the border instead of its text.
+        let bottom = (top + 1..rows.len())
+            .find(|&y| rows[y][left] == "└")
+            .expect("help dialog bottom border");
+        rows[top + 1..bottom - 1]
+            .iter()
+            .map(|row| row[left + 1..right].concat())
+            .collect()
+    }
+
     #[test]
-    fn help_is_grouped_and_scrolls_by_line() {
+    fn help_is_grouped_and_scrolls_by_row() {
         let mut app = user_app();
         app.terminal_size = (100, 30);
         press(&mut app, KeyCode::Char('?'));
         let top = rendered_at(&app, 100, 30);
         assert!(top.contains("Navigation"));
         assert!(top.contains("Move up: Up, k"));
-        assert!(top.contains("Help (lines 1-"));
+        assert!(top.contains("Help (rows 1-"));
         assert!(top.contains("↑↓ PgUp PgDn scroll  Esc close"));
+        let top_body = help_body(&app, 100, 30);
+        assert_eq!(top_body[0].trim_end(), "Navigation");
         for _ in 0..5 {
             press(&mut app, KeyCode::Down);
         }
         assert_eq!(help_scroll(&app), 5);
         let scrolled = rendered_at(&app, 100, 30);
-        assert_ne!(top, scrolled);
-        assert!(scrolled.contains("Help (lines 6-"));
+        assert!(scrolled.contains("Help (rows 6-"));
+        let scrolled_body = help_body(&app, 100, 30);
+        assert_ne!(top_body, scrolled_body);
+        assert_eq!(scrolled_body[0], top_body[5]);
         press(&mut app, KeyCode::Char('k'));
         assert_eq!(help_scroll(&app), 4);
         press(&mut app, KeyCode::Esc);
         assert!(app.modal().is_none());
+    }
+
+    #[test]
+    fn help_scrolls_through_a_line_longer_than_the_dialog_at_30x8() {
+        let mut app = user_app();
+        let message: String = (0..200)
+            .map(|index| char::from(b'a' + u8::try_from(index % 26).unwrap()))
+            .collect();
+        let tail = &message[message.len() - 20..];
+        app.diagnostics.config_messages = vec![message.clone()];
+        app.terminal_size = (30, 8);
+        press(&mut app, KeyCode::Char('?'));
+        let mut seen_tail = false;
+        for _ in 0..20 {
+            if help_body(&app, 30, 8).iter().any(|row| row.contains(tail)) {
+                seen_tail = true;
+                break;
+            }
+            press(&mut app, KeyCode::Down);
+        }
+        assert!(seen_tail, "the message's last characters never rendered");
     }
 
     #[test]
@@ -4293,12 +4351,64 @@ mod tests {
         let maximum = ui::components::help_max_scroll(&app, (100, 30));
         assert!(maximum > 0);
         assert_eq!(usize::from(help_scroll(&app)), maximum);
-        let total = ui::components::help_lines(&app).len();
+        let lines = ui::components::help_lines(&app);
+        let total = ui::components::help_window(&lines, (100, 30), 0).0.len();
         let screen = rendered_at(&app, 100, 30);
         assert!(screen.contains(&format!("-{total} of {total})")));
         assert!(screen.contains("--log-file <PATH>"));
         press(&mut app, KeyCode::Down);
         assert_eq!(usize::from(help_scroll(&app)), maximum);
+    }
+
+    /// Config roots under a tempdir that count how often they are resolved.
+    struct CountingConfigRoots {
+        root: std::path::PathBuf,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::app::ConfigRootProvider for CountingConfigRoots {
+        fn roots(&self) -> Vec<std::path::PathBuf> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            vec![self.root.clone()]
+        }
+    }
+
+    #[test]
+    fn help_renders_config_paths_without_resolving_config_roots() {
+        let config = tempfile::tempdir().unwrap();
+        let roots = Arc::new(CountingConfigRoots {
+            root: config.path().to_path_buf(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = AppState::with_dependencies(
+            adapter,
+            snapshot,
+            Arc::new(FixedClock),
+            Arc::new(NoDiagnostics),
+            roots.clone(),
+        );
+        app.load_configuration();
+        app.terminal_size = (100, 30);
+        press(&mut app, KeyCode::Char('?'));
+        let before = roots.calls.load(std::sync::atomic::Ordering::SeqCst);
+        let lines: Vec<String> = ui::components::help_lines(&app)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let theme = config.path().join("theme.conf");
+        assert!(lines.contains(&format!("Theme file: {}", theme.display())));
+        for _ in 0..3 {
+            rendered_at(&app, 100, 30);
+        }
+        assert_eq!(
+            roots.calls.load(std::sync::atomic::Ordering::SeqCst),
+            before
+        );
     }
 
     #[test]

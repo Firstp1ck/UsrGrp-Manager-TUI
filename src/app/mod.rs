@@ -1339,6 +1339,11 @@ pub struct AppState {
     clock: Arc<dyn Clock>,
     diagnostic_provider: Arc<dyn DiagnosticProvider>,
     config_root_provider: Arc<dyn ConfigRootProvider>,
+    /// `(file name, path)` of theme.conf, keybinds.conf and filter.conf as
+    /// resolved by the last `load_configuration`: the file that was read,
+    /// or where it would be written. Empty until then. The help dialog
+    /// shows these, so rendering never resolves config roots.
+    pub config_paths: Vec<(String, String)>,
     pub current_username: String,
     /// Group the create-user form offers to add the new account to. Set
     /// from `UGM_SUDO_GROUP` by `load_system_with`; `wheel` otherwise.
@@ -1429,6 +1434,7 @@ impl AppState {
             clock,
             diagnostic_provider,
             config_root_provider,
+            config_paths: Vec::new(),
             current_username: "unknown".to_owned(),
             sudo_group: "wheel".to_owned(),
             last_preview: Vec::new(),
@@ -1524,6 +1530,11 @@ impl AppState {
             Ok(filters) => filters.apply_to(self),
             Err(error) => self.record_config_message("filter", &error),
         }
+        self.config_paths = vec![
+            ("theme.conf".to_owned(), theme_path),
+            ("keybinds.conf".to_owned(), keymap_path),
+            ("filter.conf".to_owned(), filters_path),
+        ];
         self.sort_and_filter();
     }
 
