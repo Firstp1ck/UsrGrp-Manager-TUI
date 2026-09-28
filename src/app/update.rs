@@ -10,9 +10,9 @@ use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 
 use crate::{
     app::{
-        ActiveTab, AppState, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, GroupsFocus,
-        InputMode, MAX_LENGTH_REACHED, MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState, ModifyField,
-        PendingAction, RunOptions, SecretInput, UsersFocus, filterconf::FiltersConfig,
+        ActiveTab, AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
+        GroupsFocus, InputMode, MAX_LENGTH_REACHED, MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState,
+        ModifyField, PendingAction, RunOptions, SecretInput, UsersFocus, filterconf::FiltersConfig,
         keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
@@ -392,6 +392,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected_multi,
             filter,
             filtering,
+            error,
             ..
         } => handle_user_membership(
             app,
@@ -401,6 +402,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 selected_multi,
                 filter,
                 filtering,
+                error,
             },
             key,
         ),
@@ -409,6 +411,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected_multi,
             filter,
             filtering,
+            error,
             ..
         } => handle_user_membership(
             app,
@@ -418,6 +421,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 selected_multi,
                 filter,
                 filtering,
+                error,
             },
             key,
         ),
@@ -476,6 +480,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected_multi,
             filter,
             filtering,
+            error,
             ..
         } => handle_group_members(
             app,
@@ -486,6 +491,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 selected_multi,
                 filter,
                 filtering,
+                error,
             },
             key,
         ),
@@ -495,6 +501,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             selected_multi,
             filter,
             filtering,
+            error,
             ..
         } => handle_group_members(
             app,
@@ -505,6 +512,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
                 selected_multi,
                 filter,
                 filtering,
+                error,
             },
             key,
         ),
@@ -673,6 +681,7 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
                     selected_multi: vec![],
                     filter: String::new(),
                     filtering: false,
+                    error: None,
                 },
             ),
             1 => open_modal(
@@ -683,6 +692,7 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
                     selected_multi: vec![],
                     filter: String::new(),
                     filtering: false,
+                    error: None,
                 },
             ),
             2 => open_modal(app, ModalState::ModifyDetailsMenu { selected: 0 }),
@@ -849,10 +859,9 @@ fn handle_user_membership(
         back(app);
         return;
     };
-    let groups = app
-        .user_group_candidate_list(user.uid, adding, dialog.filter)
-        .names;
-    match candidate_key(&mut dialog, &groups, key) {
+    let list = app.user_group_candidate_list(user.uid, adding, dialog.filter);
+    let groups = &list.names;
+    match candidate_key(&mut dialog, &list, key) {
         CandidateKey::Handled => {}
         CandidateKey::Close => back(app),
         CandidateKey::Apply => {
@@ -893,6 +902,8 @@ struct CandidateDialog<'a> {
     selected_multi: &'a mut Vec<String>,
     filter: &'a mut String,
     filtering: &'a mut bool,
+    /// Why the last tick or apply was refused.
+    error: &'a mut Option<String>,
 }
 
 /// What is left for the handler after `candidate_key`.
@@ -905,14 +916,25 @@ enum CandidateKey {
     Apply,
 }
 
-/// Keys shared by the four multi-select dialogs. `list` is the filtered
-/// candidate list the dialog shows.
+/// Keys shared by the four multi-select dialogs. `candidates` is the
+/// filtered candidate list the dialog shows.
 ///
 /// `/` starts filter typing: printable characters and Backspace edit the
 /// filter, Up/Down still move, and Enter or Esc stop typing. Otherwise
 /// Up/Down/j/k move, Space ticks the highlighted row, and `*` ticks every
 /// listed row (or clears them when all are ticked already).
-fn candidate_key(dialog: &mut CandidateDialog<'_>, list: &[String], key: KeyEvent) -> CandidateKey {
+///
+/// Entries the policy blocks are never ticked: Space on one, or Enter on
+/// one with nothing ticked, shows the reason instead, and `*` skips them.
+/// Space still clears a tick set before the block appeared. Any other key
+/// clears the message.
+fn candidate_key(
+    dialog: &mut CandidateDialog<'_>,
+    candidates: &CandidateList,
+    key: KeyEvent,
+) -> CandidateKey {
+    let list = candidates.names.as_slice();
+    *dialog.error = None;
     if *dialog.filtering {
         match key.code {
             KeyCode::Enter | KeyCode::Esc => *dialog.filtering = false,
@@ -938,16 +960,34 @@ fn candidate_key(dialog: &mut CandidateDialog<'_>, list: &[String], key: KeyEven
         move_index(dialog.selected, list.len(), step);
         return CandidateKey::Handled;
     }
+    let blocked = candidates.blocked_reason(*dialog.selected);
+    let highlighted_ticked = list
+        .get(*dialog.selected)
+        .is_some_and(|name| dialog.selected_multi.contains(name));
     match key.code {
         KeyCode::Esc => return CandidateKey::Close,
+        KeyCode::Enter if dialog.selected_multi.is_empty() && blocked.is_some() => {
+            *dialog.error = blocked.map(str::to_owned);
+        }
         KeyCode::Enter => return CandidateKey::Apply,
         KeyCode::Char('/') => *dialog.filtering = true,
+        KeyCode::Char(' ') if blocked.is_some() && !highlighted_ticked => {
+            *dialog.error = blocked.map(str::to_owned);
+        }
         KeyCode::Char(' ') => {
             if let Some(name) = list.get(*dialog.selected) {
                 toggle(dialog.selected_multi, name);
             }
         }
-        KeyCode::Char('*') => toggle_all(dialog.selected_multi, list),
+        KeyCode::Char('*') => {
+            let allowed: Vec<String> = list
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| candidates.blocked_reason(*index).is_none())
+                .map(|(_, name)| name.clone())
+                .collect();
+            toggle_all(dialog.selected_multi, &allowed);
+        }
         _ => {}
     }
     CandidateKey::Handled
@@ -1277,6 +1317,7 @@ fn handle_group_modify(
                     selected_multi: vec![],
                     filter: String::new(),
                     filtering: false,
+                    error: None,
                 },
             ),
             1 => open_modal(
@@ -1288,6 +1329,7 @@ fn handle_group_modify(
                     selected_multi: vec![],
                     filter: String::new(),
                     filtering: false,
+                    error: None,
                 },
             ),
             _ => {
@@ -1370,10 +1412,9 @@ fn handle_group_members(
         back(app);
         return;
     };
-    let users = app
-        .group_member_candidate_list(group.gid, adding, dialog.filter)
-        .names;
-    match candidate_key(&mut dialog, &users, key) {
+    let list = app.group_member_candidate_list(group.gid, adding, dialog.filter);
+    let users = &list.names;
+    match candidate_key(&mut dialog, &list, key) {
         CandidateKey::Handled => {}
         CandidateKey::Close => back(app),
         CandidateKey::Apply => {
@@ -1439,7 +1480,13 @@ fn handle_user_add(
         KeyCode::Up => *selected = selected.saturating_sub(1),
         KeyCode::Down => *selected = (*selected + 1).min(5),
         KeyCode::Char(' ') if *selected == 3 => *create_home = !*create_home,
-        KeyCode::Char(' ') if *selected == 4 => *add_to_wheel = !*add_to_wheel,
+        // A group the policy refuses cannot be ticked; the row says why.
+        // Clearing an existing tick is always allowed.
+        KeyCode::Char(' ') if *selected == 4 => {
+            if *add_to_wheel || app.membership_block(&app.sudo_group).is_none() {
+                *add_to_wheel = !*add_to_wheel;
+            }
+        }
         KeyCode::Backspace => match *selected {
             0 => {
                 name.pop();
@@ -1908,7 +1955,7 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
             if add_to_wheel {
                 requests.push(OperationRequest::AddUserToGroup {
                     username,
-                    groupname: crate::app::sudo_group_name(),
+                    groupname: app.sudo_group.clone(),
                 });
             }
             requests
@@ -3033,20 +3080,25 @@ mod tests {
 
     #[test]
     fn failed_create_user_submission_requires_password_reentry() {
-        let mut snapshot = fixture_snapshot();
-        snapshot.groups.push(AccountGroup {
-            gid: Gid(998),
-            name: GroupName::new(crate::app::sudo_group_name()).unwrap(),
+        // The cached list still shows `staff`, so the form lets it be
+        // ticked, but it is gone from the accounts the adapter reads at
+        // preparation time.
+        let host = fixture_snapshot();
+        let mut cached = host.clone();
+        cached.groups.push(AccountGroup {
+            gid: Gid(1500),
+            name: GroupName::new("staff").unwrap(),
             members: vec![],
         });
         // Root identity: no sudo prompt. Nothing here executes a plan, so
         // `NoRun` is never reached.
         let adapter = Arc::new(SystemAdapter::from_components(
-            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(StaticSource(host)),
             Arc::new(NoRun),
             Arc::new(FixedIdentityProvider::uid(Uid(0))),
         ));
-        let mut app = isolated_app(adapter, snapshot);
+        let mut app = isolated_app(adapter, cached);
+        app.sudo_group = "staff".to_owned();
         open_user_add(&mut app);
         type_text(&mut app, "bob");
         press(&mut app, KeyCode::Down);
@@ -3057,7 +3109,7 @@ mod tests {
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Down);
-        // The sudo group is blocked by policy, so preparation fails and the
+        // The sudo group no longer exists, so preparation fails and the
         // reason is shown inside the form.
         press(&mut app, KeyCode::Enter);
         assert!(app.pending_operation.is_none());
@@ -3099,6 +3151,203 @@ mod tests {
             app.last_preview
                 .iter()
                 .any(|step| step.contains("chpasswd"))
+        );
+    }
+
+    /// Users alice (member of `dev`), bob and carol, groups `dev` and `ops`
+    /// at GID 2000+ and `wheel` at GID 998, seen by root. The sudo group
+    /// is the default `wheel`.
+    fn wheel_app() -> AppState {
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(uid),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let group = |gid: u32, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(*member).unwrap())
+                .collect(),
+        };
+        let snapshot = AccountSnapshot {
+            users: vec![user(1000, "alice"), user(1001, "bob"), user(1002, "carol")],
+            groups: vec![
+                group(998, "wheel", &[]),
+                group(1000, "alice", &[]),
+                group(2000, "dev", &["alice"]),
+                group(2001, "ops", &[]),
+            ],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        let app = isolated_app(adapter, snapshot);
+        assert_eq!(app.sudo_group, "wheel");
+        app
+    }
+
+    fn add_to_wheel(app: &AppState) -> bool {
+        match app.modal() {
+            Some(ModalState::UserAddInput { add_to_wheel, .. }) => *add_to_wheel,
+            _ => panic!("create user form is not open"),
+        }
+    }
+
+    #[test]
+    fn create_user_shows_the_blocked_sudo_group_and_space_does_not_tick_it() {
+        let mut app = wheel_app();
+        open_user_add(&mut app);
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        // The rest of the reason wraps onto the next line of the dialog.
+        let screen = rendered(&app);
+        assert!(
+            screen.contains("▶     Add to sudo group (wheel): blocked, elevation-group membership")
+        );
+        assert!(!screen.contains("[ ] Add to sudo group"));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!add_to_wheel(&app));
+        assert!(rendered(&app).contains("(wheel): blocked"));
+    }
+
+    #[test]
+    fn create_user_blocks_a_sudo_group_that_does_not_exist() {
+        let mut app = root_app();
+        app.sudo_group = "sudo".to_owned();
+        open_user_add(&mut app);
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!add_to_wheel(&app));
+        assert!(rendered(&app).contains("Add to sudo group (sudo): blocked, group does not exist"));
+    }
+
+    #[test]
+    fn create_user_ticks_an_allowed_sudo_group_and_names_it() {
+        let mut app = wheel_app();
+        app.sudo_group = "ops".to_owned();
+        open_user_add(&mut app);
+        assert!(rendered(&app).contains("[ ] Add to sudo group (ops)"));
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Char(' '));
+        assert!(add_to_wheel(&app));
+        assert!(rendered(&app).contains("[x] Add to sudo group (ops)"));
+    }
+
+    #[test]
+    fn create_user_tick_on_a_group_that_became_blocked_can_be_cleared() {
+        let mut app = wheel_app();
+        open_user_add(&mut app);
+        if let Some(ModalState::UserAddInput { add_to_wheel, .. }) = app.modal_mut() {
+            *add_to_wheel = true;
+        }
+        assert!(rendered(&app).contains("[x] Add to sudo group (wheel): blocked"));
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!add_to_wheel(&app));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!add_to_wheel(&app));
+    }
+
+    fn user_groups_ticked(app: &AppState) -> Vec<String> {
+        match app.modal() {
+            Some(ModalState::ModifyGroupsAdd { selected_multi, .. }) => selected_multi.clone(),
+            _ => panic!("add groups dialog is not open"),
+        }
+    }
+
+    #[test]
+    fn add_groups_marks_blocked_groups_and_refuses_to_tick_them() {
+        let mut app = wheel_app();
+        let alice = app.users.iter().position(|user| user.name == "alice");
+        app.selected_user_index = alice.unwrap();
+        let list = app.user_group_candidate_list(1000, true, "");
+        assert_eq!(list.names, ["wheel", "ops"]);
+        assert!(list.blocked_reason(0).is_some());
+        assert_eq!(list.blocked_reason(1), None);
+        open_modal(
+            &mut app,
+            ModalState::ModifyGroupsAdd {
+                selected: 0,
+                offset: 0,
+                selected_multi: vec![],
+                filter: String::new(),
+                filtering: false,
+                error: None,
+            },
+        );
+        let screen = rendered(&app);
+        assert!(screen.contains("[ ] wheel (blocked: elevation-group membership"));
+        assert!(screen.contains("[ ] ops "));
+        assert!(!screen.contains("ops (blocked"));
+
+        // `*` skips the blocked entry.
+        press(&mut app, KeyCode::Char('*'));
+        assert_eq!(user_groups_ticked(&app), ["ops"]);
+        press(&mut app, KeyCode::Char('*'));
+        assert!(user_groups_ticked(&app).is_empty());
+
+        // Space on the blocked entry shows the reason instead of ticking.
+        press(&mut app, KeyCode::Char(' '));
+        assert!(user_groups_ticked(&app).is_empty());
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some("elevation-group membership requires explicit policy allowlist")
+        );
+        // Enter with nothing ticked on the blocked row prepares nothing.
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_none());
+        assert!(app.modal().and_then(ModalState::form_error).is_some());
+        // Moving clears the message; the allowed entry still ticks.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(user_groups_ticked(&app), ["ops"]);
+    }
+
+    #[test]
+    fn add_members_of_a_blocked_group_marks_every_user() {
+        let mut app = wheel_app();
+        app.active_tab = ActiveTab::Groups;
+        let list = app.group_member_candidate_list(998, true, "");
+        assert_eq!(list.names.len(), 3);
+        assert!((0..3).all(|index| list.blocked_reason(index).is_some()));
+        open_modal(&mut app, add_members_dialog(998));
+        let screen = rendered(&app);
+        for name in ["alice", "bob", "carol"] {
+            assert!(screen.contains(&format!("{name} (blocked: elevation-group")));
+        }
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('*'));
+        assert!(ticked(&app).is_empty());
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.modal().and_then(ModalState::form_error).is_some());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_none());
+
+        // An allowed group lists the same users without a mark.
+        let list = app.group_member_candidate_list(2001, true, "");
+        assert!(list.blocked.iter().all(Option::is_none));
+        // Removing is not checked here.
+        assert!(
+            app.group_member_candidate_list(2000, false, "")
+                .blocked
+                .is_empty()
         );
     }
 
@@ -3858,6 +4107,7 @@ mod tests {
                     selected_multi: vec![],
                     filter: String::new(),
                     filtering: false,
+                    error: None,
                 },
                 "↑↓ move  Space tick  * all  / filter  Enter apply row  Esc close",
             ),
@@ -4544,6 +4794,7 @@ mod tests {
                 selected_multi: vec![],
                 filter: String::new(),
                 filtering: false,
+                error: None,
             },
         );
         assert_eq!(rendered_candidates(&app), ["bob", "carol"]);
@@ -4568,6 +4819,7 @@ mod tests {
                 selected_multi: vec![],
                 filter: String::new(),
                 filtering: false,
+                error: None,
             },
         );
         assert_eq!(rendered_candidates(&app), ["ops"]);
@@ -4584,6 +4836,7 @@ mod tests {
             selected_multi: vec![],
             filter: String::new(),
             filtering: false,
+            error: None,
         }
     }
 
@@ -4700,6 +4953,7 @@ mod tests {
                 selected_multi: vec![],
                 filter: String::new(),
                 filtering: false,
+                error: None,
             },
         );
         let rows = rendered_rows(&app, 80, 24);

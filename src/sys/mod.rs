@@ -160,26 +160,36 @@ impl ProtectedIdentityPolicy {
     }
 
     fn check_group(&self, target: &GroupTarget) -> CoreResult<()> {
-        if target.gid == Gid(0) || target.name.as_str() == "root" {
-            return Err(target_error("root group is immutable"));
+        match self.group_rejection(target.gid, &target.name) {
+            Some(reason) => Err(target_error(reason)),
+            None => Ok(()),
         }
-        if target.gid < self.minimum_mutable_gid
-            && !self.allowed_service_groups.contains(&target.gid)
-        {
-            return Err(target_error("service group is protected by policy"));
-        }
-        Ok(())
     }
 
     fn check_elevation_membership(&self, group: &GroupName) -> CoreResult<()> {
-        if self.elevation_groups.contains(group)
-            && !self.allowed_elevation_membership_groups.contains(group)
-        {
-            return Err(target_error(
-                "elevation-group membership requires explicit policy allowlist",
-            ));
+        match self.elevation_rejection(group) {
+            Some(reason) => Err(target_error(reason)),
+            None => Ok(()),
         }
-        Ok(())
+    }
+
+    /// Why group `name` (`gid`) may not be mutated, if it may not.
+    fn group_rejection(&self, gid: Gid, name: &GroupName) -> Option<&'static str> {
+        if gid == Gid(0) || name.as_str() == "root" {
+            return Some("root group is immutable");
+        }
+        if gid < self.minimum_mutable_gid && !self.allowed_service_groups.contains(&gid) {
+            return Some("service group is protected by policy");
+        }
+        None
+    }
+
+    /// Why membership of `group` may not change, if it is an elevation
+    /// group that is not allowlisted.
+    fn elevation_rejection(&self, group: &GroupName) -> Option<&'static str> {
+        (self.elevation_groups.contains(group)
+            && !self.allowed_elevation_membership_groups.contains(group))
+        .then_some("elevation-group membership requires explicit policy allowlist")
     }
 }
 
@@ -239,6 +249,27 @@ impl SystemAdapter {
             identity,
             policy,
             pending_secret: Mutex::new(None),
+        }
+    }
+
+    /// Whether the policy lets a user be added to group `group` (`gid`).
+    /// Evaluates the same group and elevation-group checks that preparing a
+    /// membership change does, without reading the host. On rejection the
+    /// reason is returned; the elevation reason is reported first because it
+    /// is the more specific one when both apply.
+    pub fn membership_allowed(
+        &self,
+        group: &str,
+        gid: u32,
+    ) -> std::result::Result<(), &'static str> {
+        let name = GroupName::new(group).map_err(|_| "invalid group name")?;
+        match self
+            .policy
+            .elevation_rejection(&name)
+            .or_else(|| self.policy.group_rejection(Gid(gid), &name))
+        {
+            Some(reason) => Err(reason),
+            None => Ok(()),
         }
     }
 

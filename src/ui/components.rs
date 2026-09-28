@@ -941,19 +941,25 @@ pub fn marker(selected: usize, index: usize) -> &'static str {
 const CANDIDATE_ROWS: usize = 12;
 
 /// The page of a multi-select dialog that holds `selected`, one
-/// `▶ [x] name` row per candidate. `candidates` must be the same list the
-/// key handler indexes (see `AppState::group_member_candidate_list` and
+/// `▶ [x] name` row per candidate, with ` (blocked: <reason>)` after names
+/// the policy refuses. `candidates` must be the same list the key handler
+/// indexes (see `AppState::group_member_candidate_list` and
 /// `AppState::user_group_candidate_list`); `ticked` holds names.
-pub fn candidate_page(candidates: &[String], selected: usize, ticked: &[String]) -> String {
+pub fn candidate_page(candidates: &CandidateList, selected: usize, ticked: &[String]) -> String {
     let start = selected / CANDIDATE_ROWS * CANDIDATE_ROWS;
     candidates
+        .names
         .iter()
         .enumerate()
         .skip(start)
         .take(CANDIDATE_ROWS)
         .map(|(index, name)| {
+            let blocked = candidates
+                .blocked_reason(index)
+                .map(|reason| format!(" (blocked: {reason})"))
+                .unwrap_or_default();
             format!(
-                "{} [{}] {name}",
+                "{} [{}] {name}{blocked}",
                 marker(selected, index),
                 if ticked.contains(name) { "x" } else { " " }
             )
@@ -1009,7 +1015,7 @@ pub fn candidate_dialog(
     }
     let focus = (len > 0).then(|| body.len() + view.selected % CANDIDATE_ROWS);
     body.extend(text_lines(candidate_page(
-        &view.list.names,
+        view.list,
         view.selected,
         view.ticked,
     )));

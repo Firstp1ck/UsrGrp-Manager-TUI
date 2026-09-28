@@ -321,6 +321,34 @@ fn service_and_elevation_membership_require_explicit_injected_policy() {
         denied.prepare_operation(request()),
         Err(CoreError::Validation { .. })
     ));
+    // The read-only query agrees with preparation and names the elevation
+    // rule first.
+    assert_eq!(
+        denied.membership_allowed("wheel", 10),
+        Err("elevation-group membership requires explicit policy allowlist")
+    );
+    assert_eq!(
+        denied.membership_allowed("audio", 10),
+        Err("service group is protected by policy")
+    );
+    assert_eq!(
+        denied.membership_allowed("root", 0),
+        Err("root group is immutable")
+    );
+    assert_eq!(denied.membership_allowed("dev", 1000), Ok(()));
+
+    let elevation_only = SystemAdapter::from_components_with_policy(
+        Arc::new(common::FixtureSource(Ok(accounts.clone()))),
+        Arc::new(common::FakeRunner::succeeds()),
+        Arc::new(common::FixtureIdentity::uid(0)),
+        ProtectedIdentityPolicy::fail_closed()
+            .allow_elevation_membership_group(GroupName::new("wheel").unwrap()),
+    );
+    assert_eq!(
+        elevation_only.membership_allowed("wheel", 10),
+        Err("service group is protected by policy")
+    );
+    assert!(elevation_only.prepare_operation(request()).is_err());
 
     let allowed = SystemAdapter::from_components_with_policy(
         Arc::new(common::FixtureSource(Ok(accounts))),
@@ -330,6 +358,7 @@ fn service_and_elevation_membership_require_explicit_injected_policy() {
             .allow_service_group(Gid(10))
             .allow_elevation_membership_group(GroupName::new("wheel").unwrap()),
     );
+    assert_eq!(allowed.membership_allowed("wheel", 10), Ok(()));
     assert!(allowed.prepare_operation(request()).is_ok());
 }
 

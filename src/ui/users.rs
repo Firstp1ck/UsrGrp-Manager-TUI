@@ -413,12 +413,26 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 (1, "Password", password, &shown),
                 (2, "Confirm", confirm, &shown_confirm),
             ));
+            // A blocked group has no checkbox. One ticked before the block
+            // appeared keeps its box so it can still be cleared.
+            let group = &app.sudo_group;
+            let sudo_row = match (app.membership_block(group), *add_to_wheel) {
+                (Some(reason), false) => {
+                    format!("    Add to sudo group ({group}): blocked, {reason}")
+                }
+                (Some(reason), true) => {
+                    format!("[x] Add to sudo group ({group}): blocked, {reason}")
+                }
+                (None, ticked) => format!(
+                    "[{}] Add to sudo group ({group})",
+                    if ticked { "x" } else { " " }
+                ),
+            };
             body.extend(text_lines(format!(
-                "{} [{}] Create home\n{} [{}] Add to sudo group\n{} Submit",
+                "{} [{}] Create home\n{} {sudo_row}\n{} Submit",
                 marker(*selected, 3),
                 if *create_home { "x" } else { " " },
                 marker(*selected, 4),
-                if *add_to_wheel { "x" } else { " " },
                 marker(*selected, 5)
             )));
             let focus = password_form_focus(*selected, 1, password);

@@ -264,6 +264,8 @@ pub enum ModalState {
         filter: String,
         /// Keys edit `filter` until Enter or Esc.
         filtering: bool,
+        /// Why the last tick was refused, shown under the list.
+        error: Option<String>,
     },
     /// Same fields as `ModifyGroupsAdd`.
     ModifyGroupsRemove {
@@ -272,6 +274,7 @@ pub enum ModalState {
         selected_multi: Vec<String>,
         filter: String,
         filtering: bool,
+        error: Option<String>,
     },
     ModifyDetailsMenu {
         selected: usize,
@@ -380,6 +383,7 @@ pub enum ModalState {
         selected_multi: Vec<String>,
         filter: String,
         filtering: bool,
+        error: Option<String>,
     },
     /// Same list fields as `ModifyGroupsAdd`.
     GroupModifyRemoveMembers {
@@ -389,6 +393,7 @@ pub enum ModalState {
         selected_multi: Vec<String>,
         filter: String,
         filtering: bool,
+        error: Option<String>,
     },
     /// Opens with the current group name filled in.
     GroupRenameInput {
@@ -419,14 +424,19 @@ pub enum ModalState {
 }
 
 impl ModalState {
-    /// The inline validation message of a form dialog, if it has one.
+    /// The inline validation message of a form or multi-select dialog, if
+    /// it has one.
     pub fn form_error(&self) -> Option<&str> {
         match self {
             Self::ModifyTextInput { error, .. }
             | Self::ChangePassword { error, .. }
             | Self::GroupAddInput { error, .. }
             | Self::GroupRenameInput { error, .. }
-            | Self::UserAddInput { error, .. } => error.as_deref(),
+            | Self::UserAddInput { error, .. }
+            | Self::ModifyGroupsAdd { error, .. }
+            | Self::ModifyGroupsRemove { error, .. }
+            | Self::GroupModifyAddMembers { error, .. }
+            | Self::GroupModifyRemoveMembers { error, .. } => error.as_deref(),
             _ => None,
         }
     }
@@ -977,6 +987,9 @@ pub struct CandidateList {
     pub names: Vec<String>,
     /// How many candidates matched the filter before the cap.
     pub total: usize,
+    /// Per listed name, why the policy refuses the membership change, or
+    /// `None` when it is allowed. Empty when nothing was checked.
+    pub blocked: Vec<Option<&'static str>>,
 }
 
 impl CandidateList {
@@ -1000,6 +1013,17 @@ impl CandidateList {
     /// True when matches were left out because of the cap.
     pub fn is_capped(&self) -> bool {
         self.total > self.names.len()
+    }
+
+    /// Record, for every listed name, why `reason` refuses it.
+    fn with_blocks(mut self, reason: impl Fn(&str) -> Option<&'static str>) -> Self {
+        self.blocked = self.names.iter().map(|name| reason(name)).collect();
+        self
+    }
+
+    /// Why the entry at `index` cannot be ticked, if it cannot.
+    pub fn blocked_reason(&self, index: usize) -> Option<&'static str> {
+        self.blocked.get(index).copied().flatten()
     }
 }
 
@@ -1079,6 +1103,9 @@ pub struct AppState {
     diagnostic_provider: Arc<dyn DiagnosticProvider>,
     config_root_provider: Arc<dyn ConfigRootProvider>,
     pub current_username: String,
+    /// Group the create-user form offers to add the new account to. Set
+    /// from `UGM_SUDO_GROUP` by `load_system_with`; `wheel` otherwise.
+    pub sudo_group: String,
     pub last_preview: Vec<String>,
     pub last_report: Option<OperationReport>,
     /// The only application-held operation capability. It contains the exact
@@ -1166,6 +1193,7 @@ impl AppState {
             diagnostic_provider,
             config_root_provider,
             current_username: "unknown".to_owned(),
+            sudo_group: "wheel".to_owned(),
             last_preview: Vec::new(),
             last_report: None,
             pending_operation: None,
@@ -1198,6 +1226,7 @@ impl AppState {
         app.logger = options.logger;
         app.refresh_accounts();
         app.current_username = sys::current_username().unwrap_or_else(|| "unknown".to_owned());
+        app.sudo_group = sudo_group_name();
         app.load_configuration();
         app
     }
@@ -1460,7 +1489,17 @@ impl AppState {
         adding: bool,
         filter: &str,
     ) -> CandidateList {
-        CandidateList::from_pool(self.group_member_pool(gid, adding), filter)
+        let list = CandidateList::from_pool(self.group_member_pool(gid, adding), filter);
+        if !adding {
+            return list;
+        }
+        // Every user is refused for the same reason when the group is.
+        let reason = self
+            .groups_all
+            .iter()
+            .find(|group| group.gid == gid)
+            .and_then(|group| self.adapter.membership_allowed(&group.name, gid).err());
+        list.with_blocks(|_| reason)
     }
 
     /// Ticked names the members dialog for group `gid` still offers, in
@@ -1501,7 +1540,30 @@ impl AppState {
     /// memberships. The primary group is never offered. Shared by renderer
     /// and key handler.
     pub fn user_group_candidate_list(&self, uid: u32, adding: bool, filter: &str) -> CandidateList {
-        CandidateList::from_pool(self.user_group_pool(uid, adding), filter)
+        let list = CandidateList::from_pool(self.user_group_pool(uid, adding), filter);
+        if !adding {
+            return list;
+        }
+        // One lookup table instead of a scan of every group per entry. The
+        // first group of a name wins, as in `membership_block`.
+        let mut gids = HashMap::new();
+        for group in &self.groups_all {
+            gids.entry(group.name.as_str()).or_insert(group.gid);
+        }
+        list.with_blocks(|name| {
+            gids.get(name)
+                .and_then(|gid| self.adapter.membership_allowed(name, *gid).err())
+        })
+    }
+
+    /// Why the policy refuses adding a user to group `name`, if it does.
+    /// The GID comes from the cached group list; a group that is not in it
+    /// is refused as missing. Reads no host state.
+    pub fn membership_block(&self, name: &str) -> Option<&'static str> {
+        match self.groups_all.iter().find(|group| group.name == name) {
+            Some(group) => self.adapter.membership_allowed(name, group.gid).err(),
+            None => Some("group does not exist"),
+        }
     }
 
     /// Ticked names the groups dialog for user `uid` still offers, in tick
