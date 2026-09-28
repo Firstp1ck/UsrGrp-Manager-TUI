@@ -1180,6 +1180,11 @@ fn execute_pending_plan(app: &mut AppState) {
         Ok(report) => {
             let message = report_message(&report);
             app.log_event("executed", &format!("{description} => {message}"));
+            if let Some(failed) = &report.failed {
+                // A long preview can push the failure past the line cap, so
+                // the classified error also gets a line of its own.
+                app.log_event("error", &classified_error_message(&failed.error));
+            }
             app.last_report = Some(report);
             app.pending_operation = None;
             app.refresh_accounts();
@@ -1662,6 +1667,52 @@ mod tests {
         assert!(lines[3].contains("error: E-VALIDATION"));
         assert_eq!(lines.len(), 4);
         assert!(!text.contains("fixture-password"));
+    }
+
+    /// Runs every command as a failure, so the adapter returns a report
+    /// with a failed step instead of an error.
+    struct FailRun;
+    impl CommandRunner for FailRun {
+        fn authenticate(&self, _: SecretString) -> CoreResult<ElevationGrant> {
+            unreachable!("root identity never authenticates")
+        }
+        fn run(&self, _: ElevationGrant, _: &crate::sys::CommandSpec) -> CoreResult<CommandResult> {
+            Err(CoreError::MissingExecutable { program: "usermod" })
+        }
+    }
+
+    #[test]
+    fn log_file_records_failed_step_error_on_its_own_line() {
+        let log = SharedLog::default();
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(FailRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        let mut app = AppState::with_adapter(adapter, snapshot);
+        app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        execute_pending_plan(&mut app);
+        assert!(
+            app.last_report
+                .as_ref()
+                .is_some_and(|report| report.failed.is_some())
+        );
+        let expected =
+            classified_error_message(&CoreError::MissingExecutable { program: "usermod" });
+        let text = log.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].ends_with("prepared: usermod -s /bin/bash alice"));
+        assert!(lines[1].contains("executed: usermod -s /bin/bash alice => "));
+        assert!(lines[2].ends_with(&format!(" error: {expected}")));
     }
 
     #[test]

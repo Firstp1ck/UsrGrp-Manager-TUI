@@ -77,14 +77,17 @@ Options:
 
 /// Parse the arguments that follow the program name.
 ///
-/// `--help` and `--version` win as soon as they are seen. Both
-/// `--flag <path>` and `--flag=<path>` are accepted for path options.
+/// Every argument is validated first, so a usage mistake is reported even
+/// when `--help` or `--version` is also present. Otherwise the first of
+/// `--help` and `--version` wins. Both `--flag <path>` and `--flag=<path>`
+/// are accepted for path options.
 pub fn parse<I>(arguments: I) -> Result<CliCommand, CliError>
 where
     I: IntoIterator<Item = OsString>,
 {
     let mut arguments = arguments.into_iter();
     let mut parsed = CliArgs::default();
+    let mut early_exit = None;
     while let Some(argument) = arguments.next() {
         let Some(text) = argument.to_str() else {
             return Err(CliError::Unknown(argument.to_string_lossy().into_owned()));
@@ -94,8 +97,12 @@ where
             _ => (text, None),
         };
         match (flag, inline) {
-            ("-h" | "--help", None) => return Ok(CliCommand::Help),
-            ("-V" | "--version", None) => return Ok(CliCommand::Version),
+            ("-h" | "--help", None) => {
+                early_exit.get_or_insert(CliCommand::Help);
+            }
+            ("-V" | "--version", None) => {
+                early_exit.get_or_insert(CliCommand::Version);
+            }
             ("--dry-run", None) => {
                 if parsed.dry_run {
                     return Err(CliError::Repeated("--dry-run"));
@@ -113,7 +120,7 @@ where
             _ => return Err(CliError::Unknown(text.to_owned())),
         }
     }
-    Ok(CliCommand::Run(parsed))
+    Ok(early_exit.unwrap_or(CliCommand::Run(parsed)))
 }
 
 fn path_value(
@@ -199,6 +206,34 @@ mod tests {
         }
         assert!(version().starts_with("usrgrp-manager "));
         assert!(usage().contains("--dry-run"));
+    }
+
+    #[test]
+    fn usage_errors_win_over_help_and_version_in_any_order() {
+        for flag in ["-h", "--help", "-V", "--version"] {
+            assert_eq!(
+                args(&[flag, "--bogus"]),
+                Err(CliError::Unknown("--bogus".into()))
+            );
+            assert_eq!(
+                args(&["--bogus", flag]),
+                Err(CliError::Unknown("--bogus".into()))
+            );
+            assert_eq!(
+                args(&[flag, "--log-file"]),
+                Err(CliError::MissingValue("--log-file"))
+            );
+            assert_eq!(
+                args(&[flag, "--config-dir="]),
+                Err(CliError::EmptyValue("--config-dir"))
+            );
+            assert_eq!(
+                args(&["--dry-run", flag, "--dry-run"]),
+                Err(CliError::Repeated("--dry-run"))
+            );
+        }
+        assert_eq!(args(&["--help", "--dry-run"]), Ok(CliCommand::Help));
+        assert_eq!(args(&["--version", "--help"]), Ok(CliCommand::Version));
     }
 
     #[test]
