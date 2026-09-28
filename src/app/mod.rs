@@ -762,7 +762,11 @@ pub struct AppState {
     pub search_query: String,
     pub theme: Theme,
     pub keymap: keymap::Keymap,
-    pub modal: Option<ModalState>,
+    /// Open dialogs, innermost last. Only the top is rendered and receives keys.
+    modals: Vec<ModalState>,
+    /// Counts pops and clears so key handling can tell whether the handled
+    /// dialog was dismissed (see `detach_top_modal`).
+    modal_pops: u64,
     pub users_focus: UsersFocus,
     pub groups_focus: GroupsFocus,
     pub users_filter: Option<UsersFilter>,
@@ -845,7 +849,8 @@ impl AppState {
             search_query: String::new(),
             theme: Theme::mocha(),
             keymap: keymap::Keymap::default(),
-            modal: None,
+            modals: Vec::new(),
+            modal_pops: 0,
             users_focus: UsersFocus::UsersList,
             groups_focus: GroupsFocus::GroupsList,
             users_filter: None,
@@ -1131,11 +1136,80 @@ impl AppState {
         }
     }
 
+    /// The dialog on top of the stack, the one shown and receiving keys.
+    pub fn modal(&self) -> Option<&ModalState> {
+        self.modals.last()
+    }
+
+    pub fn modal_mut(&mut self) -> Option<&mut ModalState> {
+        self.modals.last_mut()
+    }
+
+    /// Number of open dialogs.
+    pub fn modal_depth(&self) -> usize {
+        self.modals.len()
+    }
+
+    /// Open a dialog on top of the current one.
+    pub fn push_modal(&mut self, modal: ModalState) {
+        self.modals.push(modal);
+        self.input_mode = InputMode::Modal;
+    }
+
+    /// Close the top dialog, returning to the one below it, or to the main
+    /// view when it was the last.
+    pub fn pop_modal(&mut self) -> Option<ModalState> {
+        self.modal_pops = self.modal_pops.wrapping_add(1);
+        let modal = self.modals.pop();
+        if self.modals.is_empty() {
+            self.input_mode = InputMode::Normal;
+        }
+        modal
+    }
+
+    /// Close every dialog and return to the main view.
+    pub fn close_modals(&mut self) {
+        self.modal_pops = self.modal_pops.wrapping_add(1);
+        self.modals.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Take the top dialog out so a key handler can borrow it mutably while
+    /// also mutating the app. Its slot keeps a placeholder, so a dialog the
+    /// handler pushes lands above it and a pop or clear removes it.
+    pub(crate) fn detach_top_modal(&mut self) -> Option<(ModalState, DetachedModal)> {
+        let index = self.modals.len().checked_sub(1)?;
+        let placeholder = ModalState::Help { scroll: 0 };
+        let modal = std::mem::replace(&mut self.modals[index], placeholder);
+        Some((
+            modal,
+            DetachedModal {
+                index,
+                pops: self.modal_pops,
+            },
+        ))
+    }
+
+    /// Put a detached dialog back unless the handler popped or cleared it.
+    pub(crate) fn reattach_modal(&mut self, modal: ModalState, detached: DetachedModal) {
+        if self.modal_pops == detached.pops
+            && let Some(slot) = self.modals.get_mut(detached.index)
+        {
+            *slot = modal;
+        }
+    }
+
     pub fn clear_pending_operation(&mut self) {
         self.pending_operation = None;
         self.pending_password = None;
         self.last_preview.clear();
     }
+}
+
+/// Where a dialog was taken from by `AppState::detach_top_modal`.
+pub(crate) struct DetachedModal {
+    index: usize,
+    pops: u64,
 }
 
 impl Default for AppState {

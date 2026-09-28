@@ -281,7 +281,7 @@ fn move_index(index: &mut usize, len: usize, delta: isize) {
 }
 
 fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
-    let Some(mut modal) = app.modal.take() else {
+    let Some((mut modal, detached)) = app.detach_top_modal() else {
         return;
     };
     match &mut modal {
@@ -372,11 +372,11 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
         } => handle_sudo_prompt(app, password, error, key),
         ModalState::Info { .. } => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-                close_modal(app)
+                back(app)
             }
         }
         ModalState::Help { scroll } => match key.code {
-            KeyCode::Esc | KeyCode::Enter => close_modal(app),
+            KeyCode::Esc | KeyCode::Enter => back(app),
             KeyCode::Up => *scroll = scroll.saturating_sub(1),
             KeyCode::Down => *scroll = scroll.saturating_add(1),
             KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
@@ -384,9 +384,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             _ => {}
         },
     }
-    if app.modal.is_none() && matches!(app.input_mode, InputMode::Modal) {
-        app.modal = Some(modal);
-    }
+    app.reattach_modal(modal, detached);
 }
 
 fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
@@ -395,7 +393,7 @@ fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
         ActiveTab::Groups => 2,
     };
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(maximum),
         KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % (maximum + 1),
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -428,7 +426,7 @@ fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
 
 fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
             *selected = 1 - *selected
         }
@@ -445,8 +443,7 @@ fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
 
 fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
-        KeyCode::Backspace => open_modal(app, ModalState::Actions { selected: 0 }),
+        KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(3),
         KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % 4,
         KeyCode::Enter => match *selected {
@@ -475,8 +472,7 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
 
 fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
-        KeyCode::Backspace => open_modal(app, ModalState::ModifyMenu { selected: 2 }),
+        KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(2),
         KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % 3,
         KeyCode::Enter => match *selected {
@@ -521,7 +517,7 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
 
 fn handle_text_input(app: &mut AppState, field: &ModifyField, value: &mut String, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Backspace => {
             value.pop();
         }
@@ -547,7 +543,7 @@ fn handle_text_input(app: &mut AppState, field: &ModifyField, value: &mut String
 
 fn handle_shell_modal(app: &mut AppState, selected: &mut usize, shells: &[String], key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Up | KeyCode::Char('k') => move_index(selected, shells.len(), -1),
         KeyCode::Down | KeyCode::Char('j') => move_index(selected, shells.len(), 1),
         KeyCode::Enter => {
@@ -576,7 +572,7 @@ fn handle_user_membership(
     key: KeyEvent,
 ) {
     let Some(user) = app.users.get(app.selected_user_index).cloned() else {
-        close_modal(app);
+        back(app);
         return;
     };
     const MAX_MODAL_CANDIDATES: usize = 1024;
@@ -591,7 +587,7 @@ fn handle_user_membership(
         .cloned()
         .collect();
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Up | KeyCode::Char('k') => move_index(selected, groups.len(), -1),
         KeyCode::Down | KeyCode::Char('j') => move_index(selected, groups.len(), 1),
         KeyCode::Char(' ') => toggle(selected_multi, *selected),
@@ -630,7 +626,7 @@ fn handle_user_membership(
 
 fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
             *selected = 1 - *selected
         }
@@ -667,7 +663,7 @@ fn handle_password_input(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Up => *selected = selected.saturating_sub(1),
         KeyCode::Down => *selected = (*selected + 1).min(3),
         KeyCode::Char(' ') if *selected == 2 => *must_change = !*must_change,
@@ -725,7 +721,7 @@ fn handle_user_delete(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Left | KeyCode::Right => *selected = 1 - *selected,
         KeyCode::Char(' ') => *delete_home = !*delete_home,
         KeyCode::Enter if *selected == 0 && *allowed => {
@@ -751,7 +747,7 @@ fn handle_user_delete(
 
 fn handle_member_delete(app: &mut AppState, selected: &mut usize, encoded: &str, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Left | KeyCode::Right => *selected = 1 - *selected,
         KeyCode::Enter if *selected == 0 => {
             if let Some((group, user)) = encoded.split_once(':') {
@@ -776,7 +772,7 @@ fn handle_group_actions(
 ) {
     let limit = if target_gid.is_some() { 1 } else { 2 };
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(limit),
         KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % (limit + 1),
         KeyCode::Enter => match (*selected, *target_gid) {
@@ -815,7 +811,7 @@ fn handle_group_actions(
 
 fn handle_group_add(app: &mut AppState, name: &mut String, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Backspace => {
             name.pop();
         }
@@ -837,7 +833,7 @@ fn handle_group_delete(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Left | KeyCode::Right => *selected = 1 - *selected,
         KeyCode::Enter if *selected == 0 => {
             let group = target_gid
@@ -874,7 +870,7 @@ fn handle_group_modify(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc | KeyCode::Backspace => back(app),
         KeyCode::Up | KeyCode::Char('k') => *selected = selected.checked_sub(1).unwrap_or(2),
         KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1) % 3,
         KeyCode::Enter => match *selected {
@@ -915,7 +911,7 @@ fn handle_group_rename(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Backspace => {
             name.pop();
         }
@@ -962,7 +958,7 @@ fn handle_group_members(
         .or_else(|| app.groups.get(app.selected_group_index))
         .cloned();
     let Some(group) = group else {
-        close_modal(app);
+        back(app);
         return;
     };
     const MAX_MODAL_CANDIDATES: usize = 1024;
@@ -981,7 +977,7 @@ fn handle_group_members(
             .collect()
     };
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Up | KeyCode::Char('k') => move_index(selected, users.len(), -1),
         KeyCode::Down | KeyCode::Char('j') => move_index(selected, users.len(), 1),
         KeyCode::Char(' ') => toggle(selected_multi, *selected),
@@ -1027,7 +1023,7 @@ fn handle_user_add(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => close_modal(app),
+        KeyCode::Esc => back(app),
         KeyCode::Up => *selected = selected.saturating_sub(1),
         KeyCode::Down => *selected = (*selected + 1).min(5),
         KeyCode::Char(' ') if *selected == 3 => *create_home = !*create_home,
@@ -1087,16 +1083,10 @@ fn handle_user_add(
 
 fn handle_operation_confirm(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc => {
-            app.clear_pending_operation();
-            close_modal(app);
-        }
+        KeyCode::Esc => cancel_operation(app),
         KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => *selected = 1 - *selected,
         KeyCode::Enter if *selected == 0 => execute_pending_plan(app),
-        KeyCode::Enter => {
-            app.clear_pending_operation();
-            close_modal(app);
-        }
+        KeyCode::Enter => cancel_operation(app),
         _ => {}
     }
 }
@@ -1108,10 +1098,7 @@ fn handle_sudo_prompt(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => {
-            app.clear_pending_operation();
-            close_modal(app);
-        }
+        KeyCode::Esc => cancel_operation(app),
         KeyCode::Backspace => {
             password.pop();
         }
@@ -1123,6 +1110,9 @@ fn handle_sudo_prompt(
             }
             app.adapter
                 .set_elevation_secret(SecretString::new(password.take()));
+            // The prompt has done its job; if authentication is still
+            // required, execution opens a fresh one in its place.
+            app.pop_modal();
             execute_pending_plan(app);
         }
         _ => {}
@@ -1175,12 +1165,7 @@ fn prepare_request(app: &mut AppState, request: OperationRequest) {
 
 fn execute_pending_plan(app: &mut AppState) {
     let Some(prepared) = app.pending_operation.as_ref() else {
-        open_modal(
-            app,
-            ModalState::Info {
-                message: "No prepared operation is available.".to_owned(),
-            },
-        );
+        show_outcome(app, "No prepared operation is available.".to_owned());
         return;
     };
     let description = prepared.preview().join("; ");
@@ -1188,12 +1173,7 @@ fn execute_pending_plan(app: &mut AppState) {
         // The adapter is never consulted, so no sudo prompt and no command.
         app.clear_pending_operation();
         app.log_event("dry-run", &description);
-        open_modal(
-            app,
-            ModalState::Info {
-                message: "Dry run: nothing was executed.".to_owned(),
-            },
-        );
+        show_outcome(app, "Dry run: nothing was executed.".to_owned());
         return;
     }
     match app.adapter.execute_prepared_operation(&prepared.plan) {
@@ -1203,7 +1183,7 @@ fn execute_pending_plan(app: &mut AppState) {
             app.last_report = Some(report);
             app.pending_operation = None;
             app.refresh_accounts();
-            open_modal(app, ModalState::Info { message });
+            show_outcome(app, message);
         }
         Err(CoreError::AuthenticationRequired) => {
             open_modal(
@@ -1216,7 +1196,8 @@ fn execute_pending_plan(app: &mut AppState) {
         }
         Err(error) => {
             app.clear_pending_operation();
-            show_error(app, &error);
+            let message = log_error(app, &error);
+            show_outcome(app, message);
         }
     }
 }
@@ -1416,10 +1397,23 @@ fn classified_error_message(error: &CoreError) -> String {
     format!("{code}: {error}")
 }
 
-/// Show a classified error and append it to the operation log.
+/// Show a classified error above the current dialog and append it to the
+/// operation log. Esc returns to the dialog so the input can be corrected.
 fn show_error(app: &mut AppState, error: &CoreError) {
+    let message = log_error(app, error);
+    open_modal(app, ModalState::Info { message });
+}
+
+fn log_error(app: &mut AppState, error: &CoreError) -> String {
     let message = classified_error_message(error);
     app.log_event("error", &message);
+    message
+}
+
+/// Report how an operation ended. Every dialog that led to it is closed
+/// first, so Esc from the result lands on the main view.
+fn show_outcome(app: &mut AppState, message: String) {
+    app.close_modals();
     open_modal(app, ModalState::Info { message });
 }
 
@@ -1431,13 +1425,18 @@ fn save_filters(app: &mut AppState) {
 }
 
 fn open_modal(app: &mut AppState, modal: ModalState) {
-    app.modal = Some(modal);
-    app.input_mode = InputMode::Modal;
+    app.push_modal(modal);
 }
 
-fn close_modal(app: &mut AppState) {
-    app.modal = None;
-    app.input_mode = InputMode::Normal;
+/// Close the current dialog and return to the one below it.
+fn back(app: &mut AppState) {
+    app.pop_modal();
+}
+
+/// Drop the prepared operation and close every dialog that led to it.
+fn cancel_operation(app: &mut AppState) {
+    app.clear_pending_operation();
+    app.close_modals();
 }
 
 fn toggle(values: &mut Vec<usize>, selected: usize) {
@@ -1477,7 +1476,7 @@ mod tests {
         assert!(!handle_event(&mut app, Event::Resize(20, 5)));
         assert_eq!(app.active_tab, before_tab);
         assert_eq!(app.input_mode, before_mode);
-        assert!(app.modal.is_none());
+        assert!(app.modal().is_none());
     }
 
     #[test]
@@ -1530,7 +1529,7 @@ mod tests {
         assert!(app.pending_operation.is_some());
         assert_eq!(app.last_preview, ["usermod -s /bin/bash alice"]);
         execute_pending_plan(&mut app);
-        assert!(matches!(app.modal, Some(ModalState::SudoPrompt { .. })));
+        assert!(matches!(app.modal(), Some(ModalState::SudoPrompt { .. })));
     }
 
     #[test]
@@ -1608,14 +1607,14 @@ mod tests {
             },
         );
         assert!(matches!(
-            app.modal,
-            Some(ModalState::OperationConfirm { ref action, ref preview, .. })
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
                 if action.starts_with("Dry run") && preview == &["usermod -s /bin/bash alice"]
         ));
         execute_pending_plan(&mut app);
         assert!(matches!(
-            app.modal,
-            Some(ModalState::Info { ref message }) if message.contains("Dry run: nothing was executed")
+            app.modal(),
+            Some(ModalState::Info { message }) if message.contains("Dry run: nothing was executed")
         ));
         assert!(app.pending_operation.is_none());
         assert!(app.last_report.is_none());
@@ -1673,6 +1672,165 @@ mod tests {
         app.log_event("error", "second");
         assert_eq!(app.diagnostics.config_messages.len(), 1);
         assert!(app.diagnostics.config_messages[0].contains("log file disabled"));
+    }
+
+    fn press(app: &mut AppState, code: KeyCode) {
+        handle_key(
+            app,
+            KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+        );
+    }
+
+    fn user_app() -> AppState {
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        AppState::with_adapter(adapter, snapshot)
+    }
+
+    /// Actions > Modify > Modify details > Shell > Enter: the confirm dialog
+    /// for a shell change sits on top of four menus.
+    fn open_shell_change_confirm(app: &mut AppState) {
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::ModifyShell { .. })));
+        press(app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
+        assert_eq!(app.modal_depth(), 5);
+    }
+
+    #[test]
+    fn esc_pops_one_modal_level_at_a_time() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::Actions { .. })));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::ModifyMenu { .. })));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.modal(), Some(ModalState::Actions { .. })));
+        assert_eq!(app.input_mode, InputMode::Modal);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn backspace_pops_menus_but_edits_text_inputs() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyDetailsMenu { .. })
+        ));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('b'));
+        press(&mut app, KeyCode::Backspace);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyTextInput { value, .. }) if value == "a"
+        ));
+        assert_eq!(app.modal_depth(), 4);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyDetailsMenu { .. })
+        ));
+        press(&mut app, KeyCode::Backspace);
+        // The parent menu keeps the row it was left on.
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyMenu { selected: 2 })
+        ));
+        press(&mut app, KeyCode::Backspace);
+        assert!(matches!(app.modal(), Some(ModalState::Actions { .. })));
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.modal().is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn esc_on_operation_confirm_cancels_and_closes_every_modal() {
+        let mut app = user_app();
+        open_shell_change_confirm(&mut app);
+        assert!(app.pending_operation.is_some());
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
+        assert!(app.pending_operation.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn esc_on_sudo_prompt_cancels_and_closes_every_modal() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Enter);
+        // The fixture's only shell is already alice's, so pick one that
+        // needs a real change and therefore authentication.
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::SudoPrompt { .. })));
+        assert_eq!(app.modal_depth(), 3);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
+        assert!(app.pending_operation.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn operation_result_replaces_the_stack_so_esc_reaches_main_view() {
+        let mut app = root_app();
+        app.dry_run = true;
+        open_shell_change_confirm(&mut app);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
+        assert_eq!(app.modal_depth(), 1);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn validation_message_returns_to_the_form_on_esc() {
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::GroupAddInput {
+                name: String::new(),
+            },
+        );
+        press(&mut app, KeyCode::Char('!'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::Info { .. })));
+        assert_eq!(app.modal_depth(), 2);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupAddInput { name }) if name == "!"
+        ));
     }
 
     fn fixture_snapshot() -> AccountSnapshot {

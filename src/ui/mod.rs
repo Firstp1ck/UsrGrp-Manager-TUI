@@ -91,7 +91,7 @@ pub fn render(frame: &mut Frame, app: &AppState) {
         components::render_keybinds_panel(frame, body[2], app);
     }
     components::render_status_bar(frame, root[2], app);
-    if let Some(modal) = &app.modal {
+    if let Some(modal) = app.modal() {
         render_modal(frame, frame.area(), app, modal);
     }
 }
