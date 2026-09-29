@@ -1269,6 +1269,62 @@ pub struct RunOptions {
     pub logger: Option<Logger>,
 }
 
+/// Where the copy key sends its OSC 52 sequence. The production sink writes
+/// to the terminal; tests inject a recording fake so nothing reaches one.
+pub trait ClipboardSink: Send + Sync {
+    fn copy(&self, bytes: &[u8]) -> std::io::Result<()>;
+}
+
+/// Writes the sequence to stdout, where the terminal turns it into a
+/// clipboard update if it allows OSC 52.
+pub struct StdoutClipboard;
+impl ClipboardSink for StdoutClipboard {
+    fn copy(&self, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(bytes)?;
+        stdout.flush()
+    }
+}
+
+/// Longest text the copy key sends, in bytes.
+pub const MAX_COPY_BYTES: usize = 256;
+
+/// Standard base64 (RFC 4648 alphabet) with `=` padding.
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let triple = chunk.iter().enumerate().fold(0u32, |acc, (index, byte)| {
+            acc | (u32::from(*byte) << (16 - 8 * index))
+        });
+        for index in 0..4 {
+            if index <= chunk.len() {
+                let sextet = (triple >> (18 - 6 * index)) & 0x3f;
+                out.push(char::from(ALPHABET[sextet as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// The OSC 52 sequence that asks the terminal to put `text` on the
+/// clipboard: `ESC ] 52 ; c ; <base64> BEL`.
+pub fn osc52_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))
+}
+
+/// `text` cut to at most `MAX_COPY_BYTES` bytes at a character boundary.
+fn cap_copy_text(text: &str) -> &str {
+    let mut end = text.len().min(MAX_COPY_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Injectable bounded diagnostics effect. Renderers only consume its result.
 pub trait DiagnosticProvider: Send + Sync {
     fn refresh(&self, snapshot: &AccountSnapshot, now: SystemTime) -> CachedDiagnostics;
@@ -1680,6 +1736,11 @@ pub struct AppState {
     clock: Arc<dyn Clock>,
     diagnostic_provider: Arc<dyn DiagnosticProvider>,
     config_root_provider: Arc<dyn ConfigRootProvider>,
+    /// Receives the OSC 52 sequence of the copy key.
+    clipboard: Arc<dyn ClipboardSink>,
+    /// One-shot status bar message (`copied "alice"`), shown as the first
+    /// segment and cleared by the next key press.
+    pub notice: Option<String>,
     /// Where theme.conf, keybinds.conf and filter.conf were loaded from and
     /// where they save, as resolved by the last `load_configuration`. Empty
     /// until then. The help dialog shows these, so rendering never resolves
@@ -1782,6 +1843,8 @@ impl AppState {
             clock,
             diagnostic_provider,
             config_root_provider,
+            clipboard: Arc::new(StdoutClipboard),
+            notice: None,
             config_paths: Vec::new(),
             current_username: "unknown".to_owned(),
             sudo_group: "wheel".to_owned(),
@@ -2282,6 +2345,54 @@ impl AppState {
     /// Attach an operation log (`--log-file`).
     pub fn set_logger(&mut self, logger: Logger) {
         self.logger = Some(logger);
+    }
+
+    /// Replace where the copy key writes (tests inject a recording fake).
+    pub fn set_clipboard_sink(&mut self, sink: Arc<dyn ClipboardSink>) {
+        self.clipboard = sink;
+    }
+
+    /// Name on the highlighted row of the focused pane: the user or group,
+    /// or the group or member in the child pane. `None` when that pane is
+    /// empty.
+    pub fn selected_name(&self) -> Option<&str> {
+        match (self.active_tab, self.users_focus, self.groups_focus) {
+            (ActiveTab::Users, UsersFocus::UsersList, _) => self
+                .users
+                .get(self.selected_user_index)
+                .map(|user| user.name.as_str()),
+            (ActiveTab::Users, UsersFocus::MemberOf, _) => self
+                .selected_user_groups()
+                .get(self.selected_user_group_index)
+                .map(|group| group.name.as_str()),
+            (ActiveTab::Groups, _, GroupsFocus::GroupsList) => self
+                .groups
+                .get(self.selected_group_index)
+                .map(|group| group.name.as_str()),
+            (ActiveTab::Groups, _, GroupsFocus::Members) => self
+                .groups
+                .get(self.selected_group_index)
+                .and_then(|group| group.members.get(self.selected_group_member_index))
+                .map(String::as_str),
+        }
+    }
+
+    /// Copy key: send the highlighted name (at most `MAX_COPY_BYTES`) to the
+    /// clipboard sink as an OSC 52 sequence and say so in the status bar.
+    /// Does nothing when the focused pane is empty.
+    pub fn copy_selection(&mut self) {
+        let Some(text) = self
+            .selected_name()
+            .map(|name| cap_copy_text(name).to_owned())
+        else {
+            return;
+        };
+        self.notice = Some(
+            match self.clipboard.copy(osc52_sequence(&text).as_bytes()) {
+                Ok(()) => format!("copied \"{text}\""),
+                Err(error) => format!("copy failed: {}", error.kind()),
+            },
+        );
     }
 
     /// Append one redacted event to the operation log, if one is open. A

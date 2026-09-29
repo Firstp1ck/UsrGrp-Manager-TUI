@@ -14,6 +14,7 @@ pub enum KeyAction {
     Refresh,
     CycleSort,
     ToggleMark,
+    CopySelection,
     NewUser,
     DeleteSelection,
     SwitchTab,
@@ -53,6 +54,7 @@ impl Keymap {
             ((Modifiers::NONE, Char('r')), Refresh),
             ((Modifiers::NONE, Char('s')), CycleSort),
             ((Modifiers::NONE, Char(' ')), ToggleMark),
+            ((Modifiers::NONE, Char('y')), CopySelection),
             ((Modifiers::NONE, Char('n')), NewUser),
             ((Modifiers::NONE, Char('?')), OpenHelp),
             ((Modifiers::NONE, Delete), DeleteSelection),
@@ -247,6 +249,7 @@ fn parse_action(value: &str) -> Option<KeyAction> {
         "Refresh" => Refresh,
         "CycleSort" => CycleSort,
         "ToggleMark" => ToggleMark,
+        "CopySelection" => CopySelection,
         "NewUser" => NewUser,
         "DeleteSelection" => DeleteSelection,
         "SwitchTab" => SwitchTab,
@@ -276,6 +279,7 @@ pub fn format_action(action: KeyAction) -> &'static str {
         Refresh => "Refresh",
         CycleSort => "CycleSort",
         ToggleMark => "ToggleMark",
+        CopySelection => "CopySelection",
         NewUser => "NewUser",
         DeleteSelection => "DeleteSelection",
         SwitchTab => "SwitchTab",
@@ -411,6 +415,25 @@ mod tests {
         assert_eq!(
             Keymap::from_file(path).unwrap().resolve(&space),
             Some(KeyAction::ToggleMark)
+        );
+    }
+
+    #[test]
+    fn y_copies_the_selection_by_default_and_in_the_example_config() {
+        let y = key(KeyCode::Char('y'));
+        assert_eq!(
+            Keymap::default().resolve(&y),
+            Some(KeyAction::CopySelection)
+        );
+        assert_eq!(
+            parse_action("CopySelection"),
+            Some(KeyAction::CopySelection)
+        );
+        assert_eq!(format_action(KeyAction::CopySelection), "CopySelection");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&y),
+            Some(KeyAction::CopySelection)
         );
     }
 

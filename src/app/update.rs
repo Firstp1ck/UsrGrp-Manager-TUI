@@ -62,6 +62,8 @@ pub fn run_app_with(
 fn handle_event(app: &mut AppState, event: Event) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // A notice such as `copied "alice"` lasts until the next key.
+            app.notice = None;
             if is_interrupt(key) {
                 app.clear_pending_operation();
                 return true;
@@ -109,6 +111,7 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
         Some(KeyAction::ToggleMark) => app.toggle_mark(),
         Some(KeyAction::Refresh) => app.refresh_accounts(),
         Some(KeyAction::CycleSort) => app.cycle_sort(),
+        Some(KeyAction::CopySelection) => app.copy_selection(),
         Some(KeyAction::NewUser) => match app.active_tab {
             ActiveTab::Users => open_modal(
                 app,
@@ -5944,13 +5947,190 @@ mod tests {
     /// Like `AppState::with_adapter`, but every host-reading dependency is a
     /// fake, so `refresh_accounts` after an executed plan stays off the host.
     fn isolated_app(adapter: Arc<SystemAdapter>, snapshot: AccountSnapshot) -> AppState {
-        AppState::with_dependencies(
+        let mut app = AppState::with_dependencies(
             adapter,
             snapshot,
             Arc::new(FixedClock),
             Arc::new(NoDiagnostics),
             Arc::new(NoConfigRoots),
-        )
+        );
+        // A stray copy key never writes to the terminal running the tests.
+        app.set_clipboard_sink(Arc::new(RecordingClipboard::default()));
+        app
+    }
+
+    /// Clipboard sink that keeps every sequence it is given.
+    #[derive(Default)]
+    struct RecordingClipboard(std::sync::Mutex<Vec<Vec<u8>>>);
+    impl crate::app::ClipboardSink for RecordingClipboard {
+        fn copy(&self, bytes: &[u8]) -> std::io::Result<()> {
+            self.0.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+    }
+    impl RecordingClipboard {
+        fn copies(&self) -> Vec<Vec<u8>> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    /// Clipboard sink whose writes fail, like a closed terminal.
+    struct FailingClipboard;
+    impl crate::app::ClipboardSink for FailingClipboard {
+        fn copy(&self, _: &[u8]) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    /// `bulk_app` with a recording clipboard the test can inspect.
+    fn copy_app() -> (AppState, Arc<RecordingClipboard>) {
+        let mut app = bulk_app();
+        let clipboard = Arc::new(RecordingClipboard::default());
+        app.set_clipboard_sink(clipboard.clone());
+        (app, clipboard)
+    }
+
+    fn key_event(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, crossterm::event::KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn base64_matches_the_rfc_4648_vectors() {
+        use crate::app::base64_encode;
+        let vectors = [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ];
+        for (input, expected) in vectors {
+            assert_eq!(base64_encode(input.as_bytes()), expected, "{input:?}");
+        }
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xbf]), "+/+/");
+    }
+
+    #[test]
+    fn osc52_sequence_wraps_the_base64_text() {
+        assert_eq!(
+            crate::app::osc52_sequence("alice"),
+            "\x1b]52;c;YWxpY2U=\x07"
+        );
+        assert_eq!(crate::app::osc52_sequence(""), "\x1b]52;c;\x07");
+    }
+
+    #[test]
+    fn copied_text_is_capped_at_256_bytes_on_a_character_boundary() {
+        use crate::app::{MAX_COPY_BYTES, cap_copy_text};
+        assert_eq!(cap_copy_text("alice"), "alice");
+        let long = "a".repeat(300);
+        assert_eq!(cap_copy_text(&long).len(), MAX_COPY_BYTES);
+        // 255 ASCII bytes then a two-byte character that would end at 257.
+        let straddling = format!("{}é", "a".repeat(255));
+        assert_eq!(cap_copy_text(&straddling), "a".repeat(255));
+    }
+
+    #[test]
+    fn y_copies_the_selected_user_and_shows_a_notice_until_the_next_key() {
+        let (mut app, clipboard) = copy_app();
+        while app.users[app.selected_user_index].name != "alice" {
+            press(&mut app, KeyCode::Down);
+        }
+        assert!(!handle_event(&mut app, key_event(KeyCode::Char('y'))));
+        assert_eq!(clipboard.copies(), [b"\x1b]52;c;YWxpY2U=\x07".to_vec()]);
+        assert_eq!(app.notice.as_deref(), Some("copied \"alice\""));
+        let status = ui::components::status_segments(&app);
+        assert_eq!(status.segments[0], "copied \"alice\"");
+        assert!(rendered(&app).contains("copied \"alice\" · "));
+
+        // A resize is not a key press, so the notice stays.
+        handle_event(&mut app, Event::Resize(100, 30));
+        assert!(app.notice.is_some());
+        handle_event(&mut app, key_event(KeyCode::Down));
+        assert_eq!(app.notice, None);
+        assert!(!rendered(&app).contains("copied"));
+        assert_eq!(clipboard.copies().len(), 1);
+    }
+
+    #[test]
+    fn y_copies_the_name_in_the_focused_pane() {
+        let (mut app, clipboard) = copy_app();
+        while app.users[app.selected_user_index].name != "alice" {
+            press(&mut app, KeyCode::Down);
+        }
+        // Member of: alice's first group (her primary group has no entry,
+        // so this is dev).
+        press(&mut app, KeyCode::Right);
+        let group = app.selected_user_groups()[app.selected_user_group_index]
+            .name
+            .clone();
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.notice, Some(format!("copied \"{group}\"")));
+
+        // Groups tab: the highlighted group, then its highlighted member.
+        press(&mut app, KeyCode::Tab);
+        while app.groups[app.selected_group_index].name != "wheel" {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.notice.as_deref(), Some("copied \"wheel\""));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.notice.as_deref(), Some("copied \"carol\""));
+
+        let expected: Vec<Vec<u8>> = [group.as_str(), "wheel", "carol"]
+            .iter()
+            .map(|name| crate::app::osc52_sequence(name).into_bytes())
+            .collect();
+        assert_eq!(clipboard.copies(), expected);
+    }
+
+    #[test]
+    fn y_in_an_empty_pane_copies_nothing() {
+        let (mut app, clipboard) = copy_app();
+        press(&mut app, KeyCode::Tab);
+        while app.groups[app.selected_group_index].name != "docker" {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Char('y'));
+        assert!(clipboard.copies().is_empty());
+        assert_eq!(app.notice, None);
+    }
+
+    #[test]
+    fn failed_copy_says_why_in_the_status_bar() {
+        let mut app = bulk_app();
+        app.set_clipboard_sink(Arc::new(FailingClipboard));
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.notice.as_deref(), Some("copy failed: broken pipe"));
+        assert_eq!(
+            ui::components::status_segments(&app).segments[0],
+            "copy failed: broken pipe"
+        );
+    }
+
+    #[test]
+    fn copy_key_is_listed_in_the_panel_and_the_help() {
+        let app = bulk_app();
+        let lines: Vec<String> = ui::components::keybinds_panel_lines(&app)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(lines.contains(&"Copy name: y".to_owned()), "{lines:?}");
+        let help: Vec<String> = ui::components::help_lines(&app)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(
+            help.contains(
+                &"Copy the highlighted user or group name: y (the terminal must allow OSC 52)"
+                    .to_owned()
+            )
+        );
+        assert!(help.contains(&"Copy the highlighted group or member name: y".to_owned()));
     }
 
     /// Account source whose next result a test can swap: `None` fails the

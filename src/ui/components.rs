@@ -57,8 +57,8 @@ const STALE_MARKER: &str = "STALE: …";
 pub struct StatusSegments {
     /// Segments, most important first, shown left to right.
     pub segments: Vec<String>,
-    /// How many leading segments always stay (search mode and the refresh
-    /// or stale label).
+    /// How many leading segments always stay (a notice such as
+    /// `copied "alice"`, search mode, and the refresh or stale label).
     pub essential: usize,
     /// Segment that may be shortened down to `STALE_MARKER` (the stale
     /// label). It gets the width the other kept segments leave over.
@@ -72,6 +72,8 @@ pub struct StatusSegments {
 pub fn status_segments(app: &AppState) -> StatusSegments {
     let mut segments = Vec::new();
     let mut muted_tails = Vec::new();
+    // A one-shot notice (`copied "alice"`) comes first until the next key.
+    segments.extend(app.notice.clone());
     match app.input_mode {
         InputMode::SearchUsers => segments.push("SEARCH(users)".to_owned()),
         InputMode::SearchGroups => segments.push("SEARCH(groups)".to_owned()),
@@ -480,6 +482,7 @@ fn panel_entry(action: KeyAction) -> Option<(usize, usize, &'static str)> {
         NewUser => (2, 1, "New user/group"),
         DeleteSelection => (2, 2, "Delete"),
         ToggleMark => (2, 3, "Mark user"),
+        CopySelection => (2, 4, "Copy name"),
         Ignore => return None,
     })
 }
@@ -1293,6 +1296,10 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
                 keys(&[ClearSearch])
             ),
             format!("Group actions: {enter} in Member of"),
+            format!(
+                "Copy the highlighted user or group name: {} (the terminal must allow OSC 52)",
+                keys(&[CopySelection])
+            ),
             format!("New user: {new}"),
             format!("Delete user: {delete} on a user"),
             format!("Remove from group: {delete} in Member of"),
@@ -1303,6 +1310,10 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
         vec![
             format!("Group actions: {enter} on a group"),
             format!("Remove member: {enter} or {delete} in Members"),
+            format!(
+                "Copy the highlighted group or member name: {}",
+                keys(&[CopySelection])
+            ),
             format!("New group: {new}"),
             format!("Delete group: {delete} on a group"),
         ],
