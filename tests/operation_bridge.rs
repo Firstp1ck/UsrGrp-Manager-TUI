@@ -713,6 +713,145 @@ fn primary_group_and_home_reject_root_protected_and_changed_users_before_runner_
 }
 
 #[test]
+fn account_expiry_previews_the_exact_chage_command_and_stays_unverified() {
+    for (date, command) in [
+        (Some("2027-01-31"), "chage -E 2027-01-31 alice"),
+        (Some("2024-02-29"), "chage -E 2024-02-29 alice"),
+        (None, "chage -E -1 alice"),
+    ] {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let adapter = adapter(
+            Arc::new(common::FixtureSource(Ok(snapshot()))),
+            runner.clone(),
+            0,
+        );
+        let plan = adapter
+            .prepare_operation(OperationRequest::SetAccountExpiry {
+                username: "alice".into(),
+                date: date.map(str::to_owned),
+            })
+            .unwrap();
+        let preview = plan.redacted_preview();
+        assert_eq!(
+            preview.iter().map(|line| line.render()).collect::<Vec<_>>(),
+            [command]
+        );
+        assert_eq!(plan.bound_targets.len(), 1);
+
+        let report = adapter.execute_prepared_operation(&plan).unwrap();
+        assert_eq!(
+            preview,
+            runner
+                .recorded()
+                .into_iter()
+                .map(|call| call.preview)
+                .collect::<Vec<_>>()
+        );
+        // The expiry lives in /etc/shadow, which the account source does
+        // not read: a successful child is reported as unobserved.
+        assert!(report.failed.is_none());
+        assert_eq!(report.completed.len(), 1);
+        assert_eq!(report.completed[0].id, "set account expiry");
+        assert!(matches!(
+            report.completed[0].verification,
+            usrgrp_manager::sys::StepVerification::Unverified { .. }
+        ));
+        assert!(matches!(
+            report.reconciliation,
+            ReconciliationStatus::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn account_expiry_rejects_bad_dates_root_and_protected_users_before_runner_execution() {
+    for date in [
+        "2027-02-29",
+        "2027-13-01",
+        "1969-12-31",
+        "31.01.2027",
+        "-1",
+        "",
+    ] {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let adapter = adapter(
+            Arc::new(common::FixtureSource(Ok(snapshot()))),
+            runner.clone(),
+            0,
+        );
+        assert!(
+            matches!(
+                adapter.prepare_operation(OperationRequest::SetAccountExpiry {
+                    username: "alice".into(),
+                    date: Some(date.into()),
+                }),
+                Err(CoreError::Validation {
+                    field: "expiry date",
+                    ..
+                })
+            ),
+            "{date:?}"
+        );
+        assert!(runner.recorded().is_empty());
+    }
+
+    let root = AccountSnapshot {
+        users: vec![AccountUser {
+            uid: Uid(0),
+            name: UserName::new("root").unwrap(),
+            primary_gid: Gid(0),
+            full_name: None,
+            home_dir: "/root".into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        }],
+        groups: vec![],
+        shells: vec![ShellPath::new("/bin/sh").unwrap()],
+        diagnostics: vec![],
+    };
+    let mut service = snapshot();
+    service.users[0].uid = Uid(998);
+    for (accounts, username) in [(root, "root"), (service, "alice")] {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let adapter = adapter(
+            Arc::new(common::FixtureSource(Ok(accounts))),
+            runner.clone(),
+            0,
+        );
+        for date in [Some("2027-01-31".to_owned()), None] {
+            assert!(matches!(
+                adapter.prepare_operation(OperationRequest::SetAccountExpiry {
+                    username: username.into(),
+                    date,
+                }),
+                Err(CoreError::Validation { .. })
+            ));
+        }
+        assert!(runner.recorded().is_empty());
+    }
+
+    // A target whose UID changed after preview is refused before running.
+    let mut changed = snapshot();
+    changed.users[0].uid = Uid(1001);
+    let runner = Arc::new(common::FakeRunner::succeeds());
+    let adapter = adapter(
+        Arc::new(SequencedSource::new([Ok(snapshot()), Ok(changed)])),
+        runner.clone(),
+        0,
+    );
+    let plan = adapter
+        .prepare_operation(OperationRequest::SetAccountExpiry {
+            username: "alice".into(),
+            date: None,
+        })
+        .unwrap();
+    assert!(matches!(
+        adapter.execute_prepared_operation(&plan),
+        Err(CoreError::Validation { .. })
+    ));
+    assert!(runner.recorded().is_empty());
+}
+
+#[test]
 fn composite_password_and_expiry_runs_all_required_commands_when_shadow_is_unobservable() {
     let runner = Arc::new(common::FakeRunner::succeeds());
     let adapter = adapter(
@@ -1116,6 +1255,14 @@ fn every_supported_request_compiles_to_a_redacted_bridge_plan() {
             username: "alice".into(),
             home: "/srv/alice".into(),
             move_contents: true,
+        },
+        OperationRequest::SetAccountExpiry {
+            username: "alice".into(),
+            date: Some("2027-01-31".into()),
+        },
+        OperationRequest::SetAccountExpiry {
+            username: "alice".into(),
+            date: None,
         },
         OperationRequest::Composite {
             requests: vec![

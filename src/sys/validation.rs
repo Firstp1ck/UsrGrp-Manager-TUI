@@ -251,6 +251,105 @@ impl fmt::Display for HomePath {
     }
 }
 
+/// A validated account expiry date suitable for `chage -E`: `YYYY-MM-DD`,
+/// a real proleptic Gregorian date, with a year from 1970 to 9999.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ExpiryDate {
+    text: String,
+    year: i64,
+    month: i64,
+    day: i64,
+}
+
+impl ExpiryDate {
+    const FIELD: &'static str = "expiry date";
+
+    /// Validate and construct an expiry date from its `YYYY-MM-DD` text.
+    pub fn new(value: impl AsRef<str>) -> CoreResult<Self> {
+        let value = value.as_ref();
+        let bytes = value.as_bytes();
+        let shaped = bytes.len() == 10
+            && bytes.iter().enumerate().all(|(index, byte)| match index {
+                4 | 7 => *byte == b'-',
+                _ => byte.is_ascii_digit(),
+            });
+        if !shaped {
+            return Err(CoreError::Validation {
+                field: Self::FIELD,
+                reason: "must be a date as YYYY-MM-DD",
+            });
+        }
+        let number = |range: std::ops::Range<usize>| {
+            bytes[range]
+                .iter()
+                .fold(0_i64, |total, digit| total * 10 + i64::from(digit - b'0'))
+        };
+        let (year, month, day) = (number(0..4), number(5..7), number(8..10));
+        if !(1970..=9999).contains(&year) {
+            return Err(CoreError::Validation {
+                field: Self::FIELD,
+                reason: "year must be between 1970 and 9999",
+            });
+        }
+        if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+            return Err(CoreError::Validation {
+                field: Self::FIELD,
+                reason: "must be a real calendar date",
+            });
+        }
+        Ok(Self {
+            text: value.to_owned(),
+            year,
+            month,
+            day,
+        })
+    }
+
+    /// The validated `YYYY-MM-DD` text passed to `chage -E`.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Days since 1970-01-01, the unit of the shadow expiry field.
+    pub fn days_since_epoch(&self) -> i64 {
+        // Howard Hinnant's civil-to-days algorithm: years start on March 1
+        // so the leap day is the last day of a year, in 400-year eras.
+        let year = if self.month <= 2 {
+            self.year - 1
+        } else {
+            self.year
+        };
+        let era = year.div_euclid(400);
+        let year_of_era = year.rem_euclid(400);
+        let shifted_month = (self.month + 9) % 12;
+        let day_of_year = (153 * shifted_month + 2) / 5 + self.day - 1;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+        era * 146_097 + day_of_era - 719_468
+    }
+}
+
+/// Days in `month` (1 to 12) of `year` in the proleptic Gregorian calendar.
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+impl AsRef<str> for ExpiryDate {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for ExpiryDate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 /// A validated GECOS field suitable for `usermod -c`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Gecos(String);
@@ -407,6 +506,48 @@ mod tests {
         assert!(HomePath::new(format!("/{}", "a".repeat(4096))).is_err());
         // The shell path keeps the same shared rules.
         assert!(ShellPath::new("bin/sh").is_err());
+    }
+
+    #[test]
+    fn expiry_dates_are_real_calendar_dates_from_1970_to_9999() {
+        for (valid, days) in [
+            ("1970-01-01", 0),
+            ("2000-02-29", 11_016),
+            ("2024-02-29", 19_782),
+            ("2027-01-31", 20_849),
+            ("2100-02-28", 47_540),
+            ("9999-12-31", 2_932_896),
+        ] {
+            let date = ExpiryDate::new(valid).unwrap_or_else(|_| panic!("{valid}"));
+            assert_eq!(date.as_str(), valid);
+            assert_eq!(date.days_since_epoch(), days, "{valid}");
+        }
+        for (invalid, reason) in [
+            ("", "must be a date as YYYY-MM-DD"),
+            ("2027-1-31", "must be a date as YYYY-MM-DD"),
+            ("2027/01/31", "must be a date as YYYY-MM-DD"),
+            ("2027-01-31 ", "must be a date as YYYY-MM-DD"),
+            ("-1", "must be a date as YYYY-MM-DD"),
+            ("2027-01-3a", "must be a date as YYYY-MM-DD"),
+            ("２027-01-31", "must be a date as YYYY-MM-DD"),
+            ("1969-12-31", "year must be between 1970 and 9999"),
+            ("0000-01-01", "year must be between 1970 and 9999"),
+            ("2027-00-10", "must be a real calendar date"),
+            ("2027-13-01", "must be a real calendar date"),
+            ("2027-01-00", "must be a real calendar date"),
+            ("2027-04-31", "must be a real calendar date"),
+            ("2027-02-29", "must be a real calendar date"),
+            ("2100-02-29", "must be a real calendar date"),
+        ] {
+            assert!(
+                matches!(
+                    ExpiryDate::new(invalid),
+                    Err(CoreError::Validation { field: "expiry date", reason: got })
+                        if got == reason
+                ),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]

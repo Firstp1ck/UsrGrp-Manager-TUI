@@ -1,6 +1,8 @@
 //! Bounded, typed command execution for local account tools.
 
-use super::{Gecos, GroupName, HomePath, PasswordRecord, SecretString, ShellPath, UserName};
+use super::{
+    ExpiryDate, Gecos, GroupName, HomePath, PasswordRecord, SecretString, ShellPath, UserName,
+};
 use crate::error::{CoreError, CoreResult};
 use std::{
     io::{self, Read, Write},
@@ -110,7 +112,19 @@ impl CommandSpec {
     pub fn fixed_arg(mut self, argument: &'static str) -> CoreResult<Self> {
         if !matches!(
             argument,
-            "-a" | "-c" | "-d" | "-g" | "-l" | "-m" | "-n" | "-r" | "-s" | "-L" | "-U" | "0"
+            "-a" | "-c"
+                | "-d"
+                | "-g"
+                | "-l"
+                | "-m"
+                | "-n"
+                | "-r"
+                | "-s"
+                | "-E"
+                | "-L"
+                | "-U"
+                | "0"
+                | "-1"
         ) {
             return Err(CoreError::Validation {
                 field: "command argument",
@@ -142,6 +156,12 @@ impl CommandSpec {
     /// Append a validated absolute home directory path.
     pub fn home_path(mut self, home: &HomePath) -> Self {
         self.arguments.push(home.as_str().to_owned());
+        self
+    }
+
+    /// Append a validated `YYYY-MM-DD` account expiry date.
+    pub fn expiry_date(mut self, date: &ExpiryDate) -> Self {
+        self.arguments.push(date.as_str().to_owned());
         self
     }
 

@@ -103,6 +103,12 @@ pub enum OperationRequest {
         home: String,
         move_contents: bool,
     },
+    /// Set the day the account expires (`chage -E YYYY-MM-DD`), or remove
+    /// the expiry when `date` is None (`chage -E -1`).
+    SetAccountExpiry {
+        username: String,
+        date: Option<String>,
+    },
     /// Ordered requests compiled by the trusted adapter into one exact plan.
     Composite {
         requests: Vec<OperationRequest>,

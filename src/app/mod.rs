@@ -429,6 +429,17 @@ pub enum ModalState {
     ModifyPasswordMenu {
         selected: usize,
     },
+    /// Opens with the cached expiry date filled in, or empty when the
+    /// account never expires or shadow could not be read. Empty submits
+    /// "never expires".
+    ModifyExpiry {
+        value: String,
+        /// The expiry when the dialog opened: `Some(None)` never expires,
+        /// `None` unknown because shadow has no readable record.
+        current: Option<Option<String>>,
+        /// Validation problem shown inline under the field.
+        error: Option<String>,
+    },
     ChangePassword {
         selected: usize,
         password: SecretInput,
@@ -545,6 +556,7 @@ impl ModalState {
             Self::ModifyTextInput { error, .. }
             | Self::ModifyPrimaryGroup { error, .. }
             | Self::ModifyHome { error, .. }
+            | Self::ModifyExpiry { error, .. }
             | Self::ChangePassword { error, .. }
             | Self::GroupAddInput { error, .. }
             | Self::GroupRenameInput { error, .. }
@@ -564,6 +576,8 @@ pub const MAX_NAME_CHARS: usize = 32;
 pub const MAX_GECOS_CHARS: usize = 256;
 /// Longest home directory path the home field accepts, in characters.
 pub const MAX_HOME_CHARS: usize = 4096;
+/// Length of a `YYYY-MM-DD` expiry date, the most the expiry field accepts.
+pub const MAX_EXPIRY_CHARS: usize = 10;
 /// Longest password each password field accepts, in characters.
 pub const MAX_PASSWORD_CHARS: usize = 1024;
 /// Form error shown when a keystroke would pass a field's limit.
@@ -805,6 +819,11 @@ pub enum PendingAction {
         home: String,
         move_contents: bool,
     },
+    /// `date` is `YYYY-MM-DD`; None removes the expiry.
+    SetAccountExpiry {
+        username: String,
+        date: Option<String>,
+    },
 }
 
 /// Most names an action description lists before summarizing the rest.
@@ -929,6 +948,10 @@ impl PendingAction {
                     format!("Change home of {username} to {home}")
                 }
             }
+            Self::SetAccountExpiry { username, date } => match date {
+                Some(date) => format!("Set account expiry of {username} to {date}"),
+                None => format!("Remove account expiry of {username}"),
+            },
         }
     }
 }

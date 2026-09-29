@@ -11,12 +11,15 @@ use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 use crate::{
     app::{
         ActiveTab, AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
-        GroupsFocus, InputMode, MAX_HOME_CHARS, MAX_LENGTH_REACHED, MAX_NAME_CHARS,
-        MAX_PASSWORD_CHARS, ModalState, ModifyField, ModifyMenuItem, PendingAction, RunOptions,
-        SecretInput, UsersFocus, filterconf::FiltersConfig, keymap::KeyAction,
+        GroupsFocus, InputMode, MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_LENGTH_REACHED,
+        MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState, ModifyField, ModifyMenuItem, PendingAction,
+        RunOptions, SecretInput, UsersFocus, civil_date_label, filterconf::FiltersConfig,
+        keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
-    sys::{GroupName, HomePath, OperationRequest, PasswordRecord, SecretString, UserName},
+    sys::{
+        ExpiryDate, GroupName, HomePath, OperationRequest, PasswordRecord, SecretString, UserName,
+    },
     ui,
 };
 
@@ -478,6 +481,11 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             key,
         ),
         ModalState::ModifyPasswordMenu { selected } => handle_password_menu(app, selected, key),
+        ModalState::ModifyExpiry {
+            value,
+            current,
+            error,
+        } => handle_expiry_input(app, value, current.as_ref(), error, key),
         ModalState::ChangePassword {
             selected,
             password,
@@ -1221,34 +1229,116 @@ fn candidate_key(
     CandidateKey::Handled
 }
 
+/// Rows of the "Password" menu: Set or change password, Force change at
+/// next login, Account expiry date.
+const PASSWORD_MENU_ROWS: usize = 3;
+
 fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     if let Some(step) = list_step(key) {
-        move_index(selected, 2, step);
+        move_index(selected, PASSWORD_MENU_ROWS, step);
         return;
     }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Enter => {
-            if *selected == 0 {
-                open_modal(
-                    app,
-                    ModalState::ChangePassword {
-                        selected: 0,
-                        password: SecretInput::default(),
-                        confirm: SecretInput::default(),
-                        must_change: false,
-                        reveal: false,
-                        error: None,
-                    },
-                )
-            } else if let Some(user) = app.users.get(app.selected_user_index) {
-                start_pending_action(
-                    app,
-                    PendingAction::ResetPassword {
-                        username: user.name.clone(),
-                    },
-                )
+        KeyCode::Enter => match *selected {
+            0 => open_modal(
+                app,
+                ModalState::ChangePassword {
+                    selected: 0,
+                    password: SecretInput::default(),
+                    confirm: SecretInput::default(),
+                    must_change: false,
+                    reveal: false,
+                    error: None,
+                },
+            ),
+            1 => {
+                if let Some(user) = app.users.get(app.selected_user_index) {
+                    start_pending_action(
+                        app,
+                        PendingAction::ResetPassword {
+                            username: user.name.clone(),
+                        },
+                    )
+                }
             }
+            _ => {
+                if let Some(user) = app.users.get(app.selected_user_index) {
+                    // The cached shadow expiry as a date; None when shadow
+                    // has no readable record for the user.
+                    let current = app
+                        .diagnostics
+                        .shadow
+                        .status(&user.name)
+                        .map(|status| status.expire_abs_days.map(civil_date_label));
+                    let value = current.clone().flatten().unwrap_or_default();
+                    let error = live_expiry_error(&value);
+                    open_modal(
+                        app,
+                        ModalState::ModifyExpiry {
+                            value,
+                            current,
+                            error,
+                        },
+                    );
+                }
+            }
+        },
+        _ => {}
+    }
+}
+
+/// Inline message for an expiry date typed so far. Empty is valid: it
+/// means the account never expires.
+fn live_expiry_error(value: &str) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        live_name_error(ExpiryDate::new(value))
+    }
+}
+
+/// The expiry date form takes typed characters and Backspace, validating
+/// as it goes; Enter sets the typed date, or removes the expiry when the
+/// field is empty. `current` is the expiry when the form opened, None when
+/// it is unknown.
+fn handle_expiry_input(
+    app: &mut AppState,
+    value: &mut String,
+    current: Option<&Option<String>>,
+    error: &mut Option<String>,
+    key: KeyEvent,
+) {
+    match key.code {
+        KeyCode::Esc => back(app),
+        KeyCode::Backspace => {
+            value.pop();
+            *error = live_expiry_error(value);
+        }
+        KeyCode::Char(character) if is_typed(key, character) => {
+            if has_room(value.chars().count(), MAX_EXPIRY_CHARS, error) {
+                value.push(character);
+                *error = live_expiry_error(value);
+            }
+        }
+        KeyCode::Enter => {
+            let Some(user) = app.users.get(app.selected_user_index) else {
+                return;
+            };
+            let date = (!value.is_empty()).then(|| value.clone());
+            if current == Some(&date) {
+                *error = Some(if date.is_some() {
+                    "This is already the expiry date.".to_owned()
+                } else {
+                    "The account already never expires.".to_owned()
+                });
+                return;
+            }
+            let action = PendingAction::SetAccountExpiry {
+                username: user.name.clone(),
+                date,
+            };
+            start_form_action(app, action, error);
         }
         _ => {}
     }
@@ -2250,6 +2340,9 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
             home,
             move_contents,
         }],
+        PendingAction::SetAccountExpiry { username, date } => {
+            vec![OperationRequest::SetAccountExpiry { username, date }]
+        }
     };
     Ok(if requests.len() == 1 {
         requests.pop().expect("one request remains")
@@ -2294,6 +2387,7 @@ fn plain_step_label(id: &str) -> Option<&'static str> {
         "unlock user" => "unlock account",
         "change user primary group" => "change primary group",
         "change user home" => "change home directory",
+        "set account expiry" => "set account expiry",
         "create user" => "create user",
         "delete user" => "delete user",
         "create group" => "create group",
@@ -7633,6 +7727,224 @@ mod tests {
             "change primary group"
         );
         assert_eq!(step_label("change user home"), "change home directory");
+    }
+
+    /// `user_app` with alice's cached shadow expiry (`Some(None)` never
+    /// expires, `None` shadow unreadable) and the expiry form open.
+    fn expiry_app(expiry: Option<Option<i64>>) -> AppState {
+        let mut app = user_app();
+        app.diagnostics.shadow = match expiry {
+            Some(expire_abs_days) => crate::search::ShadowState::Known(
+                [(
+                    "alice".to_owned(),
+                    crate::search::ShadowStatus {
+                        expire_abs_days,
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            None => crate::search::ShadowState::Unavailable {
+                reason: "permission denied".to_owned(),
+            },
+        };
+        open_modal(&mut app, ModalState::ModifyPasswordMenu { selected: 0 });
+        // Up from the first entry wraps to "Account expiry date".
+        press(&mut app, KeyCode::Up);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyPasswordMenu { selected: 2 })
+        ));
+        press(&mut app, KeyCode::Enter);
+        app
+    }
+
+    /// Value and inline error of the open expiry form.
+    fn expiry_form(app: &AppState) -> (String, Option<String>) {
+        match app.modal() {
+            Some(ModalState::ModifyExpiry { value, error, .. }) => (value.clone(), error.clone()),
+            _ => panic!("expected the expiry form"),
+        }
+    }
+
+    #[test]
+    fn password_menu_offers_the_account_expiry_date() {
+        let mut app = user_app();
+        open_modal(&mut app, ModalState::ModifyPasswordMenu { selected: 0 });
+        let screen = rendered(&app);
+        for entry in [
+            "Set or change password",
+            "Force change at next login",
+            "Account expiry date",
+        ] {
+            assert!(screen.contains(entry), "{entry} missing:\n{screen}");
+        }
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('j'));
+        assert!(rendered(&app).contains("▶ Account expiry date"));
+        // Down from the last entry wraps to the first.
+        press(&mut app, KeyCode::Down);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyPasswordMenu { selected: 0 })
+        ));
+    }
+
+    #[test]
+    fn expiry_form_opens_with_the_cached_shadow_expiry() {
+        for (expiry, value, current) in [
+            (Some(Some(20_849)), "2027-01-31", "Current: 2027-01-31"),
+            (Some(None), "", "Current: never"),
+            (None, "", "Current: unknown"),
+        ] {
+            let app = expiry_app(expiry);
+            assert_eq!(expiry_form(&app), (value.to_owned(), None), "{expiry:?}");
+            let screen = rendered(&app);
+            assert!(screen.contains("Account expiry date"), "{screen}");
+            assert!(screen.contains(current), "{screen}");
+            assert!(
+                screen.contains(&format!("Expires: {value}▏  {}/10", value.len())),
+                "{screen}"
+            );
+            assert!(
+                screen.contains("Empty = never expires. Format YYYY-MM-DD."),
+                "{screen}"
+            );
+            assert!(screen.contains(ui::components::TEXT_FOOTER), "{screen}");
+        }
+    }
+
+    #[test]
+    fn expiry_form_validates_the_date_as_it_is_typed() {
+        let mut app = expiry_app(None);
+        type_text(&mut app, "2027");
+        assert_eq!(
+            expiry_form(&app).1.as_deref(),
+            Some("must be a date as YYYY-MM-DD")
+        );
+        type_text(&mut app, "-02-29");
+        assert_eq!(
+            expiry_form(&app).1.as_deref(),
+            Some("must be a real calendar date")
+        );
+        assert!(rendered(&app).contains("must be a real calendar date"));
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "8");
+        assert_eq!(expiry_form(&app), ("2027-02-28".to_owned(), None));
+        // An eleventh character is refused.
+        type_text(&mut app, "1");
+        assert_eq!(
+            expiry_form(&app),
+            ("2027-02-28".to_owned(), Some(MAX_LENGTH_REACHED.to_owned()))
+        );
+        // Empty is valid: it means the account never expires.
+        for _ in 0..10 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        assert_eq!(expiry_form(&app), (String::new(), None));
+        type_text(&mut app, "1969-12-31");
+        assert_eq!(
+            expiry_form(&app).1.as_deref(),
+            Some("year must be between 1970 and 9999")
+        );
+        // Enter with a bad date keeps the form open under the error.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::ModifyExpiry { .. })));
+        assert!(
+            expiry_form(&app)
+                .1
+                .is_some_and(|error| error.ends_with("[E-VALIDATION]"))
+        );
+        assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
+    fn expiry_form_confirms_setting_and_removing_the_expiry() {
+        // (cached expiry, Backspaces, typed text, title, command)
+        let cases = [
+            (
+                None,
+                0,
+                "2027-01-31",
+                "Set account expiry of alice to 2027-01-31",
+                "chage -E 2027-01-31 alice",
+            ),
+            (
+                Some(Some(20_849)),
+                2,
+                "28",
+                "Set account expiry of alice to 2027-01-28",
+                "chage -E 2027-01-28 alice",
+            ),
+            (
+                Some(Some(20_849)),
+                10,
+                "",
+                "Remove account expiry of alice",
+                "chage -E -1 alice",
+            ),
+            // Unknown shadow: an empty field still submits "never".
+            (
+                None,
+                0,
+                "",
+                "Remove account expiry of alice",
+                "chage -E -1 alice",
+            ),
+        ];
+        for (expiry, erase, typed, title, command) in cases {
+            let mut app = expiry_app(expiry);
+            for _ in 0..erase {
+                press(&mut app, KeyCode::Backspace);
+            }
+            type_text(&mut app, typed);
+            press(&mut app, KeyCode::Enter);
+            assert!(
+                matches!(
+                    app.modal(),
+                    Some(ModalState::OperationConfirm { action, preview, .. })
+                        if action == title && preview == &[command]
+                ),
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn expiry_form_refuses_the_unchanged_expiry_inline() {
+        for (expiry, message) in [
+            (Some(Some(20_849)), "This is already the expiry date."),
+            (Some(None), "The account already never expires."),
+        ] {
+            let mut app = expiry_app(expiry);
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(expiry_form(&app).1.as_deref(), Some(message));
+            assert!(rendered(&app).contains(message));
+            assert!(app.pending_operation.is_none());
+        }
+    }
+
+    #[test]
+    fn expiry_actions_describe_the_change() {
+        let describe = |date: Option<&str>| {
+            PendingAction::SetAccountExpiry {
+                username: "alice".to_owned(),
+                date: date.map(str::to_owned),
+            }
+            .describe()
+        };
+        assert_eq!(
+            describe(Some("2027-01-31")),
+            "Set account expiry of alice to 2027-01-31"
+        );
+        assert_eq!(describe(None), "Remove account expiry of alice");
+        assert_eq!(step_label("set account expiry"), "set account expiry");
+        // Validated dates and the shadow day count convert both ways.
+        for text in ["1970-01-01", "2000-02-29", "2027-01-31", "9999-12-31"] {
+            let days = ExpiryDate::new(text).unwrap().days_since_epoch();
+            assert_eq!(civil_date_label(days), text);
+        }
     }
 
     #[test]

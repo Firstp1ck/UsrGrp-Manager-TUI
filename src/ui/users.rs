@@ -11,8 +11,8 @@ use ratatui::{
 use crate::{
     app::{
         AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, InputMode,
-        MAX_HOME_CHARS, MAX_NAME_CHARS, ModalState, ModifyField, SecretInput, UsersFocus,
-        civil_date_label,
+        MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_NAME_CHARS, ModalState, ModifyField, SecretInput,
+        UsersFocus, civil_date_label,
     },
     search::AccountShadowState,
     sys::SystemUser,
@@ -506,11 +506,29 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         ModalState::ModifyPasswordMenu { selected } => (
             "Password",
             choices(
-                &["Set or change password", "Force change at next login"],
+                &[
+                    "Set or change password",
+                    "Force change at next login",
+                    "Account expiry date",
+                ],
                 *selected,
             ),
             Some(*selected),
             MENU_FOOTER,
+        ),
+        ModalState::ModifyExpiry { value, current, .. } => (
+            "Account expiry date",
+            format!(
+                "Current: {}\nExpires: {value}{INPUT_CURSOR}  {}\nEmpty = never expires. Format YYYY-MM-DD.",
+                match current {
+                    Some(Some(date)) => date.as_str(),
+                    Some(None) => "never",
+                    None => "unknown",
+                },
+                char_budget(value, MAX_EXPIRY_CHARS),
+            ),
+            Some(1),
+            TEXT_FOOTER,
         ),
         ModalState::ChangePassword {
             selected,

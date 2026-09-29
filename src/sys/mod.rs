@@ -34,7 +34,7 @@ pub use operations::{
 };
 #[allow(unused_imports)]
 pub use validation::{
-    Gecos, GroupName, HomePath, PasswordRecord, SecretString, ShellPath, UserName,
+    ExpiryDate, Gecos, GroupName, HomePath, PasswordRecord, SecretString, ShellPath, UserName,
 };
 
 use crate::error::{CoreError, CoreResult, Result};
@@ -669,6 +669,22 @@ impl SystemAdapter {
                             .with_postcondition(desired),
                     ),
                 )
+            }
+            OperationRequest::SetAccountExpiry { username, date } => {
+                let username = UserName::new(username)?;
+                let date = date.map(ExpiryDate::new).transpose()?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                let command = CommandSpec::new(KnownProgram::ChAge).fixed_arg("-E")?;
+                let command = match &date {
+                    Some(date) => command.expiry_date(date),
+                    None => command.fixed_arg("-1")?,
+                };
+                // The expiry lives in /etc/shadow, which this source does not
+                // read: report the result as unobserved, never verified.
+                Ok(OperationPlan::new(OperationTarget::User(user)).then(
+                    PlannedStep::new("set account expiry", command.user_name(&username))
+                        .with_postcondition(OperationCheck::new("account expiry is observed")),
+                ))
             }
             OperationRequest::LockUser { username } => {
                 let username = UserName::new(username)?;
