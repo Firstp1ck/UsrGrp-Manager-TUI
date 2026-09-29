@@ -22,7 +22,7 @@ cargo build --locked --release
 ./target/release/usrgrp-manager
 ```
 
-Run it as your normal user. Running as root is supported but unnecessary; as root the app can also read `/etc/shadow` for the lock, password, and expiry details. For non-root write actions, the sudo policy must permit `sudo -v` followed by `sudo -n`; otherwise the action fails closed.
+Run it as your normal user. Running as root is supported but unnecessary; as root the app can also read `/etc/shadow` for the lock, password, and expiry details. For non-root write actions, the app checks your password with `sudo -v` and then runs each command with `sudo -n`, so the sudo policy must allow both for every account tool the app uses (`useradd`, `userdel`, `usermod`, `groupadd`, `groupdel`, `groupmod`, `gpasswd`, `chpasswd`, `chage`). If the password check fails, nothing runs. If a later command is denied or fails, the steps that already finished stay applied and the result dialog says "Partially done" with the failed step.
 
 Command-line options:
 

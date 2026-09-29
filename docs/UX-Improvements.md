@@ -34,7 +34,7 @@ All findings below are implemented on branch `ux-improvements`, and gpt-6-astra 
 | 26 | Header and status bar repeat each other, and the stale reason is clipped off | `b473653`, `76584da` |
 | 27 | Empty lists render as blank space | `1cc4f2d`, `fcb6653` |
 | 28 | No `--help`, `--version`, or `--dry-run` | `80f0504`, `50d93d9`, `51e73e4` |
-| 29 | Wiki documents keys and behavior that no longer exist | the `docs(ux): #29` commit |
+| 29 | Wiki documents keys and behavior that no longer exist | `c6d0004` |
 | 30a | Lock and unlock accounts | `205bbc9` |
 | 30b | Sort the tables | `7cc1e4a`, `c5038bf`, `912e966` |
 | 30c | Change primary group and home directory | `07bfe47`, `17ecd35` |
@@ -42,7 +42,7 @@ All findings below are implemented on branch `ux-improvements`, and gpt-6-astra 
 | 30e | Mark users for bulk actions | `2fe38c6` |
 | 30f | Copy the selected name | `1074b13` |
 | 31a | Group and member menus, `d` deletes | `697f1cf` |
-| 31b | Loading frame, stacked narrow layout, `wrap_selection` | `b56932d` |
+| 31b | Loading frame, stacked narrow layout, `wrap_selection` | `b56932d`, `4b44933` |
 
 Date: 2026-09-28
 Scope: the current TUI as of commit `c78176d` (main). Findings come from reading `src/ui`, `src/app`, the config loaders, the wiki, and the v0.3.0 screenshots. The app and its tests were not run, so nothing here was measured with real users. A second reviewer (gpt-6-astra) checked every claim against the source and added the items marked "found in review".
