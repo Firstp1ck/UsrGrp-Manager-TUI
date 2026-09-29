@@ -17,15 +17,15 @@ use crate::{
     ui::components::{
         CandidateView, DetailLine, DetailPart, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER,
         YES_NO_FOOTER, candidate_dialog, char_budget, details_plain_text, marker, no_match_text,
-        nothing_loaded_lines, push_filter_labels, render_empty_state, render_modal_frame,
-        row_style, search_title, text_lines, with_error_line,
+        nothing_loaded_lines, push_filter_labels, push_sort_label, render_empty_state,
+        render_modal_frame, row_style, search_title, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
 
 /// Groups table title: focus marker, the search query while it applies, and
-/// how many groups are listed out of all loaded, then the active filter
-/// (`[Groups]  /dev  3 of 89  [system]`).
+/// how many groups are listed out of all loaded, a non-default row order,
+/// then the active filter (`[Groups]  /dev  3 of 89  sort: name  [system]`).
 pub fn groups_table_title(app: &AppState) -> String {
     let name = if app.groups_focus == GroupsFocus::GroupsList {
         "[Groups]"
@@ -39,6 +39,7 @@ pub fn groups_table_title(app: &AppState) -> String {
         app.groups.len(),
         app.groups_all.len(),
     );
+    push_sort_label(&mut title, app.groups_sort.label());
     push_filter_labels(&mut title, groups_filter_label(app).as_slice());
     title
 }

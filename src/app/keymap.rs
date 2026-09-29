@@ -12,6 +12,7 @@ pub enum KeyAction {
     StartSearch,
     ClearSearch,
     Refresh,
+    CycleSort,
     NewUser,
     DeleteSelection,
     SwitchTab,
@@ -49,6 +50,7 @@ impl Keymap {
             ((Modifiers::NONE, Char('f')), OpenFilterMenu),
             ((Modifiers::NONE, Char('/')), StartSearch),
             ((Modifiers::NONE, Char('r')), Refresh),
+            ((Modifiers::NONE, Char('s')), CycleSort),
             ((Modifiers::NONE, Char('n')), NewUser),
             ((Modifiers::NONE, Char('?')), OpenHelp),
             ((Modifiers::NONE, Delete), DeleteSelection),
@@ -239,6 +241,7 @@ fn parse_action(value: &str) -> Option<KeyAction> {
         "StartSearch" => StartSearch,
         "ClearSearch" => ClearSearch,
         "Refresh" => Refresh,
+        "CycleSort" => CycleSort,
         "NewUser" => NewUser,
         "DeleteSelection" => DeleteSelection,
         "SwitchTab" => SwitchTab,
@@ -266,6 +269,7 @@ pub fn format_action(action: KeyAction) -> &'static str {
         StartSearch => "StartSearch",
         ClearSearch => "ClearSearch",
         Refresh => "Refresh",
+        CycleSort => "CycleSort",
         NewUser => "NewUser",
         DeleteSelection => "DeleteSelection",
         SwitchTab => "SwitchTab",
@@ -359,6 +363,23 @@ mod tests {
                 .unwrap()
                 .resolve(&key(KeyCode::Char('r'))),
             Some(KeyAction::Refresh)
+        );
+    }
+
+    #[test]
+    fn s_cycles_sort_by_default_and_in_the_example_config() {
+        assert_eq!(
+            Keymap::default().resolve(&key(KeyCode::Char('s'))),
+            Some(KeyAction::CycleSort)
+        );
+        assert_eq!(parse_action("CycleSort"), Some(KeyAction::CycleSort));
+        assert_eq!(format_action(KeyAction::CycleSort), "CycleSort");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path)
+                .unwrap()
+                .resolve(&key(KeyCode::Char('s'))),
+            Some(KeyAction::CycleSort)
         );
     }
 

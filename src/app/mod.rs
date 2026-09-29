@@ -627,6 +627,68 @@ pub enum GroupsFilter {
     OnlySystemGids,
 }
 
+/// Row order of the Users table, cycled with `CycleSort`. Not persisted.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum UsersSort {
+    #[default]
+    Uid,
+    Name,
+    Shell,
+    Home,
+}
+
+impl UsersSort {
+    /// The order after this one; the last wraps to UID.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Uid => Self::Name,
+            Self::Name => Self::Shell,
+            Self::Shell => Self::Home,
+            Self::Home => Self::Uid,
+        }
+    }
+
+    /// Title label (`sort: name`), or `None` for the default UID order.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Uid => None,
+            Self::Name => Some("name"),
+            Self::Shell => Some("shell"),
+            Self::Home => Some("home"),
+        }
+    }
+}
+
+/// Row order of the Groups table, cycled with `CycleSort`. Not persisted.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum GroupsSort {
+    #[default]
+    Gid,
+    Name,
+    /// Most secondary members first.
+    Members,
+}
+
+impl GroupsSort {
+    /// The order after this one; the last wraps to GID.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Gid => Self::Name,
+            Self::Name => Self::Members,
+            Self::Members => Self::Gid,
+        }
+    }
+
+    /// Title label (`sort: members`), or `None` for the default GID order.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Gid => None,
+            Self::Name => Some("name"),
+            Self::Members => Some("members"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ActionsContext {
     GroupMemberRemoval { group_name: String },
@@ -1405,6 +1467,9 @@ pub struct AppState {
     pub users_filter: Option<UsersFilter>,
     pub groups_filter: Option<GroupsFilter>,
     pub users_filter_chips: UsersFilterChips,
+    /// Row order of each table, applied by `sort_and_filter`.
+    pub users_sort: UsersSort,
+    pub groups_sort: GroupsSort,
     /// Set by the last filter pass when shadow is known, a shadow chip is on,
     /// and this many listed users had no shadow record, so the shadow chips
     /// were not applied.
@@ -1507,6 +1572,8 @@ impl AppState {
             users_filter: None,
             groups_filter: None,
             users_filter_chips: UsersFilterChips::default(),
+            users_sort: UsersSort::default(),
+            groups_sort: GroupsSort::default(),
             shadow_filter_skipped: None,
             actions_context: None,
             show_keybinds: true,
@@ -1650,8 +1717,27 @@ impl AppState {
 
     pub fn sort_and_filter(&mut self) {
         self.capture_selection_identities();
+        // UID/GID order first, then a stable sort by the chosen key, so
+        // rows with equal keys stay in UID/GID order.
         self.users_all.sort_by_key(|user| user.uid);
+        match self.users_sort {
+            UsersSort::Uid => {}
+            UsersSort::Name => self
+                .users_all
+                .sort_by_cached_key(|user| user.name.to_lowercase()),
+            UsersSort::Shell => self.users_all.sort_by(|a, b| a.shell.cmp(&b.shell)),
+            UsersSort::Home => self.users_all.sort_by(|a, b| a.home_dir.cmp(&b.home_dir)),
+        }
         self.groups_all.sort_by_key(|group| group.gid);
+        match self.groups_sort {
+            GroupsSort::Gid => {}
+            GroupsSort::Name => self
+                .groups_all
+                .sort_by_cached_key(|group| group.name.to_lowercase()),
+            GroupsSort::Members => self
+                .groups_all
+                .sort_by_key(|group| std::cmp::Reverse(group.members.len())),
+        }
         self.rebuild_user_group_cache();
         crate::search::apply_filters_and_search(self);
         self.normalize_selections();
@@ -2050,6 +2136,16 @@ impl AppState {
     pub fn edit_search(&mut self, edit: impl FnOnce(&mut String)) {
         let tab = self.search_tab();
         edit(self.query_mut(tab));
+        self.sort_and_filter();
+    }
+
+    /// `s`: switch the active tab to its next row order. The selected row
+    /// stays selected by its UID or GID.
+    pub fn cycle_sort(&mut self) {
+        match self.active_tab {
+            ActiveTab::Users => self.users_sort = self.users_sort.next(),
+            ActiveTab::Groups => self.groups_sort = self.groups_sort.next(),
+        }
         self.sort_and_filter();
     }
 

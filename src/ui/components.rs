@@ -469,6 +469,7 @@ fn panel_entry(action: KeyAction) -> Option<(usize, usize, &'static str)> {
         StartSearch => (0, 4, "Search"),
         ClearSearch => (0, 5, "Clear search"),
         OpenFilterMenu => (0, 6, "Filters"),
+        CycleSort => (0, 7, "Sort"),
         MoveUp => (1, 0, "Move up"),
         MoveDown => (1, 1, "Move down"),
         PageUp | MoveLeftPage => (1, 2, "Page up"),
@@ -1263,6 +1264,10 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
             "While typing: Enter keeps the search, Esc restores the previous one".to_owned(),
             format!("Clear search: {}", keys(&[ClearSearch])),
             format!("Filters: {}", keys(&[OpenFilterMenu])),
+            format!(
+                "Sort the active tab: {} (users: UID, name, shell, home; groups: GID, name, member count)",
+                keys(&[CycleSort])
+            ),
         ],
     );
     let enter = keys(&[EnterAction]);
@@ -1416,6 +1421,14 @@ pub fn shadow_skipped_note(app: &AppState) -> Option<String> {
 }
 
 /// Append `  [human, locked]` to a table title when any filter is on.
+/// Append a non-default row order to a table title: `  sort: name`.
+pub fn push_sort_label(title: &mut String, label: Option<&str>) {
+    if let Some(label) = label {
+        title.push_str("  sort: ");
+        title.push_str(label);
+    }
+}
+
 pub fn push_filter_labels(title: &mut String, labels: &[&str]) {
     if !labels.is_empty() {
         title.push_str(&format!("  [{}]", labels.join(", ")));

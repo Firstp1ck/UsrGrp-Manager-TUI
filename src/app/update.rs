@@ -96,6 +96,7 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
         Some(KeyAction::StartSearch) => app.start_search(),
         Some(KeyAction::ClearSearch) => app.clear_search(),
         Some(KeyAction::Refresh) => app.refresh_accounts(),
+        Some(KeyAction::CycleSort) => app.cycle_sort(),
         Some(KeyAction::NewUser) => match app.active_tab {
             ActiveTab::Users => open_modal(
                 app,
@@ -7258,5 +7259,155 @@ mod tests {
             Some(ModalState::ChangePassword { reveal: true, .. })
         ));
         assert_eq!(password_counts(&app), (0, 0));
+    }
+
+    /// Users and groups whose UID/GID, name, shell, home and member-count
+    /// orders all differ; names mix upper and lower case.
+    fn sortable_app() -> AppState {
+        let user = |uid: u32, name: &str, home: &str, shell: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(100),
+            full_name: None,
+            home_dir: home.into(),
+            shell: ShellPath::new(shell).unwrap(),
+        };
+        let group = |gid: u32, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(member).unwrap())
+                .collect(),
+        };
+        let snapshot = AccountSnapshot {
+            users: vec![
+                user(1002, "Bob", "/srv/bob", "/bin/sh"),
+                user(1000, "carol", "/home/carol", "/bin/bash"),
+                user(1001, "alice", "/home/alice", "/bin/zsh"),
+                user(1003, "dave", "/opt/dave", "/bin/bash"),
+            ],
+            groups: vec![
+                group(30, "audio", &["alice"]),
+                group(10, "Wheel", &["alice", "Bob"]),
+                group(20, "dev", &["carol"]),
+                group(40, "empty", &[]),
+            ],
+            shells: vec![],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    fn group_names(app: &AppState) -> Vec<&str> {
+        app.groups.iter().map(|group| group.name.as_str()).collect()
+    }
+
+    fn select_user(app: &mut AppState, name: &str) {
+        app.selected_user_index = app.users.iter().position(|user| user.name == name).unwrap();
+        app.capture_selection_identities();
+    }
+
+    #[test]
+    fn s_sorts_users_by_name_and_keeps_the_selected_user() {
+        let mut app = sortable_app();
+        assert_eq!(user_names(&app), ["carol", "alice", "Bob", "dave"]);
+        select_user(&mut app, "Bob");
+        assert!(!ui::users::users_table_title(&app).contains("sort:"));
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(user_names(&app), ["alice", "Bob", "carol", "dave"]);
+        assert_eq!(app.users[app.selected_user_index].name, "Bob");
+        assert_eq!(app.selected_user_uid, Some(1002));
+        assert_eq!(
+            ui::users::users_table_title(&app),
+            "[Users]  4 of 4  sort: name"
+        );
+        assert!(rendered_at(&app, 120, 40).contains("sort: name"));
+    }
+
+    #[test]
+    fn users_sort_cycles_through_shell_home_and_back_to_uid() {
+        let mut app = sortable_app();
+        select_user(&mut app, "dave");
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('s'));
+        // Equal shells keep UID order: carol (1000) before dave (1003).
+        assert_eq!(user_names(&app), ["carol", "dave", "Bob", "alice"]);
+        assert!(ui::users::users_table_title(&app).ends_with("sort: shell"));
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(user_names(&app), ["alice", "carol", "dave", "Bob"]);
+        assert!(ui::users::users_table_title(&app).ends_with("sort: home"));
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(user_names(&app), ["carol", "alice", "Bob", "dave"]);
+        assert!(!ui::users::users_table_title(&app).contains("sort:"));
+        assert_eq!(app.users[app.selected_user_index].name, "dave");
+    }
+
+    #[test]
+    fn sort_label_sits_between_the_count_and_the_filter_chips() {
+        let mut app = sortable_app();
+        app.users_query = "a".to_owned();
+        app.set_uid_range_filters(true, false);
+        app.sort_and_filter();
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(
+            ui::users::users_table_title(&app),
+            "[Users]  /a  3 of 4  sort: name  [human]"
+        );
+        assert_eq!(user_names(&app), ["alice", "carol", "dave"]);
+    }
+
+    #[test]
+    fn groups_sort_by_name_then_member_count_per_tab() {
+        let mut app = sortable_app();
+        app.active_tab = ActiveTab::Groups;
+        assert_eq!(group_names(&app), ["Wheel", "dev", "audio", "empty"]);
+        app.selected_group_index = 2;
+        app.capture_selection_identities();
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(group_names(&app), ["audio", "dev", "empty", "Wheel"]);
+        assert_eq!(app.groups[app.selected_group_index].name, "audio");
+        assert!(ui::groups::groups_table_title(&app).ends_with("  sort: name"));
+
+        press(&mut app, KeyCode::Char('s'));
+        // Most members first; equal counts keep GID order (dev 20, audio 30).
+        assert_eq!(group_names(&app), ["Wheel", "dev", "audio", "empty"]);
+        assert!(ui::groups::groups_table_title(&app).ends_with("  sort: members"));
+        assert_eq!(app.groups[app.selected_group_index].name, "audio");
+
+        // The Users tab kept its own default order.
+        assert_eq!(app.users_sort, crate::app::UsersSort::Uid);
+        assert_eq!(user_names(&app), ["carol", "alice", "Bob", "dave"]);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(group_names(&app), ["Wheel", "dev", "audio", "empty"]);
+        assert!(!ui::groups::groups_table_title(&app).contains("sort:"));
+    }
+
+    #[test]
+    fn keybinds_panel_and_help_list_the_sort_key() {
+        let mut app = sortable_app();
+        app.show_keybinds = true;
+        let panel: Vec<String> = ui::components::keybinds_panel_lines(&app)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(panel.contains(&"Sort: s".to_owned()), "{panel:?}");
+        let help: Vec<String> = ui::components::help_lines(&app)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(
+            help.iter()
+                .any(|line| line.starts_with("Sort the active tab: s (")),
+            "{help:?}"
+        );
     }
 }

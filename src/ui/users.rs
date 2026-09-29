@@ -19,16 +19,16 @@ use crate::{
         CandidateView, DetailLine, DetailPart, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER,
         PASSWORD_FORM_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, char_budget,
         details_plain_text, input_cursor, marker, no_match_text, nothing_loaded_lines,
-        push_filter_labels, render_empty_state, render_modal_frame, row_style, search_title,
-        shadow_skipped_note, text_lines, with_error_line,
+        push_filter_labels, push_sort_label, render_empty_state, render_modal_frame, row_style,
+        search_title, shadow_skipped_note, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
 
 /// Users table title: focus marker, the search query while it applies, and
-/// how many users are listed out of all loaded, then the active filters and
-/// any skipped shadow filter
-/// (`[Users]  /alice  12 of 45  [human, locked]`).
+/// how many users are listed out of all loaded, a non-default row order,
+/// then the active filters and any skipped shadow filter
+/// (`[Users]  /alice  12 of 45  sort: name  [human, locked]`).
 pub fn users_table_title(app: &AppState) -> String {
     let name = if app.users_focus == UsersFocus::UsersList {
         "[Users]"
@@ -42,6 +42,7 @@ pub fn users_table_title(app: &AppState) -> String {
         app.users.len(),
         app.users_all.len(),
     );
+    push_sort_label(&mut title, app.users_sort.label());
     push_filter_labels(&mut title, &app.active_user_filter_labels());
     if let Some(note) = shadow_skipped_note(app) {
         title.push_str("  ");
