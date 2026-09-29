@@ -10,7 +10,7 @@ use ratatui::{
 use crate::{
     app::{
         AppState, CandidateList, GroupDiagnostics, GroupsFilter, GroupsFocus, InputMode,
-        MAX_NAME_CHARS, ModalState, civil_date_label,
+        MAX_NAME_CHARS, MEMBER_ACTIONS, ModalState, civil_date_label,
     },
     search::ShadowState,
     sys::SystemGroup,
@@ -223,17 +223,27 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
     // The focus row indexes the body's lines: the highlighted choice or the
     // edited value.
     let (title, body, focus, footer) = match modal {
-        ModalState::GroupsActions {
-            selected,
-            target_gid,
-        } => (
+        // The same two rows from the groups list and from Member of; new
+        // groups come from the NewUser key.
+        ModalState::GroupsActions { selected, .. } => (
             "Group actions",
-            if target_gid.is_some() {
-                choices(&["Modify", "Delete"], *selected)
-            } else {
-                choices(&["Create", "Delete", "Modify"], *selected)
-            },
+            choices(&["Modify", "Delete"], *selected),
             Some(*selected),
+            MENU_FOOTER,
+        ),
+        // The first line names the member; the choices follow it.
+        ModalState::MemberActions {
+            selected,
+            username,
+            groupname,
+            ..
+        } => (
+            "Member actions",
+            format!(
+                "{username} in {groupname}\n{}",
+                choices(&MEMBER_ACTIONS, *selected)
+            ),
+            Some(*selected + 1),
             MENU_FOOTER,
         ),
         ModalState::GroupAddInput { name, .. } => (

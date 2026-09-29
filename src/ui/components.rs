@@ -1309,7 +1309,8 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
         "Groups tab",
         vec![
             format!("Group actions: {enter} on a group"),
-            format!("Remove member: {enter} or {delete} in Members"),
+            format!("Member actions (go to user, remove from group): {enter} in Members"),
+            format!("Remove member: {delete} in Members"),
             format!(
                 "Copy the highlighted group or member name: {}",
                 keys(&[CopySelection])

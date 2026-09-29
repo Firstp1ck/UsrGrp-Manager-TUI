@@ -58,6 +58,8 @@ impl Keymap {
             ((Modifiers::NONE, Char('n')), NewUser),
             ((Modifiers::NONE, Char('?')), OpenHelp),
             ((Modifiers::NONE, Delete), DeleteSelection),
+            // For keyboards without a Delete key.
+            ((Modifiers::NONE, Char('d')), DeleteSelection),
             ((Modifiers::NONE, Tab), SwitchTab),
             ((Modifiers::NONE, BackTab), ToggleUsersFocus),
             ((Modifiers::SHIFT, BackTab), ToggleUsersFocus),
@@ -434,6 +436,24 @@ mod tests {
         assert_eq!(
             Keymap::from_file(path).unwrap().resolve(&y),
             Some(KeyAction::CopySelection)
+        );
+    }
+
+    #[test]
+    fn d_deletes_by_default_and_in_the_example_config() {
+        let d = key(KeyCode::Char('d'));
+        let keymap = Keymap::default();
+        assert_eq!(keymap.resolve(&d), Some(KeyAction::DeleteSelection));
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::Delete)),
+            Some(KeyAction::DeleteSelection)
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        let example = Keymap::from_file(path).unwrap();
+        assert_eq!(example.resolve(&d), Some(KeyAction::DeleteSelection));
+        assert_eq!(
+            example.resolve(&key(KeyCode::Delete)),
+            Some(KeyAction::DeleteSelection)
         );
     }
 

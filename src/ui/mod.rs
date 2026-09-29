@@ -83,6 +83,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalStat
         | ModalState::FilterMenu { .. }
         | ModalState::OperationConfirm { .. } => components::render_modal(frame, area, app, modal),
         ModalState::GroupsActions { .. }
+        | ModalState::MemberActions { .. }
         | ModalState::GroupAddInput { .. }
         | ModalState::GroupDeleteConfirm { .. }
         | ModalState::GroupModifyMenu { .. }

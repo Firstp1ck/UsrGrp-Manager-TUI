@@ -512,6 +512,16 @@ pub enum ModalState {
         username: String,
         groupname: String,
     },
+    /// Enter on a member in the Members pane: rows [`MEMBER_ROW_GO_TO`]
+    /// and [`MEMBER_ROW_REMOVE`] for `username` in `groupname`.
+    MemberActions {
+        selected: usize,
+        username: String,
+        groupname: String,
+        /// Why the last Enter was refused, such as a member without a
+        /// local user record.
+        error: Option<String>,
+    },
     GroupModifyMenu {
         selected: usize,
         target_gid: Option<u32>,
@@ -571,6 +581,7 @@ impl ModalState {
         match self {
             Self::ModifyTextInput { error, .. }
             | Self::BulkActions { error, .. }
+            | Self::MemberActions { error, .. }
             | Self::BulkGroupPicker { error, .. }
             | Self::ModifyPrimaryGroup { error, .. }
             | Self::ModifyHome { error, .. }
@@ -625,6 +636,13 @@ pub const BULK_ROW_LOCK: usize = 2;
 /// Row of [`BULK_ACTIONS`] that unlocks the marked accounts.
 pub const BULK_ROW_UNLOCK: usize = 3;
 
+/// Rows of the member actions menu, in order.
+pub const MEMBER_ACTIONS: [&str; 2] = ["Go to user", "Remove from group"];
+/// Row of [`MEMBER_ACTIONS`] that shows the member on the Users tab.
+pub const MEMBER_ROW_GO_TO: usize = 0;
+/// Row of [`MEMBER_ACTIONS`] that asks to remove the member from the group.
+pub const MEMBER_ROW_REMOVE: usize = 1;
+
 /// "Also delete home" checkbox row of the user delete dialog.
 pub const DELETE_ROW_HOME: usize = 0;
 /// Yes button of the user delete dialog.
@@ -674,7 +692,7 @@ impl ModifyMenuItem {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UsersFilterChips {
     pub human_only: bool,
     pub system_only: bool,

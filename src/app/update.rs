@@ -13,9 +13,9 @@ use crate::{
         ActiveTab, AppState, BULK_ACTIONS, BULK_ROW_ADD, BULK_ROW_LOCK, BULK_ROW_REMOVE,
         BULK_ROW_UNLOCK, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
         GroupsFocus, InputMode, MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_LENGTH_REACHED,
-        MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState, ModifyField, ModifyMenuItem, PendingAction,
-        RunOptions, SecretInput, UsersFocus, civil_date_label, filterconf::FiltersConfig,
-        keymap::KeyAction,
+        MAX_NAME_CHARS, MAX_PASSWORD_CHARS, MEMBER_ACTIONS, MEMBER_ROW_GO_TO, ModalState,
+        ModifyField, ModifyMenuItem, PendingAction, RunOptions, SecretInput, UsersFocus,
+        civil_date_label, filterconf::FiltersConfig, keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
     sys::{
@@ -216,18 +216,14 @@ fn open_actions(app: &mut AppState) {
         }
         ActiveTab::Groups => {
             if matches!(app.groups_focus, GroupsFocus::Members) {
-                if let (Some(group), Some(member)) = (
-                    app.groups.get(app.selected_group_index),
-                    app.groups
-                        .get(app.selected_group_index)
-                        .and_then(|group| group.members.get(app.selected_group_member_index)),
-                ) {
+                if let Some((username, groupname)) = selected_group_member(app) {
                     open_modal(
                         app,
-                        ModalState::ConfirmRemoveUserFromGroup {
-                            selected: 1,
-                            username: member.clone(),
-                            groupname: group.name.clone(),
+                        ModalState::MemberActions {
+                            selected: 0,
+                            username,
+                            groupname,
+                            error: None,
                         },
                     );
                 }
@@ -296,7 +292,28 @@ fn open_delete(app: &mut AppState) {
                 );
             }
         }
-        ActiveTab::Groups => open_actions(app),
+        ActiveTab::Groups => open_member_removal(app),
+    }
+}
+
+/// The highlighted member of the Members pane and its group's name.
+fn selected_group_member(app: &AppState) -> Option<(String, String)> {
+    let group = app.groups.get(app.selected_group_index)?;
+    let member = group.members.get(app.selected_group_member_index)?;
+    Some((member.clone(), group.name.clone()))
+}
+
+/// Ask to remove the highlighted member from the selected group.
+fn open_member_removal(app: &mut AppState) {
+    if let Some((username, groupname)) = selected_group_member(app) {
+        open_modal(
+            app,
+            ModalState::ConfirmRemoveUserFromGroup {
+                selected: 1,
+                username,
+                groupname,
+            },
+        );
     }
 }
 
@@ -546,6 +563,12 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             username,
             groupname,
         } => handle_member_delete(app, selected, username, groupname, key),
+        ModalState::MemberActions {
+            selected,
+            username,
+            groupname,
+            error,
+        } => handle_member_actions(app, selected, username, groupname, error, key),
         ModalState::GroupsActions {
             selected,
             target_gid,
@@ -1708,52 +1731,125 @@ fn handle_member_delete(
     }
 }
 
+/// Rows of the group actions menu: Modify, then Delete. New groups are
+/// created with the NewUser key, not from this per-group menu.
 fn handle_group_actions(
     app: &mut AppState,
     selected: &mut usize,
     target_gid: &mut Option<u32>,
     key: KeyEvent,
 ) {
-    let limit = if target_gid.is_some() { 1 } else { 2 };
     if let Some(step) = list_step(key) {
-        move_index(selected, limit + 1, step);
+        move_index(selected, 2, step);
         return;
     }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Enter => match (*selected, *target_gid) {
-            (0, _) if target_gid.is_none() => open_modal(
+        KeyCode::Enter => {
+            let target_gid = target_gid.or_else(|| {
+                app.groups
+                    .get(app.selected_group_index)
+                    .map(|group| group.gid)
+            });
+            open_modal(
                 app,
-                ModalState::GroupAddInput {
-                    name: String::new(),
-                    error: None,
+                if *selected == 0 {
+                    ModalState::GroupModifyMenu {
+                        selected: 0,
+                        target_gid,
+                    }
+                } else {
+                    ModalState::GroupDeleteConfirm {
+                        selected: 1,
+                        target_gid,
+                    }
                 },
-            ),
-            (1, target) => open_modal(
-                app,
-                ModalState::GroupDeleteConfirm {
-                    selected: 1,
-                    target_gid: target.or_else(|| {
-                        app.groups
-                            .get(app.selected_group_index)
-                            .map(|group| group.gid)
-                    }),
-                },
-            ),
-            (_, target) => open_modal(
-                app,
-                ModalState::GroupModifyMenu {
-                    selected: 0,
-                    target_gid: target.or_else(|| {
-                        app.groups
-                            .get(app.selected_group_index)
-                            .map(|group| group.gid)
-                    }),
-                },
-            ),
-        },
+            );
+        }
         _ => {}
     }
+}
+
+/// Up/Down/j/k move; Enter on `Go to user` shows the member on the Users
+/// tab, on `Remove from group` opens the removal confirmation above this
+/// menu, so Esc there comes back here.
+fn handle_member_actions(
+    app: &mut AppState,
+    selected: &mut usize,
+    username: &str,
+    groupname: &str,
+    error: &mut Option<String>,
+    key: KeyEvent,
+) {
+    *error = None;
+    if let Some(step) = list_step(key) {
+        move_index(selected, MEMBER_ACTIONS.len(), step);
+        return;
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Backspace => back(app),
+        KeyCode::Enter if *selected == MEMBER_ROW_GO_TO => {
+            if let Err(message) = go_to_user(app, username) {
+                *error = Some(message);
+            }
+        }
+        KeyCode::Enter => open_modal(
+            app,
+            ModalState::ConfirmRemoveUserFromGroup {
+                selected: 1,
+                username: username.to_owned(),
+                groupname: groupname.to_owned(),
+            },
+        ),
+        _ => {}
+    }
+}
+
+/// Close the dialogs, switch to the Users tab with the users list focused,
+/// and select `username` by its (UID, name) identity. When the users search
+/// or filters hide that user, both are cleared first and the status bar says
+/// so. A member without a local user record is an error and nothing moves.
+fn go_to_user(app: &mut AppState, username: &str) -> std::result::Result<(), String> {
+    let identity = |user: &crate::sys::SystemUser| (user.uid, user.name.clone());
+    let visible = app
+        .users
+        .iter()
+        .find(|user| user.name == username)
+        .map(identity);
+    let Some((uid, name)) = visible.clone().or_else(|| {
+        app.users_all
+            .iter()
+            .find(|user| user.name == username)
+            .map(identity)
+    }) else {
+        return Err(format!("{username} has no local user record"));
+    };
+    app.close_modals();
+    app.active_tab = ActiveTab::Users;
+    app.users_focus = UsersFocus::UsersList;
+    if visible.is_none() {
+        let chips_on = app.users_filter.is_some() || app.users_filter_chips != Default::default();
+        app.users_query.clear();
+        app.users_filter_chips = Default::default();
+        app.users_filter = None;
+        app.sort_and_filter();
+        app.notice = Some(format!("cleared search and filters to show {username}"));
+        // filter.conf keeps matching the chips in effect, as after the
+        // filter menu.
+        if chips_on {
+            save_filters(app);
+        }
+    }
+    // A new user has its own Member of list; start its cursor at the top.
+    if app.selected_user_uid != Some(uid) || app.selected_user_name.as_deref() != Some(&name) {
+        app.selected_user_group_index = 0;
+        app.selected_user_group_gid = None;
+        app.selected_user_group_name = None;
+    }
+    app.selected_user_uid = Some(uid);
+    app.selected_user_name = Some(name);
+    app.normalize_selections();
+    Ok(())
 }
 
 fn handle_group_add(
@@ -3221,6 +3317,13 @@ mod tests {
         open_actions(&mut app);
         assert!(matches!(
             app.modal(),
+            Some(ModalState::MemberActions { username, groupname, .. })
+                if username == "alice" && groupname == "dev"
+        ));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
             Some(ModalState::ConfirmRemoveUserFromGroup { username, groupname, .. })
                 if username == "alice" && groupname == "dev"
         ));
@@ -3230,6 +3333,210 @@ mod tests {
             app.modal(),
             Some(ModalState::OperationConfirm { action, .. }) if action == "Remove alice from dev"
         ));
+    }
+
+    /// `membership_app` on the Groups tab with the Members pane of `dev`
+    /// focused and `member` highlighted.
+    fn dev_members_app(app: &mut AppState, member: &str) {
+        app.active_tab = ActiveTab::Groups;
+        app.groups_focus = GroupsFocus::Members;
+        app.selected_group_index = app
+            .groups
+            .iter()
+            .position(|group| group.name == "dev")
+            .unwrap();
+        app.selected_group_member_index = app.groups[app.selected_group_index]
+            .members
+            .iter()
+            .position(|name| name == member)
+            .unwrap();
+        app.capture_selection_identities();
+    }
+
+    fn selected_user_name(app: &AppState) -> Option<&str> {
+        app.users
+            .get(app.selected_user_index)
+            .map(|user| user.name.as_str())
+    }
+
+    #[test]
+    fn group_actions_offer_modify_and_delete_only() {
+        let mut app = wheel_app();
+        app.active_tab = ActiveTab::Groups;
+        let dev = app
+            .groups
+            .iter()
+            .position(|group| group.name == "dev")
+            .unwrap();
+        app.selected_group_index = dev;
+        app.capture_selection_identities();
+        press(&mut app, KeyCode::Enter);
+        let screen = rendered(&app);
+        assert!(screen.contains("Group actions"));
+        assert!(screen.contains("Modify"));
+        assert!(screen.contains("Delete"));
+        assert!(!screen.contains("Create"), "{screen}");
+
+        // Row 0 is Modify for the highlighted group.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupModifyMenu {
+                target_gid: Some(2000),
+                ..
+            })
+        ));
+        press(&mut app, KeyCode::Esc);
+
+        // Row 1 is Delete; the list wraps after it.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupDeleteConfirm {
+                target_gid: Some(2000),
+                ..
+            })
+        ));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Down);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupsActions { selected: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn enter_in_members_opens_a_menu_and_delete_still_asks_directly() {
+        let mut app = membership_app();
+        dev_members_app(&mut app, "alice");
+        press(&mut app, KeyCode::Enter);
+        let screen = rendered(&app);
+        for text in [
+            "Member actions",
+            "alice in dev",
+            "Go to user",
+            "Remove from group",
+        ] {
+            assert!(screen.contains(text), "missing {text:?} in {screen}");
+        }
+
+        // Remove from group asks on top of the menu; Esc comes back to it.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ConfirmRemoveUserFromGroup { username, groupname, selected: 1 })
+                if username == "alice" && groupname == "dev"
+        ));
+        assert_eq!(app.modal_depth(), 2);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::MemberActions { selected: 1, .. })
+        ));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
+
+        // Delete and d skip the menu.
+        for code in [KeyCode::Delete, KeyCode::Char('d')] {
+            press(&mut app, code);
+            assert!(matches!(
+                app.modal(),
+                Some(ModalState::ConfirmRemoveUserFromGroup { username, .. }) if username == "alice"
+            ));
+            assert_eq!(app.modal_depth(), 1);
+            press(&mut app, KeyCode::Esc);
+        }
+    }
+
+    #[test]
+    fn go_to_user_selects_the_member_on_the_users_tab() {
+        let mut app = membership_app();
+        app.selected_user_index = 2;
+        app.users_focus = UsersFocus::MemberOf;
+        app.capture_selection_identities();
+        dev_members_app(&mut app, "alice");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal().is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.active_tab, ActiveTab::Users);
+        assert_eq!(app.users_focus, UsersFocus::UsersList);
+        assert_eq!(selected_user_name(&app), Some("alice"));
+        assert_eq!(app.selected_user_uid, Some(1000));
+        // Nothing was hidden, so nothing was cleared.
+        assert_eq!(app.notice, None);
+    }
+
+    #[test]
+    fn go_to_user_clears_a_search_and_filters_that_hide_the_user() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        app.users_query = "bob".to_owned();
+        app.users_filter_chips.inactive = true;
+        app.users_filter_chips.system_only = true;
+        app.sort_and_filter();
+        assert!(user_names(&app).is_empty());
+        dev_members_app(&mut app, "alice");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal().is_none());
+        assert_eq!(app.active_tab, ActiveTab::Users);
+        assert_eq!(app.users_query, "");
+        assert_eq!(app.users_filter_chips, Default::default());
+        assert_eq!(user_names(&app), ["alice", "bob", "carol"]);
+        assert_eq!(selected_user_name(&app), Some("alice"));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("cleared search and filters to show alice")
+        );
+        assert!(status_row(&app, 100, 30).contains("cleared search and filters to show alice"));
+        // filter.conf follows the cleared chips, as after the filter menu.
+        let saved = std::fs::read_to_string(config.path().join("filter.conf")).unwrap();
+        assert!(saved.contains("system_only = false"), "{saved}");
+        assert!(saved.contains("inactive = false"), "{saved}");
+
+        // A search alone is cleared without touching filter.conf.
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app(&config);
+        app.users_query = "carol".to_owned();
+        app.sort_and_filter();
+        dev_members_app(&mut app, "alice");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.users_query, "");
+        assert_eq!(selected_user_name(&app), Some("alice"));
+        assert!(app.notice.is_some());
+        assert!(!config.path().join("filter.conf").exists());
+    }
+
+    #[test]
+    fn go_to_user_keeps_the_menu_for_a_member_without_a_user_record() {
+        let mut app = membership_app();
+        app.users_query = "bob".to_owned();
+        let dev = app
+            .groups_all
+            .iter_mut()
+            .find(|group| group.name == "dev")
+            .unwrap();
+        dev.members.push("ghost".to_owned());
+        app.sort_and_filter();
+        dev_members_app(&mut app, "ghost");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::MemberActions { error: Some(error), .. })
+                if error == "ghost has no local user record"
+        ));
+        assert!(rendered(&app).contains("ghost has no local user record"));
+        assert_eq!(app.active_tab, ActiveTab::Groups);
+        assert_eq!(app.users_query, "bob");
+        assert_eq!(app.notice, None);
+        // The next key clears the message.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.modal().and_then(ModalState::form_error), None);
     }
 
     #[test]
@@ -7276,7 +7583,7 @@ mod tests {
             "Move up: Up, k",
             "Quit: q, Ctrl+C",
             "Clear search: Esc",
-            "Delete: Delete",
+            "Delete: Delete, d",
         ] {
             assert!(screen.contains(text), "missing {text:?}");
         }
