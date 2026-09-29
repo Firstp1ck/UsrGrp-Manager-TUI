@@ -969,6 +969,34 @@ impl ConfigRootProvider for SystemConfigRootProvider {
 
 /// Single config root chosen with `--config-dir`. The default search order
 /// is not consulted, so reads and writes both use this directory.
+/// Paths of one configuration file, cached for the help dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigFilePaths {
+    /// File name, such as `theme.conf`.
+    pub name: String,
+    /// The file that was read, or `None` when none existed and defaults
+    /// were written to `save` instead.
+    pub loaded: Option<String>,
+    /// Where changes are written: the file in the first config root.
+    pub save: String,
+}
+
+impl ConfigFilePaths {
+    /// Resolve `name` against the config roots of `app`.
+    fn resolve(app: &AppState, name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            loaded: app.config_file_read_path(name),
+            save: app.configuration_write_path(name),
+        }
+    }
+
+    /// The path to read: the loaded file, else the save path.
+    fn read_path(&self) -> &str {
+        self.loaded.as_deref().unwrap_or(&self.save)
+    }
+}
+
 pub struct FixedConfigRootProvider(pub PathBuf);
 impl ConfigRootProvider for FixedConfigRootProvider {
     fn roots(&self) -> Vec<PathBuf> {
@@ -1339,11 +1367,11 @@ pub struct AppState {
     clock: Arc<dyn Clock>,
     diagnostic_provider: Arc<dyn DiagnosticProvider>,
     config_root_provider: Arc<dyn ConfigRootProvider>,
-    /// `(file name, path)` of theme.conf, keybinds.conf and filter.conf as
-    /// resolved by the last `load_configuration`: the file that was read,
-    /// or where it would be written. Empty until then. The help dialog
-    /// shows these, so rendering never resolves config roots.
-    pub config_paths: Vec<(String, String)>,
+    /// Where theme.conf, keybinds.conf and filter.conf were loaded from and
+    /// where they save, as resolved by the last `load_configuration`. Empty
+    /// until then. The help dialog shows these, so rendering never resolves
+    /// config roots.
+    pub config_paths: Vec<ConfigFilePaths>,
     pub current_username: String,
     /// Group the create-user form offers to add the new account to. Set
     /// from `UGM_SUDO_GROUP` by `load_system_with`; `wheel` otherwise.
@@ -1509,32 +1537,22 @@ impl AppState {
 
     /// Load durable settings, retaining defaults and surfacing any error in UI state.
     pub fn load_configuration(&mut self) {
-        let theme_path = self
-            .config_file_read_path("theme.conf")
-            .unwrap_or_else(|| self.configuration_write_path("theme.conf"));
-        match Theme::load_or_init(&theme_path) {
-            Ok(theme) => self.theme = theme,
+        let theme = ConfigFilePaths::resolve(self, "theme.conf");
+        match Theme::load_or_init(theme.read_path()) {
+            Ok(loaded) => self.theme = loaded,
             Err(error) => self.record_config_message("theme", &error),
         }
-        let keymap_path = self
-            .config_file_read_path("keybinds.conf")
-            .unwrap_or_else(|| self.configuration_write_path("keybinds.conf"));
-        match keymap::Keymap::load_or_init(&keymap_path) {
+        let keys = ConfigFilePaths::resolve(self, "keybinds.conf");
+        match keymap::Keymap::load_or_init(keys.read_path()) {
             Ok(keymap) => self.keymap = keymap,
             Err(error) => self.record_config_message("keymap", &error),
         }
-        let filters_path = self
-            .config_file_read_path("filter.conf")
-            .unwrap_or_else(|| self.configuration_write_path("filter.conf"));
-        match filterconf::FiltersConfig::load_or_init(&filters_path) {
-            Ok(filters) => filters.apply_to(self),
+        let filters = ConfigFilePaths::resolve(self, "filter.conf");
+        match filterconf::FiltersConfig::load_or_init(filters.read_path()) {
+            Ok(loaded) => loaded.apply_to(self),
             Err(error) => self.record_config_message("filter", &error),
         }
-        self.config_paths = vec![
-            ("theme.conf".to_owned(), theme_path),
-            ("keybinds.conf".to_owned(), keymap_path),
-            ("filter.conf".to_owned(), filters_path),
-        ];
+        self.config_paths = vec![theme, keys, filters];
         self.sort_and_filter();
     }
 

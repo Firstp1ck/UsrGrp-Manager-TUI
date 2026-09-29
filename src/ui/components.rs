@@ -1191,15 +1191,19 @@ fn bound_keys(app: &AppState, actions: &[KeyAction]) -> String {
         .join(", ")
 }
 
-/// `label: path` for config file `name`, from the paths cached when the
-/// configuration was loaded. Rendering never resolves config roots itself.
-fn config_path_line(app: &AppState, label: &str, name: &str) -> String {
-    let path = app
-        .config_paths
-        .iter()
-        .find(|(file, _)| file == name)
-        .map_or("not loaded", |(_, path)| path.as_str());
-    format!("{label}: {path}")
+/// `name: path` for config file `name`, from the paths cached when the
+/// configuration was loaded: the file that was read, plus `saves to` when
+/// changes go elsewhere, or the save path marked `(created)` when no file
+/// existed. Rendering never resolves config roots itself.
+fn config_path_line(app: &AppState, name: &str) -> String {
+    let Some(paths) = app.config_paths.iter().find(|paths| paths.name == name) else {
+        return format!("{name}: not loaded");
+    };
+    match &paths.loaded {
+        Some(loaded) if *loaded == paths.save => format!("{name}: {loaded}"),
+        Some(loaded) => format!("{name}: {loaded}  saves to {}", paths.save),
+        None => format!("{name}: {} (created)", paths.save),
+    }
 }
 
 /// Help modal lines: recorded configuration problems first, then the keys
@@ -1295,9 +1299,9 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
     section(
         "Configuration",
         vec![
-            config_path_line(app, "Theme file", "theme.conf"),
-            config_path_line(app, "Keys file", "keybinds.conf"),
-            config_path_line(app, "Filters file", "filter.conf"),
+            config_path_line(app, "theme.conf"),
+            config_path_line(app, "keybinds.conf"),
+            config_path_line(app, "filter.conf"),
             "--config-dir <PATH> reads and writes these files in PATH only".to_owned(),
             "--dry-run shows every command preview and never runs it".to_owned(),
             "--log-file <PATH> appends operations and results to PATH".to_owned(),

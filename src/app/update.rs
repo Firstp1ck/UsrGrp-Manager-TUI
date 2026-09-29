@@ -2248,6 +2248,15 @@ fn save_filters(app: &mut AppState) {
                 ),
             },
         );
+        return;
+    }
+    // The saved file now exists and is the one the next start reads.
+    if let Some(paths) = app
+        .config_paths
+        .iter_mut()
+        .find(|paths| paths.name == "filter.conf")
+    {
+        paths.loaded = Some(path);
     }
 }
 
@@ -4401,7 +4410,7 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         let theme = config.path().join("theme.conf");
-        assert!(lines.contains(&format!("Theme file: {}", theme.display())));
+        assert!(lines.contains(&format!("theme.conf: {} (created)", theme.display())));
         for _ in 0..3 {
             rendered_at(&app, 100, 30);
         }
@@ -4409,6 +4418,65 @@ mod tests {
             roots.calls.load(std::sync::atomic::Ordering::SeqCst),
             before
         );
+    }
+
+    /// Two config roots: changes save under the first, files may be read
+    /// from either.
+    struct TwoConfigRoots(std::path::PathBuf, std::path::PathBuf);
+    impl crate::app::ConfigRootProvider for TwoConfigRoots {
+        fn roots(&self) -> Vec<std::path::PathBuf> {
+            vec![self.0.clone(), self.1.clone()]
+        }
+    }
+
+    fn help_text(app: &AppState) -> Vec<String> {
+        ui::components::help_lines(app)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn help_shows_loaded_and_save_paths_until_a_filter_save_moves_filter_conf() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+            std::fs::write(second.path().join(name), "").unwrap();
+        }
+        let mut app = membership_app();
+        app.config_root_provider = Arc::new(TwoConfigRoots(
+            first.path().to_path_buf(),
+            second.path().to_path_buf(),
+        ));
+        app.load_configuration();
+        let lines = help_text(&app);
+        for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+            let expected = format!(
+                "{name}: {}  saves to {}",
+                second.path().join(name).display(),
+                first.path().join(name).display()
+            );
+            assert!(
+                lines.contains(&expected),
+                "missing {expected:?} in {lines:?}"
+            );
+        }
+
+        toggle_filter_row(&mut app, 1);
+        assert!(app.users_filter_chips.human_only);
+        assert!(first.path().join("filter.conf").is_file());
+        let lines = help_text(&app);
+        let filter = format!(
+            "filter.conf: {}",
+            first.path().join("filter.conf").display()
+        );
+        assert!(lines.contains(&filter), "missing {filter:?} in {lines:?}");
+        let theme = format!(
+            "theme.conf: {}  saves to {}",
+            second.path().join("theme.conf").display(),
+            first.path().join("theme.conf").display()
+        );
+        assert!(lines.contains(&theme));
     }
 
     #[test]
