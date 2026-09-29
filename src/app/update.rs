@@ -7430,6 +7430,70 @@ mod tests {
         assert!(!screen.contains("(current)"));
     }
 
+    /// `dev` plus 1,024 more groups, `g0001` (GID 2001) to `g1024` (GID
+    /// 3024): one past the membership dialogs' cap. Alice's primary GID is
+    /// `primary_gid`.
+    fn many_groups_app(primary_gid: u32) -> AppState {
+        let mut snapshot = fixture_snapshot();
+        snapshot.users[0].primary_gid = Gid(primary_gid);
+        for index in 1..=1024 {
+            snapshot.groups.push(AccountGroup {
+                gid: Gid(2000 + index),
+                name: GroupName::new(format!("g{index:04}")).unwrap(),
+                members: vec![],
+            });
+        }
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    #[test]
+    fn primary_group_picker_lists_every_group_past_the_membership_cap() {
+        assert_eq!(crate::app::MAX_MEMBERSHIP_CANDIDATES, 1024);
+
+        // The last group is the current one: it is marked, not reported as
+        // a GID without a group entry.
+        let mut app = many_groups_app(3024);
+        open_details_row(&mut app, 3);
+        let (selected, names) = primary_group_picker(&app);
+        assert_eq!(names.len(), 1025);
+        assert_eq!(names.last().map(String::as_str), Some("g1024"));
+        assert_eq!(selected, 1024);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyPrimaryGroup {
+                current: Some(1024),
+                current_gid: None,
+                ..
+            })
+        ));
+        let screen = rendered(&app);
+        assert!(screen.contains("▶ g1024 (current)"), "{screen}");
+        assert!(!screen.contains("no group entry"), "{screen}");
+
+        // From the first group, Down reaches the last one and Enter prepares
+        // the change.
+        let mut app = many_groups_app(1000);
+        open_details_row(&mut app, 3);
+        assert_eq!(primary_group_picker(&app).0, 0);
+        for _ in 0..1024 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(primary_group_picker(&app).0, 1024);
+        assert!(rendered(&app).contains("▶ g1024"));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
+                if action == "Change primary group of alice to g1024"
+                    && preview == &["usermod -g g1024 alice"]
+        ));
+    }
+
     /// Value, checkbox, and inline error of the open home form.
     fn home_form(app: &AppState) -> (String, bool, Option<String>) {
         match app.modal() {

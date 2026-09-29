@@ -141,12 +141,17 @@ pub(crate) enum AccountCondition {
         uid: Uid,
         gecos: Option<Gecos>,
     },
+    /// Checked on the account with this UID and name: the passwd parser
+    /// accepts shared UIDs, so the UID alone can name another account.
     UserPrimaryGroup {
         uid: Uid,
+        name: UserName,
         gid: Gid,
     },
+    /// Matched on UID and name, like `UserPrimaryGroup`.
     UserHome {
         uid: Uid,
+        name: UserName,
         home: HomePath,
     },
 }

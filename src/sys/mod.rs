@@ -622,6 +622,7 @@ impl SystemAdapter {
                     "user primary group matches request",
                     AccountCondition::UserPrimaryGroup {
                         uid: user.uid,
+                        name: user.name.clone(),
                         gid: group.gid,
                     },
                 );
@@ -651,6 +652,7 @@ impl SystemAdapter {
                     "user home matches request",
                     AccountCondition::UserHome {
                         uid: user.uid,
+                        name: user.name.clone(),
                         home: home.clone(),
                     },
                 );
@@ -1441,15 +1443,15 @@ impl AccountSourceReconciler<'_> {
                     None => CheckStatus::Unsatisfied,
                 }
             }
-            AccountCondition::UserPrimaryGroup { uid, gid } => {
-                match snapshot.users.iter().find(|user| user.uid == *uid) {
+            AccountCondition::UserPrimaryGroup { uid, name, gid } => {
+                match named_user(snapshot, *uid, name) {
                     Some(user) if user.primary_gid == *gid => CheckStatus::Satisfied,
                     Some(_) => CheckStatus::Unsatisfied,
                     None => CheckStatus::Unsatisfied,
                 }
             }
-            AccountCondition::UserHome { uid, home } => {
-                match snapshot.users.iter().find(|user| user.uid == *uid) {
+            AccountCondition::UserHome { uid, name, home } => {
+                match named_user(snapshot, *uid, name) {
                     Some(user) if user.home_dir == std::path::Path::new(home.as_str()) => {
                         CheckStatus::Satisfied
                     }
@@ -1459,6 +1461,19 @@ impl AccountSourceReconciler<'_> {
             }
         }
     }
+}
+
+/// The account with both this UID and this name. The passwd parser accepts
+/// shared UIDs, so matching the UID alone could check another account.
+fn named_user<'a>(
+    snapshot: &'a AccountSnapshot,
+    uid: Uid,
+    name: &UserName,
+) -> Option<&'a AccountUser> {
+    snapshot
+        .users
+        .iter()
+        .find(|user| user.uid == uid && user.name == *name)
 }
 
 impl OperationReconciler for AccountSourceReconciler<'_> {

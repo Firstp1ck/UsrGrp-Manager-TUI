@@ -458,6 +458,93 @@ fn primary_group_and_home_already_in_place_run_nothing() {
     assert!(runner.recorded().is_empty());
 }
 
+/// `snapshot_with_groups()` plus bob, who shares alice's UID 1000 but has
+/// primary group `staff` (GID 1001) and home `/home/bob`. alice comes first,
+/// so a lookup by UID alone finds her.
+fn shared_uid_snapshot() -> AccountSnapshot {
+    let mut accounts = snapshot_with_groups();
+    accounts.users.push(AccountUser {
+        uid: Uid(1000),
+        name: UserName::new("bob").unwrap(),
+        primary_gid: Gid(1001),
+        full_name: None,
+        home_dir: "/home/bob".into(),
+        shell: ShellPath::new("/bin/sh").unwrap(),
+    });
+    accounts
+}
+
+#[test]
+fn primary_group_and_home_checks_bind_to_the_named_account_when_uids_are_shared() {
+    // Each request for bob sets the value alice already has, with the
+    // command it must run and how to apply the change to one account.
+    type Request = fn() -> OperationRequest;
+    type Apply = fn(&mut AccountUser);
+    let cases: [(Request, &str, Apply); 2] = [
+        (
+            || OperationRequest::ChangeUserHome {
+                username: "bob".into(),
+                home: "/home/alice".into(),
+                move_contents: false,
+            },
+            "usermod -d /home/alice bob",
+            |user| user.home_dir = "/home/alice".into(),
+        ),
+        (
+            || OperationRequest::ChangeUserPrimaryGroup {
+                username: "bob".into(),
+                groupname: "dev".into(),
+            },
+            "usermod -g dev bob",
+            |user| user.primary_gid = Gid(1000),
+        ),
+    ];
+    for (request, command, apply) in cases {
+        // Afterwards, the change is observed on `changed` only (index 0 is
+        // alice, 1 is bob); reconciliation must look at bob.
+        for (changed, verified) in [(1, true), (0, false)] {
+            let runner = Arc::new(common::FakeRunner::succeeds());
+            let mut after = shared_uid_snapshot();
+            apply(&mut after.users[changed]);
+            let adapter = adapter(
+                Arc::new(AppliedSource {
+                    before: shared_uid_snapshot(),
+                    after,
+                    runner: runner.clone(),
+                }),
+                runner.clone(),
+                0,
+            );
+            let plan = adapter.prepare_operation(request()).unwrap();
+            let report = adapter.execute_prepared_operation(&plan).unwrap();
+            // alice already holding the value does not skip bob's change.
+            assert!(report.skipped.is_empty(), "{command}");
+            assert_eq!(report.completed.len(), 1, "{command}");
+            assert_eq!(
+                runner
+                    .recorded()
+                    .into_iter()
+                    .map(|call| call.preview.render())
+                    .collect::<Vec<_>>(),
+                [command]
+            );
+            if verified {
+                assert!(
+                    matches!(report.reconciliation, ReconciliationStatus::Verified),
+                    "{command}: {:?}",
+                    report.reconciliation
+                );
+            } else {
+                assert!(
+                    matches!(report.reconciliation, ReconciliationStatus::Partial { .. }),
+                    "{command} changed on alice: {:?}",
+                    report.reconciliation
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn home_change_rejects_paths_the_home_validation_refuses() {
     let runner = Arc::new(common::FakeRunner::succeeds());

@@ -1479,6 +1479,17 @@ impl CandidateList {
         list
     }
 
+    /// Every name in `pool`, uncapped, for single-select pickers such as the
+    /// primary group, where a missing entry could not be chosen at all.
+    fn every<'a>(pool: impl IntoIterator<Item = &'a str>) -> Self {
+        let names: Vec<String> = pool.into_iter().map(str::to_owned).collect();
+        Self {
+            total: names.len(),
+            names,
+            blocked: Vec::new(),
+        }
+    }
+
     /// True when matches were left out because of the cap.
     pub fn is_capped(&self) -> bool {
         self.total > self.names.len()
@@ -2096,11 +2107,11 @@ impl AppState {
         })
     }
 
-    /// Every group for the primary-group picker, in `groups_all` order,
-    /// each with the reason the membership policy refuses it, if it does.
-    /// Reads no host state.
+    /// Every group for the primary-group picker, in `groups_all` order and
+    /// without the membership-dialog cap, each with the reason the membership
+    /// policy refuses it, if it does. Reads no host state.
     pub fn primary_group_candidate_list(&self) -> CandidateList {
-        CandidateList::from_pool(self.groups_all.iter().map(|group| group.name.as_str()), "")
+        CandidateList::every(self.groups_all.iter().map(|group| group.name.as_str()))
             .with_blocks(|name| self.membership_block(name))
     }
 
