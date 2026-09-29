@@ -1,5 +1,49 @@
 # UX improvement findings
 
+## Status
+
+All findings below are implemented on branch `ux-improvements`, and gpt-6-astra reviewed each one. Commits are listed oldest first. The first is the implementation; later ones are fixes and follow-ups from review. Finding 30 was split into 30a to 30f and finding 31 into 31a and 31b. Finding 29 is this documentation update. The branch is not released yet.
+
+| # | Finding | Commits |
+|---|---------|---------|
+| 1 | A typo in the sudo password discards the whole prepared operation | `3c217bf` |
+| 2 | Validation errors close the form and throw away everything typed | `b98aaac`, `4ede683`, `308d851` |
+| 3 | "Add members" checkboxes can submit a different user than the one ticked | `4c173ca` |
+| 4 | The search query is never shown, and Enter leaves a hidden filter active | `8fe1785` |
+| 5 | The first delete dialog names no user, and deleting yourself is not flagged | `4242f32`, `f1d190a` |
+| 6 | "Add to sudo group" and adding anyone to wheel/sudo always fail under the shipped policy | `b5ceeb9` |
+| 7 | Config errors are flagged but the messages are never displayed | `566b61a` |
+| 8 | No refresh key | `d3121c2` |
+| 9 | Filter menu shows no on/off state, and shadow filters silently no-op | `37c4d37` |
+| 10 | Five theme colors are parsed and written but ignored by the renderer | `5cee10a`, `9b6655f`, `32b1cde` |
+| 11 | Details pane lost most of the v0.3.0 fields | `00003c0`, `c7efb82`, `90e9f41` |
+| 12 | Keybindings panel prints raw enum names in alphabetical order | `14aeabe`, `a62b34a`, `ffc1c59` |
+| 13 | Help modal is one line, and its scroll state is dead | `1b53ed0`, `b2f7bed`, `c06ae96`, `178a71f` |
+| 14 | Operation results and confirmations use developer wording | `4efbab6`, `39b62b4` |
+| 15 | Mouse capture is on, so terminal text selection is broken, and nothing uses the mouse | `c8dc2a0` |
+| 16 | Escape closes the whole modal stack; Backspace goes back in only two menus | `97394d4`, `3fe16fc`, `2382cff` |
+| 17 | Yes/No dialogs and menus disagree on which keys move the cursor | `08e4c5d`, `38d4208`, `e43bc69` |
+| 18 | Text inputs start empty, show no cursor, and hit silent length caps | `e27ac62`, `48cfae8`, `3d31a16` |
+| 19 | Candidate lists have no search, no page indicator, no selected count | `ac495c1`, `f66bdca` |
+| 20 | No interrupt binding; Ctrl+C inserts a character in text fields | `30dc18d` |
+| 21 | Enter on "No" does nothing in delete dialogs | `4a2beb6` |
+| 22 | Moving the parent selection leaves the child pane with a stale cursor | `56b173e` |
+| 23 | The Groups-tab filter hides memberships in the Users tab | `c5d6f28` |
+| 24 | Bulk confirmations show only the first 12 commands with no way to see the rest | `abe1bf5`, `45c160b`, `c168705` |
+| 25 | Page keys move by a constant 10, not by the visible page | `cf76df5` |
+| 26 | Header and status bar repeat each other, and the stale reason is clipped off | `b473653`, `76584da` |
+| 27 | Empty lists render as blank space | `1cc4f2d`, `fcb6653` |
+| 28 | No `--help`, `--version`, or `--dry-run` | `80f0504`, `50d93d9`, `51e73e4` |
+| 29 | Wiki documents keys and behavior that no longer exist | the `docs(ux): #29` commit |
+| 30a | Lock and unlock accounts | `205bbc9` |
+| 30b | Sort the tables | `7cc1e4a`, `c5038bf`, `912e966` |
+| 30c | Change primary group and home directory | `07bfe47`, `17ecd35` |
+| 30d | Set account expiry date | `a5de215` |
+| 30e | Mark users for bulk actions | `2fe38c6` |
+| 30f | Copy the selected name | `1074b13` |
+| 31a | Group and member menus, `d` deletes | `697f1cf` |
+| 31b | Loading frame, stacked narrow layout, `wrap_selection` | `b56932d` |
+
 Date: 2026-09-28
 Scope: the current TUI as of commit `c78176d` (main). Findings come from reading `src/ui`, `src/app`, the config loaders, the wiki, and the v0.3.0 screenshots. The app and its tests were not run, so nothing here was measured with real users. A second reviewer (gpt-6-astra) checked every claim against the source and added the items marked "found in review".
 
