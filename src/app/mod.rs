@@ -11,7 +11,7 @@ pub mod update;
 pub use logger::Logger;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::File,
     io::Read,
     path::PathBuf,
@@ -335,6 +335,22 @@ pub enum ModalState {
     Actions {
         selected: usize,
     },
+    /// Enter on the users list while users are marked: the rows of
+    /// [`BULK_ACTIONS`]. `error` says why the last choice was refused, for
+    /// example which marked user the bridge protects.
+    BulkActions {
+        selected: usize,
+        error: Option<String>,
+    },
+    /// Single-select group list for adding (`adding`) or removing every
+    /// marked user, captured when the dialog opens. Blocked entries cannot
+    /// be chosen; Enter on one shows the reason in `error`.
+    BulkGroupPicker {
+        adding: bool,
+        selected: usize,
+        groups: CandidateList,
+        error: Option<String>,
+    },
     FilterMenu {
         selected: usize,
     },
@@ -554,6 +570,8 @@ impl ModalState {
     pub fn form_error(&self) -> Option<&str> {
         match self {
             Self::ModifyTextInput { error, .. }
+            | Self::BulkActions { error, .. }
+            | Self::BulkGroupPicker { error, .. }
             | Self::ModifyPrimaryGroup { error, .. }
             | Self::ModifyHome { error, .. }
             | Self::ModifyExpiry { error, .. }
@@ -590,6 +608,22 @@ pub const PROTECTED_USER_MESSAGE: &str =
 /// Why root and system groups cannot be deleted or renamed.
 pub const PROTECTED_GROUP_MESSAGE: &str =
     "Root and system groups (GID below 1000) cannot be changed from this tool.";
+
+/// Rows of the bulk actions menu, in order.
+pub const BULK_ACTIONS: [&str; 4] = [
+    "Add marked users to a group",
+    "Remove marked users from a group",
+    "Lock marked",
+    "Unlock marked",
+];
+/// Row of [`BULK_ACTIONS`] that adds the marked users to a group.
+pub const BULK_ROW_ADD: usize = 0;
+/// Row of [`BULK_ACTIONS`] that removes the marked users from a group.
+pub const BULK_ROW_REMOVE: usize = 1;
+/// Row of [`BULK_ACTIONS`] that locks the marked accounts.
+pub const BULK_ROW_LOCK: usize = 2;
+/// Row of [`BULK_ACTIONS`] that unlocks the marked accounts.
+pub const BULK_ROW_UNLOCK: usize = 3;
 
 /// "Also delete home" checkbox row of the user delete dialog.
 pub const DELETE_ROW_HOME: usize = 0;
@@ -810,6 +844,14 @@ pub enum PendingAction {
     UnlockUser {
         username: String,
     },
+    /// Lock every marked account in one composite operation.
+    LockUsers {
+        usernames: Vec<String>,
+    },
+    /// Unlock every marked account in one composite operation.
+    UnlockUsers {
+        usernames: Vec<String>,
+    },
     ChangePrimaryGroup {
         username: String,
         groupname: String,
@@ -830,7 +872,7 @@ pub enum PendingAction {
 const DESCRIBE_MAX_NAMES: usize = 5;
 
 /// `wheel, docker`; past [`DESCRIBE_MAX_NAMES`] the rest become `and 3 more`.
-fn describe_names(names: &[String]) -> String {
+pub(crate) fn describe_names(names: &[String]) -> String {
     let mut text = names
         .iter()
         .take(DESCRIBE_MAX_NAMES)
@@ -841,6 +883,15 @@ fn describe_names(names: &[String]) -> String {
         text.push_str(&format!(" and {} more", names.len() - DESCRIBE_MAX_NAMES));
     }
     text
+}
+
+/// `account` for one name, `accounts` for several.
+fn accounts(names: &[String]) -> &'static str {
+    if names.len() == 1 {
+        "account"
+    } else {
+        "accounts"
+    }
 }
 
 impl PendingAction {
@@ -933,6 +984,16 @@ impl PendingAction {
             }
             Self::LockUser { username } => format!("Lock account {username}"),
             Self::UnlockUser { username } => format!("Unlock account {username}"),
+            Self::LockUsers { usernames } => {
+                format!("Lock {} {}", accounts(usernames), describe_names(usernames))
+            }
+            Self::UnlockUsers { usernames } => {
+                format!(
+                    "Unlock {} {}",
+                    accounts(usernames),
+                    describe_names(usernames)
+                )
+            }
             Self::ChangePrimaryGroup {
                 username,
                 groupname,
@@ -1566,6 +1627,10 @@ pub struct AppState {
     pub selected_user_group_gid: Option<u32>,
     pub selected_user_group_name: Option<String>,
     pub selected_group_member_name: Option<String>,
+    /// Users marked for bulk actions, by (UID, name) like the selection, so
+    /// marks survive searching, filtering, and sorting. Marks of users that
+    /// are gone after a refresh are dropped.
+    pub marked_users: BTreeSet<(u32, String)>,
     /// Bounded, precomputed primary and supplementary memberships by user.
     /// Renderers consume this cache instead of scanning every group's members.
     pub user_group_gids: HashMap<String, HashSet<u32>>,
@@ -1687,6 +1752,7 @@ impl AppState {
             selected_user_group_gid: None,
             selected_user_group_name: None,
             selected_group_member_name: None,
+            marked_users: BTreeSet::new(),
             user_group_gids: HashMap::new(),
             membership_cache_bounds: MembershipCacheBounds::default(),
             terminal_size: (80, 24),
@@ -1786,6 +1852,7 @@ impl AppState {
         self.users_all = snapshot.users.iter().cloned().map(Into::into).collect();
         self.groups_all = snapshot.groups.iter().cloned().map(Into::into).collect();
         self.account_snapshot = Some(snapshot);
+        self.prune_marks();
         self.sort_and_filter();
     }
 
@@ -2299,6 +2366,112 @@ impl AppState {
             ActiveTab::Groups => self.groups_sort = self.groups_sort.next(),
         }
         self.sort_and_filter();
+    }
+
+    /// Whether `user` is marked for bulk actions.
+    pub fn is_marked(&self, user: &sys::SystemUser) -> bool {
+        // Range over the UID instead of building a key, so rendering a row
+        // allocates nothing.
+        self.marked_users
+            .range((user.uid, String::new())..)
+            .take_while(|(uid, _)| *uid == user.uid)
+            .any(|(_, name)| *name == user.name)
+    }
+
+    /// Space on the users list: mark the highlighted user, or unmark it.
+    pub fn toggle_mark(&mut self) {
+        if self.active_tab != ActiveTab::Users || self.users_focus != UsersFocus::UsersList {
+            return;
+        }
+        if let Some(user) = self.users.get(self.selected_user_index) {
+            let key = (user.uid, user.name.clone());
+            if !self.marked_users.remove(&key) {
+                self.marked_users.insert(key);
+            }
+        }
+    }
+
+    /// Unmark every user.
+    pub fn clear_marks(&mut self) {
+        self.marked_users.clear();
+    }
+
+    /// Drop marks whose user is no longer loaded.
+    fn prune_marks(&mut self) {
+        let loaded: HashSet<(u32, &str)> = self
+            .users_all
+            .iter()
+            .map(|user| (user.uid, user.name.as_str()))
+            .collect();
+        self.marked_users
+            .retain(|(uid, name)| loaded.contains(&(*uid, name.as_str())));
+    }
+
+    /// Marked users, including ones the search or filters hide, in table
+    /// order.
+    pub fn marked_user_list(&self) -> Vec<&sys::SystemUser> {
+        if self.marked_users.is_empty() {
+            return Vec::new();
+        }
+        let mut seen = HashSet::new();
+        self.users_all
+            .iter()
+            .filter(|user| self.is_marked(user) && seen.insert((user.uid, user.name.as_str())))
+            .collect()
+    }
+
+    /// Names of the marked users, in table order.
+    pub fn marked_usernames(&self) -> Vec<String> {
+        self.marked_user_list()
+            .into_iter()
+            .map(|user| user.name.clone())
+            .collect()
+    }
+
+    /// Groups for the bulk group picker, in `groups_all` order and uncapped,
+    /// each with the reason the membership policy refuses it, if it does.
+    /// Adding lists every group; removing lists the groups that have at least
+    /// one marked user as a member. Reads no host state.
+    pub fn bulk_group_candidate_list(&self, adding: bool) -> CandidateList {
+        let marked: HashSet<&str> = self
+            .marked_user_list()
+            .into_iter()
+            .map(|user| user.name.as_str())
+            .collect();
+        CandidateList::every(
+            self.groups_all
+                .iter()
+                .filter(|group| {
+                    adding
+                        || group
+                            .members
+                            .iter()
+                            .any(|name| marked.contains(name.as_str()))
+                })
+                .map(|group| group.name.as_str()),
+        )
+        .with_blocks(|name| self.membership_block(name))
+    }
+
+    /// The marked users a bulk change of group `groupname` applies to:
+    /// adding skips users already in it (as a member or by primary group),
+    /// removing skips users who are not members. In table order.
+    pub fn bulk_group_targets(&self, groupname: &str, adding: bool) -> Vec<String> {
+        let Some(group) = self.groups_all.iter().find(|group| group.name == groupname) else {
+            return Vec::new();
+        };
+        self.marked_user_list()
+            .into_iter()
+            .filter(|user| {
+                let member = group.members.contains(&user.name);
+                if adding {
+                    !member && user.primary_gid != group.gid
+                } else {
+                    member
+                }
+            })
+            .map(|user| user.name.clone())
+            .collect()
     }
 
     /// Clear the active tab's query (Esc in the main view).

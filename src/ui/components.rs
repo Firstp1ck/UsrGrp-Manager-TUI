@@ -479,6 +479,7 @@ fn panel_entry(action: KeyAction) -> Option<(usize, usize, &'static str)> {
         EnterAction => (2, 0, "Open actions"),
         NewUser => (2, 1, "New user/group"),
         DeleteSelection => (2, 2, "Delete"),
+        ToggleMark => (2, 3, "Mark user"),
         Ignore => return None,
     })
 }
@@ -1280,6 +1281,17 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
         "Users tab",
         vec![
             format!("User actions: {enter} on a user"),
+            format!(
+                "Mark or unmark a user for bulk actions: {}",
+                keys(&[ToggleMark])
+            ),
+            format!(
+                "Bulk actions: {enter} while users are marked (add to or remove from a group, lock, unlock)"
+            ),
+            format!(
+                "Clear marks: {} (the next press clears the search)",
+                keys(&[ClearSearch])
+            ),
             format!("Group actions: {enter} in Member of"),
             format!("New user: {new}"),
             format!("Delete user: {delete} on a user"),

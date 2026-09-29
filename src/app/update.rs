@@ -10,7 +10,8 @@ use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 
 use crate::{
     app::{
-        ActiveTab, AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
+        ActiveTab, AppState, BULK_ACTIONS, BULK_ROW_ADD, BULK_ROW_LOCK, BULK_ROW_REMOVE,
+        BULK_ROW_UNLOCK, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
         GroupsFocus, InputMode, MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_LENGTH_REACHED,
         MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState, ModifyField, ModifyMenuItem, PendingAction,
         RunOptions, SecretInput, UsersFocus, civil_date_label, filterconf::FiltersConfig,
@@ -97,7 +98,15 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
         Some(KeyAction::ToggleKeybindsPane) => app.show_keybinds = !app.show_keybinds,
         Some(KeyAction::OpenFilterMenu) => open_modal(app, ModalState::FilterMenu { selected: 0 }),
         Some(KeyAction::StartSearch) => app.start_search(),
+        // With users marked, the first Esc on the Users tab clears the marks
+        // and the next one the search.
+        Some(KeyAction::ClearSearch)
+            if app.active_tab == ActiveTab::Users && !app.marked_users.is_empty() =>
+        {
+            app.clear_marks()
+        }
         Some(KeyAction::ClearSearch) => app.clear_search(),
+        Some(KeyAction::ToggleMark) => app.toggle_mark(),
         Some(KeyAction::Refresh) => app.refresh_accounts(),
         Some(KeyAction::CycleSort) => app.cycle_sort(),
         Some(KeyAction::NewUser) => match app.active_tab {
@@ -179,7 +188,15 @@ fn handle_search_key(app: &mut AppState, key: KeyEvent) {
 fn open_actions(app: &mut AppState) {
     match app.active_tab {
         ActiveTab::Users if matches!(app.users_focus, UsersFocus::UsersList) => {
-            if !app.users.is_empty() {
+            if !app.marked_users.is_empty() {
+                open_modal(
+                    app,
+                    ModalState::BulkActions {
+                        selected: 0,
+                        error: None,
+                    },
+                );
+            } else if !app.users.is_empty() {
                 open_modal(app, ModalState::Actions { selected: 0 });
             }
         }
@@ -408,6 +425,15 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
     match &mut modal {
         ModalState::FilterMenu { selected } => handle_filter_modal(app, selected, key),
         ModalState::Actions { selected } => handle_user_actions(app, selected, key),
+        ModalState::BulkActions { selected, error } => {
+            handle_bulk_actions(app, selected, error, key)
+        }
+        ModalState::BulkGroupPicker {
+            adding,
+            selected,
+            groups,
+            error,
+        } => handle_bulk_group_picker(app, *adding, selected, groups, error, key),
         ModalState::ModifyMenu { selected } => handle_modify_menu(app, selected, key),
         ModalState::ModifyDetailsMenu { selected } => handle_modify_details(app, selected, key),
         ModalState::ModifyTextInput {
@@ -736,6 +762,186 @@ fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
         }
         _ => {}
     }
+}
+
+/// Up/Down/j/k move; Enter opens the group picker or prepares the lock or
+/// unlock of every marked user. A refusal, such as a protected marked user,
+/// stays in the menu as its inline error.
+fn handle_bulk_actions(
+    app: &mut AppState,
+    selected: &mut usize,
+    error: &mut Option<String>,
+    key: KeyEvent,
+) {
+    *error = None;
+    if let Some(step) = list_step(key) {
+        move_index(selected, BULK_ACTIONS.len(), step);
+        return;
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Backspace => back(app),
+        KeyCode::Enter => match *selected {
+            row @ (BULK_ROW_ADD | BULK_ROW_REMOVE) => {
+                let adding = row == BULK_ROW_ADD;
+                let groups = app.bulk_group_candidate_list(adding);
+                if groups.names.is_empty() {
+                    *error = Some(
+                        if adding {
+                            "No groups are loaded."
+                        } else {
+                            "No marked user is a member of a group."
+                        }
+                        .to_owned(),
+                    );
+                    return;
+                }
+                open_modal(
+                    app,
+                    ModalState::BulkGroupPicker {
+                        adding,
+                        selected: 0,
+                        groups,
+                        error: None,
+                    },
+                );
+            }
+            row @ (BULK_ROW_LOCK | BULK_ROW_UNLOCK) => {
+                let usernames = app.marked_usernames();
+                let request = |username: &String| {
+                    if row == BULK_ROW_LOCK {
+                        OperationRequest::LockUser {
+                            username: username.clone(),
+                        }
+                    } else {
+                        OperationRequest::UnlockUser {
+                            username: username.clone(),
+                        }
+                    }
+                };
+                let singles: Vec<_> = usernames
+                    .iter()
+                    .map(|username| (username.clone(), request(username)))
+                    .collect();
+                let action = if row == BULK_ROW_LOCK {
+                    PendingAction::LockUsers { usernames }
+                } else {
+                    PendingAction::UnlockUsers { usernames }
+                };
+                if let Some(message) = start_bulk_action(app, action, singles) {
+                    *error = Some(message);
+                }
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+/// Up/Down/j/k move; Enter adds every marked user to the highlighted group,
+/// or removes them from it. Blocked groups and a group with no marked user
+/// to change are refused inline. When the bridge refuses the operation, the
+/// picker closes and the bulk actions menu shows why.
+fn handle_bulk_group_picker(
+    app: &mut AppState,
+    adding: bool,
+    selected: &mut usize,
+    groups: &CandidateList,
+    error: &mut Option<String>,
+    key: KeyEvent,
+) {
+    *error = None;
+    if let Some(step) = list_step(key) {
+        move_index(selected, groups.names.len(), step);
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => back(app),
+        KeyCode::Enter => {
+            let Some(groupname) = groups.names.get(*selected).cloned() else {
+                return;
+            };
+            if let Some(reason) = groups.blocked_reason(*selected) {
+                *error = Some(reason.to_owned());
+                return;
+            }
+            let usernames = app.bulk_group_targets(&groupname, adding);
+            if usernames.is_empty() {
+                *error = Some(if adding {
+                    format!("Every marked user is already in {groupname}.")
+                } else {
+                    format!("No marked user is a member of {groupname}.")
+                });
+                return;
+            }
+            let singles = usernames
+                .iter()
+                .map(|username| {
+                    let (username, groupname) = (username.clone(), groupname.clone());
+                    let request = if adding {
+                        OperationRequest::AddUserToGroup {
+                            username: username.clone(),
+                            groupname,
+                        }
+                    } else {
+                        OperationRequest::RemoveUserFromGroup {
+                            username: username.clone(),
+                            groupname,
+                        }
+                    };
+                    (username, request)
+                })
+                .collect();
+            let action = if adding {
+                PendingAction::AddMembersToGroup {
+                    groupname,
+                    usernames,
+                }
+            } else {
+                PendingAction::RemoveMembersFromGroup {
+                    groupname,
+                    usernames,
+                }
+            };
+            if let Some(message) = start_bulk_action(app, action, singles) {
+                back(app);
+                if let Some(ModalState::BulkActions { error, .. }) = app.modal_mut() {
+                    *error = Some(message);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Prepare a bulk action and open its confirmation. On refusal nothing is
+/// pending and the inline message is returned: when one user's own request
+/// (`singles`, by username) is refused as invalid, the message names that
+/// user, so a protected account among the marks can be found and unmarked.
+fn start_bulk_action(
+    app: &mut AppState,
+    action: PendingAction,
+    singles: Vec<(String, OperationRequest)>,
+) -> Option<String> {
+    let error = try_start_pending_action(app, action).err()?;
+    let mut culprit = None;
+    for (username, request) in singles {
+        match app.adapter.prepare_operation(request) {
+            Ok(_) => {}
+            Err(problem @ CoreError::Validation { .. }) => {
+                culprit = Some((username, problem));
+                break;
+            }
+            // Not about one user (for example the account files could not
+            // be read): report the operation's own error.
+            Err(_) => break,
+        }
+    }
+    Some(match culprit {
+        Some((username, problem)) => {
+            format!("Refused for {username}: {}", log_error(app, &problem))
+        }
+        None => log_error(app, &error),
+    })
 }
 
 fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
@@ -2324,6 +2530,14 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
         PendingAction::UnlockUser { username } => {
             vec![OperationRequest::UnlockUser { username }]
         }
+        PendingAction::LockUsers { usernames } => usernames
+            .into_iter()
+            .map(|username| OperationRequest::LockUser { username })
+            .collect(),
+        PendingAction::UnlockUsers { usernames } => usernames
+            .into_iter()
+            .map(|username| OperationRequest::UnlockUser { username })
+            .collect(),
         PendingAction::ChangePrimaryGroup {
             username,
             groupname,
@@ -4596,6 +4810,355 @@ mod tests {
         );
         assert_eq!(step_label("lock user"), "lock account");
         assert_eq!(step_label("unlock user"), "unlock account");
+    }
+
+    /// daemon (UID 2, protected), alice, bob, and carol. alice is in `dev`,
+    /// bob in the system group `adm`, carol in `wheel`; `docker` is empty.
+    fn bulk_snapshot() -> AccountSnapshot {
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(uid),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let group = |gid: u32, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(*member).unwrap())
+                .collect(),
+        };
+        AccountSnapshot {
+            users: vec![
+                user(2, "daemon"),
+                user(1000, "alice"),
+                user(1001, "bob"),
+                user(1002, "carol"),
+            ],
+            groups: vec![
+                group(4, "adm", &["bob"]),
+                group(2000, "dev", &["alice"]),
+                group(2001, "docker", &[]),
+                group(2002, "wheel", &["carol"]),
+            ],
+            shells: vec![ShellPath::new("/bin/sh").unwrap()],
+            diagnostics: vec![],
+        }
+    }
+
+    fn bulk_app() -> AppState {
+        let snapshot = bulk_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    /// Move the users cursor to `name` and press Space on it.
+    fn mark(app: &mut AppState, name: &str) {
+        while app.users[app.selected_user_index].name != name {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Char(' '));
+    }
+
+    fn marked_names(app: &AppState) -> Vec<String> {
+        app.marked_usernames()
+    }
+
+    fn bulk_error(app: &AppState) -> Option<String> {
+        match app.modal() {
+            Some(ModalState::BulkActions { error, .. }) => error.clone(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn space_marks_users_and_the_table_shows_them() {
+        let mut app = bulk_app();
+        mark(&mut app, "alice");
+        mark(&mut app, "bob");
+        assert_eq!(marked_names(&app), ["alice", "bob"]);
+        assert_eq!(
+            ui::users::users_table_title(&app),
+            "[Users]  4 of 4  2 marked"
+        );
+        let screen = rendered(&app);
+        assert!(screen.contains("* alice"), "{screen}");
+        assert!(screen.contains("* bob"), "{screen}");
+        assert!(!screen.contains("* carol"), "{screen}");
+        // Space again unmarks the highlighted user.
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(marked_names(&app), ["alice"]);
+
+        // Marks belong to the users list: Space elsewhere does nothing.
+        app.users_focus = UsersFocus::MemberOf;
+        press(&mut app, KeyCode::Char(' '));
+        app.users_focus = UsersFocus::UsersList;
+        app.active_tab = ActiveTab::Groups;
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(marked_names(&app), ["alice"]);
+    }
+
+    #[test]
+    fn marking_two_users_and_adding_them_to_a_group_is_one_composite() {
+        let mut app = bulk_app();
+        mark(&mut app, "alice");
+        mark(&mut app, "bob");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::BulkActions { .. })));
+        let screen = rendered(&app);
+        assert!(screen.contains("Bulk actions (2 marked)"), "{screen}");
+        assert!(screen.contains("Marked: alice, bob"), "{screen}");
+        for label in BULK_ACTIONS {
+            assert!(screen.contains(label), "missing {label:?}");
+        }
+        press(&mut app, KeyCode::Enter);
+        let Some(ModalState::BulkGroupPicker { adding, groups, .. }) = app.modal() else {
+            panic!("expected the group picker");
+        };
+        assert!(*adding);
+        assert_eq!(groups.names, ["adm", "dev", "docker", "wheel"]);
+        let screen = rendered(&app);
+        assert!(
+            screen.contains("adm (blocked: system group, protected)"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("wheel (blocked: sudo group, protected)"),
+            "{screen}"
+        );
+
+        // A blocked group cannot be chosen.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::BulkGroupPicker { error: Some(reason), .. })
+                if reason == "system group, protected"
+        ));
+
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        match app.modal() {
+            Some(ModalState::OperationConfirm {
+                action, preview, ..
+            }) => {
+                assert_eq!(action, "Add alice, bob to docker");
+                assert_eq!(
+                    preview,
+                    &["gpasswd -a alice docker", "gpasswd -a bob docker"]
+                );
+            }
+            _ => panic!("expected the confirmation"),
+        }
+    }
+
+    #[test]
+    fn bulk_add_skips_marked_users_already_in_the_group() {
+        let mut app = bulk_app();
+        mark(&mut app, "alice");
+        mark(&mut app, "bob");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
+                if action == "Add bob to dev" && preview == &["gpasswd -a bob dev"]
+        ));
+    }
+
+    #[test]
+    fn bulk_remove_lists_groups_with_a_marked_member_and_skips_non_members() {
+        let mut app = bulk_app();
+        mark(&mut app, "alice");
+        mark(&mut app, "bob");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        let Some(ModalState::BulkGroupPicker { adding, groups, .. }) = app.modal() else {
+            panic!("expected the group picker");
+        };
+        assert!(!*adding);
+        // docker has no member and wheel only carol, who is not marked.
+        assert_eq!(groups.names, ["adm", "dev"]);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
+                if action == "Remove alice from dev" && preview == &["gpasswd -d alice dev"]
+        ));
+    }
+
+    #[test]
+    fn bulk_remove_without_marked_members_stays_in_the_menu() {
+        let mut app = bulk_app();
+        mark(&mut app, "daemon");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            bulk_error(&app).as_deref(),
+            Some("No marked user is a member of a group.")
+        );
+    }
+
+    #[test]
+    fn lock_marked_is_one_composite_named_after_every_user() {
+        let mut app = bulk_app();
+        mark(&mut app, "alice");
+        mark(&mut app, "carol");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
+                if action == "Lock accounts alice, carol"
+                    && preview == &["usermod -L alice", "usermod -L carol"]
+        ));
+        cancel_operation(&mut app);
+        press(&mut app, KeyCode::Enter);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
+                if action == "Unlock accounts alice, carol"
+                    && preview == &["usermod -U alice", "usermod -U carol"]
+        ));
+    }
+
+    #[test]
+    fn protected_marked_user_is_refused_inline_naming_the_user() {
+        let mut app = bulk_app();
+        mark(&mut app, "daemon");
+        mark(&mut app, "alice");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        let error = bulk_error(&app).expect("inline refusal");
+        assert!(error.starts_with("Refused for daemon: "), "{error}");
+        assert!(error.contains("system user, protected"), "{error}");
+        assert!(app.pending_operation.is_none());
+        assert_eq!(app.modal_depth(), 1);
+        assert!(rendered(&app).contains("Refused for daemon"));
+        // Any key clears the message.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(bulk_error(&app), None);
+
+        // From the group picker, the picker closes and the menu says why.
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.modal_depth(), 1);
+        let error = bulk_error(&app).expect("inline refusal");
+        assert!(error.starts_with("Refused for daemon: "), "{error}");
+    }
+
+    #[test]
+    fn bulk_actions_describe_their_users() {
+        let names =
+            |list: &[&str]| -> Vec<String> { list.iter().map(|name| (*name).to_owned()).collect() };
+        assert_eq!(
+            PendingAction::LockUsers {
+                usernames: names(&["alice"])
+            }
+            .describe(),
+            "Lock account alice"
+        );
+        assert_eq!(
+            PendingAction::UnlockUsers {
+                usernames: names(&["alice", "bob"])
+            }
+            .describe(),
+            "Unlock accounts alice, bob"
+        );
+        assert_eq!(
+            PendingAction::LockUsers {
+                usernames: names(&["a", "b", "c", "d", "e", "f", "g"])
+            }
+            .describe(),
+            "Lock accounts a, b, c, d, e and 2 more"
+        );
+    }
+
+    #[test]
+    fn esc_clears_the_marks_first_and_the_search_second() {
+        let mut app = bulk_app();
+        mark(&mut app, "alice");
+        app.users_query = "a".to_owned();
+        app.sort_and_filter();
+        press(&mut app, KeyCode::Esc);
+        assert!(app.marked_users.is_empty());
+        assert_eq!(app.users_query, "a");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.users_query, "");
+        // Without marks Enter opens the single-user actions again.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::Actions { .. })));
+    }
+
+    #[test]
+    fn marks_survive_sort_and_search_and_drop_with_their_user_on_refresh() {
+        let source = Arc::new(SwappableSource(std::sync::Mutex::new(
+            Some(bulk_snapshot()),
+        )));
+        let adapter = Arc::new(SystemAdapter::from_components(
+            source.clone(),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, bulk_snapshot());
+        mark(&mut app, "alice");
+        mark(&mut app, "bob");
+        press(&mut app, KeyCode::Char('s'));
+        app.users_query = "bob".to_owned();
+        app.sort_and_filter();
+        assert_eq!(app.users.len(), 1);
+        assert_eq!(marked_names(&app), ["alice", "bob"]);
+        assert_eq!(
+            ui::users::users_table_title(&app),
+            "[Users]  /bob  1 of 4  2 marked  sort: name"
+        );
+
+        let mut without_bob = bulk_snapshot();
+        without_bob.users.retain(|user| user.name.as_str() != "bob");
+        *source.0.lock().unwrap() = Some(without_bob);
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(marked_names(&app), ["alice"]);
+    }
+
+    #[test]
+    fn mark_key_is_listed_in_the_panel_and_the_help() {
+        let app = bulk_app();
+        let lines: Vec<String> = ui::components::keybinds_panel_lines(&app)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(lines.contains(&"Mark user: Space".to_owned()), "{lines:?}");
+        let help: Vec<String> = ui::components::help_lines(&app)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(help.contains(&"Mark or unmark a user for bulk actions: Space".to_owned()));
+        assert!(help.contains(&"Clear marks: Esc (the next press clears the search)".to_owned()));
     }
 
     #[test]

@@ -10,9 +10,9 @@ use ratatui::{
 
 use crate::{
     app::{
-        AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, InputMode,
-        MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_NAME_CHARS, ModalState, ModifyField, SecretInput,
-        UsersFocus, civil_date_label,
+        AppState, BULK_ACTIONS, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
+        InputMode, MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_NAME_CHARS, ModalState, ModifyField,
+        SecretInput, UsersFocus, civil_date_label,
     },
     search::AccountShadowState,
     sys::SystemUser,
@@ -27,9 +27,9 @@ use crate::{
 };
 
 /// Users table title: focus marker, the search query while it applies, and
-/// how many users are listed out of all loaded, a non-default row order,
-/// then the active filters and any skipped shadow filter
-/// (`[Users]  /alice  12 of 45  sort: name  [human, locked]`).
+/// how many users are listed out of all loaded, how many are marked, a
+/// non-default row order, then the active filters and any skipped shadow
+/// filter (`[Users]  /alice  12 of 45  3 marked  sort: name  [human, locked]`).
 pub fn users_table_title(app: &AppState) -> String {
     let name = if app.users_focus == UsersFocus::UsersList {
         "[Users]"
@@ -43,6 +43,9 @@ pub fn users_table_title(app: &AppState) -> String {
         app.users.len(),
         app.users_all.len(),
     );
+    if !app.marked_users.is_empty() {
+        title.push_str(&format!("  {} marked", app.marked_users.len()));
+    }
     push_sort_label(&mut title, app.users_sort.label());
     push_filter_labels(&mut title, &app.active_user_filter_labels());
     if let Some(note) = shadow_skipped_note(app) {
@@ -77,6 +80,8 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
     }
     let per_page = table_rows(area);
     let start = app.selected_user_index / per_page * per_page;
+    // With marks, every name gets a two-column prefix so names stay aligned.
+    let marking = !app.marked_users.is_empty();
     let rows = app
         .users
         .iter()
@@ -87,7 +92,11 @@ pub fn render_users_table(frame: &mut Frame, area: Rect, app: &AppState) {
             let selected = start + offset == app.selected_user_index;
             Row::new(vec![
                 Cell::from(user.uid.to_string()),
-                Cell::from(user.name.clone()),
+                Cell::from(match (marking, app.is_marked(user)) {
+                    (false, _) => user.name.clone(),
+                    (true, true) => format!("* {}", user.name),
+                    (true, false) => format!("  {}", user.name),
+                }),
                 Cell::from(user.primary_gid.to_string()),
                 Cell::from(user.home_dir.clone()),
                 Cell::from(user.shell.clone()),
@@ -330,6 +339,56 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             Some(*selected),
             MENU_FOOTER,
         ),
+        ModalState::BulkActions { selected, .. } => {
+            let mut body = vec![Line::from(format!(
+                "Marked: {}",
+                crate::app::describe_names(&app.marked_usernames())
+            ))];
+            body.extend(text_lines(choices(&BULK_ACTIONS, *selected)));
+            let body = with_error_line(body, modal.form_error());
+            let title = format!("Bulk actions ({} marked)", app.marked_users.len());
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                &title,
+                body,
+                Some(1 + *selected),
+                MENU_FOOTER,
+            );
+            return;
+        }
+        ModalState::BulkGroupPicker {
+            adding,
+            selected,
+            groups,
+            ..
+        } => {
+            let mut body = vec![Line::from(format!(
+                "Marked: {}",
+                crate::app::describe_names(&app.marked_usernames())
+            ))];
+            if !*adding {
+                body.push(Line::from("Only groups with a marked member are listed."));
+            }
+            let focus = (!groups.names.is_empty()).then(|| body.len() + selected % MAX_MODAL_ROWS);
+            body.extend(group_choice_page(app, groups, *selected, None));
+            let body = with_error_line(body, modal.form_error());
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                if *adding {
+                    "Add marked users to a group"
+                } else {
+                    "Remove marked users from a group"
+                },
+                body,
+                focus,
+                LIST_FOOTER,
+            );
+            return;
+        }
         ModalState::ModifyMenu { selected } => {
             let labels: Vec<&str> = app
                 .modify_menu_items()
@@ -428,7 +487,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 )));
             }
             let focus = (!groups.names.is_empty()).then(|| body.len() + selected % MAX_MODAL_ROWS);
-            body.extend(primary_group_page(app, groups, *selected, *current));
+            body.extend(group_choice_page(app, groups, *selected, *current));
             let body = with_error_line(body, modal.form_error());
             render_modal_frame(
                 frame,
@@ -768,11 +827,11 @@ fn group_candidates(app: &AppState, adding: bool, filter: &str) -> CandidateList
         })
 }
 
-/// The page of the primary-group picker that holds `selected`: one row per
-/// group, the current one marked ` (current)`, and groups the policy refuses
-/// muted with ` (blocked: <reason>)`. `groups` is the list the key handler
-/// indexes.
-fn primary_group_page(
+/// The page of a single-select group picker (primary group, bulk
+/// membership) that holds `selected`: one row per group, the current one
+/// marked ` (current)`, and groups the policy refuses muted with
+/// ` (blocked: <reason>)`. `groups` is the list the key handler indexes.
+fn group_choice_page(
     app: &AppState,
     groups: &CandidateList,
     selected: usize,

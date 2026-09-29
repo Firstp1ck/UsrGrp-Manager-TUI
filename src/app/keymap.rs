@@ -13,6 +13,7 @@ pub enum KeyAction {
     ClearSearch,
     Refresh,
     CycleSort,
+    ToggleMark,
     NewUser,
     DeleteSelection,
     SwitchTab,
@@ -51,6 +52,7 @@ impl Keymap {
             ((Modifiers::NONE, Char('/')), StartSearch),
             ((Modifiers::NONE, Char('r')), Refresh),
             ((Modifiers::NONE, Char('s')), CycleSort),
+            ((Modifiers::NONE, Char(' ')), ToggleMark),
             ((Modifiers::NONE, Char('n')), NewUser),
             ((Modifiers::NONE, Char('?')), OpenHelp),
             ((Modifiers::NONE, Delete), DeleteSelection),
@@ -178,6 +180,7 @@ impl Keymap {
             KeyCode::Right => "Right".to_owned(),
             KeyCode::PageUp => "PageUp".to_owned(),
             KeyCode::PageDown => "PageDown".to_owned(),
+            KeyCode::Char(' ') => "Space".to_owned(),
             KeyCode::Char(character) => character.to_string(),
             other => format!("{other:?}"),
         };
@@ -219,6 +222,7 @@ fn parse_key(specification: &str) -> Option<(KeyModifiers, KeyCode)> {
         "Right" => KeyCode::Right,
         "PageUp" => KeyCode::PageUp,
         "PageDown" => KeyCode::PageDown,
+        "Space" => KeyCode::Char(' '),
         value if value.chars().count() == 1 => KeyCode::Char(value.chars().next()?),
         _ => return None,
     };
@@ -242,6 +246,7 @@ fn parse_action(value: &str) -> Option<KeyAction> {
         "ClearSearch" => ClearSearch,
         "Refresh" => Refresh,
         "CycleSort" => CycleSort,
+        "ToggleMark" => ToggleMark,
         "NewUser" => NewUser,
         "DeleteSelection" => DeleteSelection,
         "SwitchTab" => SwitchTab,
@@ -270,6 +275,7 @@ pub fn format_action(action: KeyAction) -> &'static str {
         ClearSearch => "ClearSearch",
         Refresh => "Refresh",
         CycleSort => "CycleSort",
+        ToggleMark => "ToggleMark",
         NewUser => "NewUser",
         DeleteSelection => "DeleteSelection",
         SwitchTab => "SwitchTab",
@@ -380,6 +386,50 @@ mod tests {
                 .unwrap()
                 .resolve(&key(KeyCode::Char('s'))),
             Some(KeyAction::CycleSort)
+        );
+    }
+
+    #[test]
+    fn space_toggles_marks_by_default_and_in_the_example_config() {
+        let space = key(KeyCode::Char(' '));
+        assert_eq!(
+            Keymap::default().resolve(&space),
+            Some(KeyAction::ToggleMark)
+        );
+        assert_eq!(parse_action("ToggleMark"), Some(KeyAction::ToggleMark));
+        assert_eq!(format_action(KeyAction::ToggleMark), "ToggleMark");
+        // A space cannot be written as a config value, so it is spelled out.
+        assert_eq!(
+            parse_key("Space"),
+            Some((KeyModifiers::NONE, KeyCode::Char(' ')))
+        );
+        assert_eq!(
+            Keymap::format_key(KeyModifiers::NONE, KeyCode::Char(' ')),
+            "Space"
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&space),
+            Some(KeyAction::ToggleMark)
+        );
+    }
+
+    #[test]
+    fn space_binding_survives_a_write_and_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keybinds.conf");
+        let path = path.to_str().unwrap();
+        Keymap::default().write_file(path).unwrap();
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("ToggleMark = Space\n")
+        );
+        assert_eq!(
+            Keymap::from_file(path)
+                .unwrap()
+                .resolve(&key(KeyCode::Char(' '))),
+            Some(KeyAction::ToggleMark)
         );
     }
 
