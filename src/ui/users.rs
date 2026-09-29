@@ -328,15 +328,19 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             Some(*selected),
             MENU_FOOTER,
         ),
-        ModalState::ModifyMenu { selected } => (
-            "Modify user",
-            choices(
-                &["Add group", "Remove group", "Modify details", "Password"],
-                *selected,
-            ),
-            Some(*selected),
-            MENU_FOOTER,
-        ),
+        ModalState::ModifyMenu { selected } => {
+            let labels: Vec<&str> = app
+                .modify_menu_items()
+                .into_iter()
+                .map(|item| item.label())
+                .collect();
+            (
+                "Modify user",
+                choices(&labels, *selected),
+                Some(*selected),
+                MENU_FOOTER,
+            )
+        }
         ModalState::ModifyDetailsMenu { selected } => (
             "Modify details",
             choices(&["Username", "Full name", "Shell"], *selected),

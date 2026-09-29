@@ -179,6 +179,124 @@ fn failed_prepared_command_returns_a_partial_report_and_reconciles() {
 }
 
 #[test]
+fn lock_and_unlock_preview_the_exact_usermod_command_and_stay_unverified() {
+    for (request, command, id) in [
+        (
+            OperationRequest::LockUser {
+                username: "alice".into(),
+            },
+            "usermod -L alice",
+            "lock user",
+        ),
+        (
+            OperationRequest::UnlockUser {
+                username: "alice".into(),
+            },
+            "usermod -U alice",
+            "unlock user",
+        ),
+    ] {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let adapter = adapter(
+            Arc::new(common::FixtureSource(Ok(snapshot()))),
+            runner.clone(),
+            0,
+        );
+        let plan = adapter.prepare_operation(request).unwrap();
+        let preview = plan.redacted_preview();
+        assert_eq!(
+            preview.iter().map(|line| line.render()).collect::<Vec<_>>(),
+            [command]
+        );
+        assert_eq!(plan.bound_targets.len(), 1);
+
+        let report = adapter.execute_prepared_operation(&plan).unwrap();
+        assert_eq!(
+            preview,
+            runner
+                .recorded()
+                .into_iter()
+                .map(|call| call.preview)
+                .collect::<Vec<_>>()
+        );
+        // The lock flag lives in /etc/shadow, which the account source does
+        // not read: a successful child is reported as unobserved.
+        assert!(report.failed.is_none());
+        assert_eq!(report.completed.len(), 1);
+        assert_eq!(report.completed[0].id, id);
+        assert!(matches!(
+            report.completed[0].verification,
+            usrgrp_manager::sys::StepVerification::Unverified { .. }
+        ));
+        assert!(matches!(
+            report.reconciliation,
+            ReconciliationStatus::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn lock_and_unlock_reject_root_and_protected_users_before_runner_execution() {
+    let root = AccountSnapshot {
+        users: vec![AccountUser {
+            uid: Uid(0),
+            name: UserName::new("root").unwrap(),
+            primary_gid: Gid(0),
+            full_name: None,
+            home_dir: "/root".into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        }],
+        groups: vec![],
+        shells: vec![ShellPath::new("/bin/sh").unwrap()],
+        diagnostics: vec![],
+    };
+    let mut service = snapshot();
+    service.users[0].uid = Uid(998);
+    for (accounts, username) in [(root, "root"), (service, "alice")] {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let adapter = adapter(
+            Arc::new(common::FixtureSource(Ok(accounts))),
+            runner.clone(),
+            0,
+        );
+        for request in [
+            OperationRequest::LockUser {
+                username: username.into(),
+            },
+            OperationRequest::UnlockUser {
+                username: username.into(),
+            },
+        ] {
+            assert!(matches!(
+                adapter.prepare_operation(request),
+                Err(CoreError::Validation { .. })
+            ));
+        }
+        assert!(runner.recorded().is_empty());
+    }
+
+    // A target whose UID changed after preview is refused before running.
+    let mut changed = snapshot();
+    changed.users[0].uid = Uid(1001);
+    let runner = Arc::new(common::FakeRunner::succeeds());
+    let adapter = adapter(
+        Arc::new(SequencedSource::new([Ok(snapshot()), Ok(changed)])),
+        runner.clone(),
+        0,
+    );
+    let plan = adapter
+        .prepare_operation(OperationRequest::LockUser {
+            username: "alice".into(),
+        })
+        .unwrap();
+    assert!(matches!(
+        adapter.execute_prepared_operation(&plan),
+        Err(CoreError::Validation { .. })
+    ));
+    assert!(runner.recorded().is_empty());
+}
+
+#[test]
 fn composite_password_and_expiry_runs_all_required_commands_when_shadow_is_unobservable() {
     let runner = Arc::new(common::FakeRunner::succeeds());
     let adapter = adapter(
@@ -562,6 +680,12 @@ fn every_supported_request_compiles_to_a_redacted_bridge_plan() {
             .unwrap(),
         },
         OperationRequest::ExpireUserPassword {
+            username: "alice".into(),
+        },
+        OperationRequest::LockUser {
+            username: "alice".into(),
+        },
+        OperationRequest::UnlockUser {
             username: "alice".into(),
         },
         OperationRequest::Composite {

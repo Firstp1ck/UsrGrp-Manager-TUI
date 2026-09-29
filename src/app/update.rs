@@ -12,8 +12,8 @@ use crate::{
     app::{
         ActiveTab, AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
         GroupsFocus, InputMode, MAX_LENGTH_REACHED, MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState,
-        ModifyField, PendingAction, RunOptions, SecretInput, UsersFocus, filterconf::FiltersConfig,
-        keymap::KeyAction,
+        ModifyField, ModifyMenuItem, PendingAction, RunOptions, SecretInput, UsersFocus,
+        filterconf::FiltersConfig, keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
     sys::{GroupName, OperationRequest, PasswordRecord, SecretString, UserName},
@@ -706,14 +706,15 @@ fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
 }
 
 fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
+    let items = app.modify_menu_items();
     if let Some(step) = list_step(key) {
-        move_index(selected, 4, step);
+        move_index(selected, items.len(), step);
         return;
     }
     match key.code {
         KeyCode::Esc | KeyCode::Backspace => back(app),
-        KeyCode::Enter => match *selected {
-            0 => open_modal(
+        KeyCode::Enter => match items.get(*selected).copied() {
+            Some(ModifyMenuItem::AddGroup) => open_modal(
                 app,
                 ModalState::ModifyGroupsAdd {
                     selected: 0,
@@ -724,7 +725,7 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
                     error: None,
                 },
             ),
-            1 => open_modal(
+            Some(ModifyMenuItem::RemoveGroup) => open_modal(
                 app,
                 ModalState::ModifyGroupsRemove {
                     selected: 0,
@@ -735,8 +736,26 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
                     error: None,
                 },
             ),
-            2 => open_modal(app, ModalState::ModifyDetailsMenu { selected: 0 }),
-            _ => open_modal(app, ModalState::ModifyPasswordMenu { selected: 0 }),
+            Some(ModifyMenuItem::Details) => {
+                open_modal(app, ModalState::ModifyDetailsMenu { selected: 0 })
+            }
+            Some(ModifyMenuItem::Password) => {
+                open_modal(app, ModalState::ModifyPasswordMenu { selected: 0 })
+            }
+            Some(item @ (ModifyMenuItem::Lock | ModifyMenuItem::Unlock)) => {
+                if let Some(user) = app.users.get(app.selected_user_index) {
+                    let username = user.name.clone();
+                    start_pending_action(
+                        app,
+                        if item == ModifyMenuItem::Lock {
+                            PendingAction::LockUser { username }
+                        } else {
+                            PendingAction::UnlockUser { username }
+                        },
+                    );
+                }
+            }
+            None => {}
         },
         _ => {}
     }
@@ -2042,6 +2061,10 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
         PendingAction::ResetPassword { username } => {
             vec![OperationRequest::ExpireUserPassword { username }]
         }
+        PendingAction::LockUser { username } => vec![OperationRequest::LockUser { username }],
+        PendingAction::UnlockUser { username } => {
+            vec![OperationRequest::UnlockUser { username }]
+        }
     };
     Ok(if requests.len() == 1 {
         requests.pop().expect("one request remains")
@@ -2082,6 +2105,8 @@ fn plain_step_label(id: &str) -> Option<&'static str> {
         "remove user from group" => "remove from group",
         "set user password" => "set password",
         "expire user password" => "force password change",
+        "lock user" => "lock account",
+        "unlock user" => "unlock account",
         "create user" => "create user",
         "delete user" => "delete user",
         "create group" => "create group",
@@ -4185,16 +4210,111 @@ mod tests {
             app.modal(),
             Some(ModalState::ModifyMenu { selected: 0 })
         ));
+        // Shadow is unknown in the fixture, so the menu offers both the
+        // lock and the unlock entry after the four fixed ones.
         press(&mut app, KeyCode::Char('k'));
         assert!(matches!(
             app.modal(),
-            Some(ModalState::ModifyMenu { selected: 3 })
+            Some(ModalState::ModifyMenu { selected: 5 })
         ));
         press(&mut app, KeyCode::Char('j'));
         assert!(matches!(
             app.modal(),
             Some(ModalState::ModifyMenu { selected: 0 })
         ));
+    }
+
+    /// `user_app` with alice's cached shadow status, or none known.
+    fn app_with_lock_state(locked: Option<bool>) -> AppState {
+        let mut app = user_app();
+        app.diagnostics.shadow = match locked {
+            Some(locked) => crate::search::ShadowState::Known(
+                [(
+                    "alice".to_owned(),
+                    crate::search::ShadowStatus {
+                        locked,
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            None => crate::search::ShadowState::Unavailable {
+                reason: "permission denied".to_owned(),
+            },
+        };
+        // Actions, then Modify.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::ModifyMenu { .. })));
+        app
+    }
+
+    #[test]
+    fn modify_menu_lock_entry_follows_the_cached_shadow_state() {
+        let cases = [
+            (Some(true), false, true),
+            (Some(false), true, false),
+            (None, true, true),
+        ];
+        for (locked, shows_lock, shows_unlock) in cases {
+            let app = app_with_lock_state(locked);
+            let text = rendered(&app);
+            assert_eq!(text.contains("Lock account"), shows_lock, "{locked:?}");
+            assert_eq!(text.contains("Unlock account"), shows_unlock, "{locked:?}");
+            assert!(text.contains("Password"), "{locked:?}");
+            let expected: Vec<ModifyMenuItem> = [
+                (shows_lock, ModifyMenuItem::Lock),
+                (shows_unlock, ModifyMenuItem::Unlock),
+            ]
+            .into_iter()
+            .filter_map(|(shown, item)| shown.then_some(item))
+            .collect();
+            assert_eq!(app.modify_menu_items()[4..], expected[..], "{locked:?}");
+        }
+    }
+
+    #[test]
+    fn modify_menu_lock_and_unlock_open_the_matching_confirmation() {
+        let cases = [
+            (Some(false), 4, "Lock account alice", "usermod -L alice"),
+            (Some(true), 4, "Unlock account alice", "usermod -U alice"),
+            (None, 4, "Lock account alice", "usermod -L alice"),
+            (None, 5, "Unlock account alice", "usermod -U alice"),
+        ];
+        for (locked, row, title, command) in cases {
+            let mut app = app_with_lock_state(locked);
+            for _ in 0..row {
+                press(&mut app, KeyCode::Down);
+            }
+            press(&mut app, KeyCode::Enter);
+            assert!(
+                matches!(
+                    app.modal(),
+                    Some(ModalState::OperationConfirm { action, preview, .. })
+                        if action == title && preview == &[command]
+                ),
+                "{locked:?} row {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_actions_describe_the_account() {
+        let username = "alice".to_owned();
+        assert_eq!(
+            PendingAction::LockUser {
+                username: username.clone()
+            }
+            .describe(),
+            "Lock account alice"
+        );
+        assert_eq!(
+            PendingAction::UnlockUser { username }.describe(),
+            "Unlock account alice"
+        );
+        assert_eq!(step_label("lock user"), "lock account");
+        assert_eq!(step_label("unlock user"), "unlock account");
     }
 
     #[test]

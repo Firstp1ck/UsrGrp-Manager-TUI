@@ -110,7 +110,7 @@ impl CommandSpec {
     pub fn fixed_arg(mut self, argument: &'static str) -> CoreResult<Self> {
         if !matches!(
             argument,
-            "-a" | "-c" | "-d" | "-l" | "-m" | "-n" | "-r" | "-s" | "0"
+            "-a" | "-c" | "-d" | "-l" | "-m" | "-n" | "-r" | "-s" | "-L" | "-U" | "0"
         ) {
             return Err(CoreError::Validation {
                 field: "command argument",

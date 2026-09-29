@@ -606,6 +606,35 @@ impl SystemAdapter {
                     .with_postcondition(OperationCheck::new("password expiry is observed")),
                 ))
             }
+            OperationRequest::LockUser { username } => {
+                let username = UserName::new(username)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                // The lock flag lives in /etc/shadow, which this source does
+                // not read: report the result as unobserved, never verified.
+                Ok(OperationPlan::new(OperationTarget::User(user)).then(
+                    PlannedStep::new(
+                        "lock user",
+                        CommandSpec::new(KnownProgram::UserMod)
+                            .fixed_arg("-L")?
+                            .user_name(&username),
+                    )
+                    .with_postcondition(OperationCheck::new("account lock state is observed")),
+                ))
+            }
+            OperationRequest::UnlockUser { username } => {
+                let username = UserName::new(username)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                // Same shadow limitation as `LockUser`.
+                Ok(OperationPlan::new(OperationTarget::User(user)).then(
+                    PlannedStep::new(
+                        "unlock user",
+                        CommandSpec::new(KnownProgram::UserMod)
+                            .fixed_arg("-U")?
+                            .user_name(&username),
+                    )
+                    .with_postcondition(OperationCheck::new("account lock state is observed")),
+                ))
+            }
         }?;
         self.validate_policy(&plan)?;
         Ok(plan)

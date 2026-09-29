@@ -82,6 +82,14 @@ pub enum OperationRequest {
     ExpireUserPassword {
         username: String,
     },
+    /// Lock the account's password (`usermod -L`).
+    LockUser {
+        username: String,
+    },
+    /// Unlock the account's password (`usermod -U`).
+    UnlockUser {
+        username: String,
+    },
     /// Ordered requests compiled by the trusted adapter into one exact plan.
     Composite {
         requests: Vec<OperationRequest>,

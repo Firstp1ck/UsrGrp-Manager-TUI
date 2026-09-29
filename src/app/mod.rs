@@ -571,6 +571,32 @@ impl ModifyField {
     }
 }
 
+/// One entry of the "Modify user" menu. The renderer and the key handler both
+/// index [`AppState::modify_menu_items`], so a highlighted row is always the
+/// entry that opens.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModifyMenuItem {
+    AddGroup,
+    RemoveGroup,
+    Details,
+    Password,
+    Lock,
+    Unlock,
+}
+
+impl ModifyMenuItem {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AddGroup => "Add group",
+            Self::RemoveGroup => "Remove group",
+            Self::Details => "Modify details",
+            Self::Password => "Password",
+            Self::Lock => "Lock account",
+            Self::Unlock => "Unlock account",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct UsersFilterChips {
     pub human_only: bool,
@@ -671,6 +697,12 @@ pub enum PendingAction {
         must_change: bool,
     },
     ResetPassword {
+        username: String,
+    },
+    LockUser {
+        username: String,
+    },
+    UnlockUser {
         username: String,
     },
 }
@@ -780,6 +812,8 @@ impl PendingAction {
             Self::ResetPassword { username } => {
                 format!("Force {username} to change password at next login")
             }
+            Self::LockUser { username } => format!("Lock account {username}"),
+            Self::UnlockUser { username } => format!("Unlock account {username}"),
         }
     }
 }
@@ -1737,6 +1771,30 @@ impl AppState {
                     .filter(|group| group_gids.contains(&group.gid))
                     .collect()
             })
+    }
+
+    /// Entries of the "Modify user" menu for the selected user. The lock entry
+    /// follows the cached shadow status: `Unlock account` for a locked
+    /// account, `Lock account` otherwise. When the status is unknown (shadow
+    /// unreadable or no record for the user) both are offered.
+    pub fn modify_menu_items(&self) -> Vec<ModifyMenuItem> {
+        let mut items = vec![
+            ModifyMenuItem::AddGroup,
+            ModifyMenuItem::RemoveGroup,
+            ModifyMenuItem::Details,
+            ModifyMenuItem::Password,
+        ];
+        let locked = self
+            .users
+            .get(self.selected_user_index)
+            .and_then(|user| self.diagnostics.shadow.status(&user.name))
+            .map(|status| status.locked);
+        match locked {
+            Some(true) => items.push(ModifyMenuItem::Unlock),
+            Some(false) => items.push(ModifyMenuItem::Lock),
+            None => items.extend([ModifyMenuItem::Lock, ModifyMenuItem::Unlock]),
+        }
+        items
     }
 
     /// Users the Groups-tab "Add members" (`adding`) or "Remove members"
