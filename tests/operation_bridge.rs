@@ -296,6 +296,335 @@ fn lock_and_unlock_reject_root_and_protected_users_before_runner_execution() {
     assert!(runner.recorded().is_empty());
 }
 
+/// `snapshot()` plus group `staff` (GID 1001), system group `users` (GID
+/// 100), and elevation group `wheel` (GID 1010).
+fn snapshot_with_groups() -> AccountSnapshot {
+    let mut accounts = snapshot();
+    for (gid, name) in [(1001, "staff"), (100, "users"), (1010, "wheel")] {
+        accounts.groups.push(AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: vec![],
+        });
+    }
+    accounts
+}
+
+/// Serves `before` until the runner has run a command, then `after`, the way
+/// the account files look once a real child has changed them.
+struct AppliedSource {
+    before: AccountSnapshot,
+    after: AccountSnapshot,
+    runner: Arc<common::FakeRunner>,
+}
+
+impl AccountDataSource for AppliedSource {
+    fn refresh(&self) -> CoreResult<AccountSnapshot> {
+        Ok(if self.runner.recorded().is_empty() {
+            self.before.clone()
+        } else {
+            self.after.clone()
+        })
+    }
+}
+
+#[test]
+fn primary_group_and_home_changes_preview_exact_usermod_commands_and_verify() {
+    // Each request with its preview, step id, and alice's primary GID and
+    // home once the command has run.
+    let cases = [
+        (
+            OperationRequest::ChangeUserPrimaryGroup {
+                username: "alice".into(),
+                groupname: "staff".into(),
+            },
+            "usermod -g staff alice",
+            "change user primary group",
+            (Gid(1001), "/home/alice"),
+        ),
+        (
+            OperationRequest::ChangeUserHome {
+                username: "alice".into(),
+                home: "/srv/alice".into(),
+                move_contents: false,
+            },
+            "usermod -d /srv/alice alice",
+            "change user home",
+            (Gid(1000), "/srv/alice"),
+        ),
+        (
+            OperationRequest::ChangeUserHome {
+                username: "alice".into(),
+                home: "/srv/alice".into(),
+                move_contents: true,
+            },
+            "usermod -d /srv/alice -m alice",
+            "change user home",
+            (Gid(1000), "/srv/alice"),
+        ),
+    ];
+    for (request, command, id, (gid, home)) in cases {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let mut after = snapshot_with_groups();
+        after.users[0].primary_gid = gid;
+        after.users[0].home_dir = home.into();
+        let adapter = adapter(
+            Arc::new(AppliedSource {
+                before: snapshot_with_groups(),
+                after,
+                runner: runner.clone(),
+            }),
+            runner.clone(),
+            0,
+        );
+        let plan = adapter.prepare_operation(request).unwrap();
+        let preview = plan.redacted_preview();
+        assert_eq!(
+            preview.iter().map(|line| line.render()).collect::<Vec<_>>(),
+            [command]
+        );
+        // The primary group binds the target group too.
+        let targets = if id == "change user primary group" {
+            2
+        } else {
+            1
+        };
+        assert_eq!(plan.bound_targets.len(), targets, "{command}");
+
+        let report = adapter.execute_prepared_operation(&plan).unwrap();
+        assert_eq!(
+            preview,
+            runner
+                .recorded()
+                .into_iter()
+                .map(|call| call.preview)
+                .collect::<Vec<_>>()
+        );
+        // passwd holds both fields, so the result is checked, not assumed.
+        assert!(report.failed.is_none(), "{command}");
+        assert_eq!(report.completed.len(), 1);
+        assert_eq!(report.completed[0].id, id);
+        assert!(
+            matches!(report.reconciliation, ReconciliationStatus::Verified),
+            "{command}"
+        );
+    }
+
+    // A child that exits 0 without changing passwd is reported as partial.
+    let runner = Arc::new(common::FakeRunner::succeeds());
+    let adapter = adapter(
+        Arc::new(common::FixtureSource(Ok(snapshot_with_groups()))),
+        runner.clone(),
+        0,
+    );
+    let plan = adapter
+        .prepare_operation(OperationRequest::ChangeUserHome {
+            username: "alice".into(),
+            home: "/srv/alice".into(),
+            move_contents: true,
+        })
+        .unwrap();
+    let report = adapter.execute_prepared_operation(&plan).unwrap();
+    assert!(matches!(
+        report.reconciliation,
+        ReconciliationStatus::Partial { .. }
+    ));
+}
+
+#[test]
+fn primary_group_and_home_already_in_place_run_nothing() {
+    let runner = Arc::new(common::FakeRunner::succeeds());
+    let adapter = adapter(
+        Arc::new(common::FixtureSource(Ok(snapshot_with_groups()))),
+        runner.clone(),
+        0,
+    );
+    for request in [
+        OperationRequest::ChangeUserPrimaryGroup {
+            username: "alice".into(),
+            groupname: "dev".into(),
+        },
+        OperationRequest::ChangeUserHome {
+            username: "alice".into(),
+            home: "/home/alice".into(),
+            move_contents: true,
+        },
+    ] {
+        let plan = adapter.prepare_operation(request).unwrap();
+        let report = adapter.execute_prepared_operation(&plan).unwrap();
+        assert!(report.completed.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+    }
+    assert!(runner.recorded().is_empty());
+}
+
+#[test]
+fn home_change_rejects_paths_the_home_validation_refuses() {
+    let runner = Arc::new(common::FakeRunner::succeeds());
+    let adapter = adapter(
+        Arc::new(common::FixtureSource(Ok(snapshot()))),
+        runner.clone(),
+        0,
+    );
+    for home in ["", "srv/alice", "/srv/a:b", "/srv/a\nb"] {
+        assert!(
+            matches!(
+                adapter.prepare_operation(OperationRequest::ChangeUserHome {
+                    username: "alice".into(),
+                    home: home.into(),
+                    move_contents: false,
+                }),
+                Err(CoreError::Validation {
+                    field: "home directory",
+                    ..
+                })
+            ),
+            "{home:?}"
+        );
+    }
+    assert!(runner.recorded().is_empty());
+}
+
+#[test]
+fn primary_group_target_must_pass_the_membership_policy() {
+    let mut accounts = snapshot_with_groups();
+    accounts.groups.push(AccountGroup {
+        gid: Gid(0),
+        name: GroupName::new("root").unwrap(),
+        members: vec![],
+    });
+    let runner = Arc::new(common::FakeRunner::succeeds());
+    let adapter = adapter(
+        Arc::new(common::FixtureSource(Ok(accounts))),
+        runner.clone(),
+        0,
+    );
+    for (group, gid) in [("users", 100), ("wheel", 1010), ("root", 0)] {
+        assert!(adapter.membership_allowed(group, gid).is_err(), "{group}");
+        assert!(
+            matches!(
+                adapter.prepare_operation(OperationRequest::ChangeUserPrimaryGroup {
+                    username: "alice".into(),
+                    groupname: group.into(),
+                }),
+                Err(CoreError::Validation { .. })
+            ),
+            "{group}"
+        );
+    }
+    assert!(adapter.membership_allowed("staff", 1001).is_ok());
+    assert!(
+        adapter
+            .prepare_operation(OperationRequest::ChangeUserPrimaryGroup {
+                username: "alice".into(),
+                groupname: "staff".into(),
+            })
+            .is_ok()
+    );
+    // A group missing from the snapshot is refused as well.
+    assert!(
+        adapter
+            .prepare_operation(OperationRequest::ChangeUserPrimaryGroup {
+                username: "alice".into(),
+                groupname: "nosuch".into(),
+            })
+            .is_err()
+    );
+    assert!(runner.recorded().is_empty());
+
+    // An allowlisted elevation group is accepted, as it is for membership.
+    let allowing = SystemAdapter::from_components_with_policy(
+        Arc::new(common::FixtureSource(Ok(snapshot_with_groups()))),
+        runner.clone(),
+        Arc::new(common::FixtureIdentity::uid(0)),
+        ProtectedIdentityPolicy::fail_closed()
+            .allow_elevation_membership_group(GroupName::new("wheel").unwrap()),
+    );
+    assert!(
+        allowing
+            .prepare_operation(OperationRequest::ChangeUserPrimaryGroup {
+                username: "alice".into(),
+                groupname: "wheel".into(),
+            })
+            .is_ok()
+    );
+}
+
+#[test]
+fn primary_group_and_home_reject_root_protected_and_changed_users_before_runner_execution() {
+    let root = AccountSnapshot {
+        users: vec![AccountUser {
+            uid: Uid(0),
+            name: UserName::new("root").unwrap(),
+            primary_gid: Gid(0),
+            full_name: None,
+            home_dir: "/root".into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        }],
+        groups: snapshot_with_groups().groups,
+        shells: vec![ShellPath::new("/bin/sh").unwrap()],
+        diagnostics: vec![],
+    };
+    let mut service = snapshot_with_groups();
+    service.users[0].uid = Uid(998);
+    for (accounts, username) in [(root, "root"), (service, "alice")] {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let adapter = adapter(
+            Arc::new(common::FixtureSource(Ok(accounts))),
+            runner.clone(),
+            0,
+        );
+        for request in [
+            OperationRequest::ChangeUserPrimaryGroup {
+                username: username.into(),
+                groupname: "staff".into(),
+            },
+            OperationRequest::ChangeUserHome {
+                username: username.into(),
+                home: "/srv/elsewhere".into(),
+                move_contents: true,
+            },
+        ] {
+            assert!(matches!(
+                adapter.prepare_operation(request),
+                Err(CoreError::Validation { .. })
+            ));
+        }
+        assert!(runner.recorded().is_empty());
+    }
+
+    // A target whose UID changed after preview is refused before running.
+    let mut changed = snapshot_with_groups();
+    changed.users[0].uid = Uid(1001);
+    for request in [
+        OperationRequest::ChangeUserPrimaryGroup {
+            username: "alice".into(),
+            groupname: "staff".into(),
+        },
+        OperationRequest::ChangeUserHome {
+            username: "alice".into(),
+            home: "/srv/alice".into(),
+            move_contents: false,
+        },
+    ] {
+        let runner = Arc::new(common::FakeRunner::succeeds());
+        let adapter = adapter(
+            Arc::new(SequencedSource::new([
+                Ok(snapshot_with_groups()),
+                Ok(changed.clone()),
+            ])),
+            runner.clone(),
+            0,
+        );
+        let plan = adapter.prepare_operation(request).unwrap();
+        assert!(matches!(
+            adapter.execute_prepared_operation(&plan),
+            Err(CoreError::Validation { .. })
+        ));
+        assert!(runner.recorded().is_empty());
+    }
+}
+
 #[test]
 fn composite_password_and_expiry_runs_all_required_commands_when_shadow_is_unobservable() {
     let runner = Arc::new(common::FakeRunner::succeeds());
@@ -632,7 +961,11 @@ fn bulk_membership_failure_reports_prior_completion_without_replay() {
 #[test]
 fn every_supported_request_compiles_to_a_redacted_bridge_plan() {
     let runner = Arc::new(common::FakeRunner::succeeds());
-    let adapter = adapter(Arc::new(common::FixtureSource(Ok(snapshot()))), runner, 0);
+    let adapter = adapter(
+        Arc::new(common::FixtureSource(Ok(snapshot_with_groups()))),
+        runner,
+        0,
+    );
     let requests = vec![
         OperationRequest::AddUserToGroup {
             username: "alice".into(),
@@ -687,6 +1020,15 @@ fn every_supported_request_compiles_to_a_redacted_bridge_plan() {
         },
         OperationRequest::UnlockUser {
             username: "alice".into(),
+        },
+        OperationRequest::ChangeUserPrimaryGroup {
+            username: "alice".into(),
+            groupname: "staff".into(),
+        },
+        OperationRequest::ChangeUserHome {
+            username: "alice".into(),
+            home: "/srv/alice".into(),
+            move_contents: true,
         },
         OperationRequest::Composite {
             requests: vec![

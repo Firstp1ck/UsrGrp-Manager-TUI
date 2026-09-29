@@ -11,12 +11,13 @@ use ratatui::{
 use crate::{
     app::{
         AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES, InputMode,
-        MAX_NAME_CHARS, ModalState, ModifyField, SecretInput, UsersFocus, civil_date_label,
+        MAX_HOME_CHARS, MAX_NAME_CHARS, ModalState, ModifyField, SecretInput, UsersFocus,
+        civil_date_label,
     },
     search::AccountShadowState,
     sys::SystemUser,
     ui::components::{
-        CandidateView, DetailLine, DetailPart, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER,
+        CandidateView, DetailLine, DetailPart, FORM_FOOTER, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER,
         PASSWORD_FORM_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, char_budget,
         details_plain_text, input_cursor, marker, no_match_text, nothing_loaded_lines,
         push_filter_labels, push_sort_label, render_empty_state, render_modal_frame, row_style,
@@ -344,7 +345,16 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
         }
         ModalState::ModifyDetailsMenu { selected } => (
             "Modify details",
-            choices(&["Username", "Full name", "Shell"], *selected),
+            choices(
+                &[
+                    "Username",
+                    "Full name",
+                    "Shell",
+                    "Primary group",
+                    "Home directory",
+                ],
+                *selected,
+            ),
             Some(*selected),
             MENU_FOOTER,
         ),
@@ -401,6 +411,62 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 Some(note_rows + selected % MAX_MODAL_ROWS),
                 LIST_FOOTER,
             )
+        }
+        ModalState::ModifyPrimaryGroup {
+            selected,
+            groups,
+            current,
+            current_gid,
+            ..
+        } => {
+            // A primary GID without a group entry cannot be marked in the
+            // list, so it sits above it as a note.
+            let mut body = Vec::new();
+            if let Some(gid) = current_gid {
+                body.push(Line::from(format!(
+                    "Current primary group: GID {gid} (no group entry)"
+                )));
+            }
+            let focus = (!groups.names.is_empty()).then(|| body.len() + selected % MAX_MODAL_ROWS);
+            body.extend(primary_group_page(app, groups, *selected, *current));
+            let body = with_error_line(body, modal.form_error());
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                "Select primary group",
+                body,
+                focus,
+                LIST_FOOTER,
+            );
+            return;
+        }
+        ModalState::ModifyHome {
+            selected,
+            value,
+            move_contents,
+            current,
+            ..
+        } => {
+            let body = text_lines(format!(
+                "Current: {current}\n{} Path: {value}{}  {}\n{} [{}] move contents",
+                marker(*selected, 0),
+                input_cursor(*selected, 0),
+                char_budget(value, MAX_HOME_CHARS),
+                marker(*selected, 1),
+                if *move_contents { "x" } else { " " },
+            ));
+            let body = with_error_line(body, modal.form_error());
+            render_modal_frame(
+                frame,
+                area,
+                app,
+                "Change home directory",
+                body,
+                Some(1 + *selected),
+                FORM_FOOTER,
+            );
+            return;
         }
         ModalState::ModifyGroupsAdd {
             selected,
@@ -682,6 +748,47 @@ fn group_candidates(app: &AppState, adding: bool, filter: &str) -> CandidateList
         .map_or_else(CandidateList::default, |user| {
             app.user_group_candidate_list(user.uid, adding, filter)
         })
+}
+
+/// The page of the primary-group picker that holds `selected`: one row per
+/// group, the current one marked ` (current)`, and groups the policy refuses
+/// muted with ` (blocked: <reason>)`. `groups` is the list the key handler
+/// indexes.
+fn primary_group_page(
+    app: &AppState,
+    groups: &CandidateList,
+    selected: usize,
+    current: Option<usize>,
+) -> Vec<Line<'static>> {
+    let start = selected / MAX_MODAL_ROWS * MAX_MODAL_ROWS;
+    let muted = Style::default().fg(app.theme.muted);
+    groups
+        .names
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(MAX_MODAL_ROWS)
+        .map(|(index, name)| {
+            let reason = groups.blocked_reason(index);
+            let row = format!(
+                "{} {name}{}{}",
+                marker(selected, index),
+                if Some(index) == current {
+                    " (current)"
+                } else {
+                    ""
+                },
+                reason
+                    .map(|reason| format!(" (blocked: {reason})"))
+                    .unwrap_or_default(),
+            );
+            if reason.is_some() {
+                Line::styled(row, muted)
+            } else {
+                Line::from(row)
+            }
+        })
+        .collect()
 }
 
 fn choices(options: &[&str], selected: usize) -> String {

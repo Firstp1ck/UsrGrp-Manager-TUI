@@ -2,7 +2,7 @@
 
 use super::{
     CommandPreview, CommandRunner, CommandSpec, CoreError, CoreResult, ElevationGrant, Gecos, Gid,
-    GroupName, PasswordRecord, ShellPath, Uid, UserName,
+    GroupName, HomePath, PasswordRecord, ShellPath, Uid, UserName,
 };
 
 /// A stable user identity captured when an operation is planned.
@@ -90,6 +90,19 @@ pub enum OperationRequest {
     UnlockUser {
         username: String,
     },
+    /// Change the account's primary group (`usermod -g`). The group must
+    /// pass the same policy as adding a member to it.
+    ChangeUserPrimaryGroup {
+        username: String,
+        groupname: String,
+    },
+    /// Change the account's home directory (`usermod -d`), moving the old
+    /// home's contents there when `move_contents` is set (`-m`).
+    ChangeUserHome {
+        username: String,
+        home: String,
+        move_contents: bool,
+    },
     /// Ordered requests compiled by the trusted adapter into one exact plan.
     Composite {
         requests: Vec<OperationRequest>,
@@ -127,6 +140,14 @@ pub(crate) enum AccountCondition {
     UserGecos {
         uid: Uid,
         gecos: Option<Gecos>,
+    },
+    UserPrimaryGroup {
+        uid: Uid,
+        gid: Gid,
+    },
+    UserHome {
+        uid: Uid,
+        home: HomePath,
     },
 }
 

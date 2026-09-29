@@ -33,7 +33,9 @@ pub use operations::{
     UserTarget, execute_plan, preflight_plan, require_complete,
 };
 #[allow(unused_imports)]
-pub use validation::{Gecos, GroupName, PasswordRecord, SecretString, ShellPath, UserName};
+pub use validation::{
+    Gecos, GroupName, HomePath, PasswordRecord, SecretString, ShellPath, UserName,
+};
 
 use crate::error::{CoreError, CoreResult, Result};
 use operations::AccountCondition;
@@ -606,6 +608,66 @@ impl SystemAdapter {
                     .with_postcondition(OperationCheck::new("password expiry is observed")),
                 ))
             }
+            OperationRequest::ChangeUserPrimaryGroup {
+                username,
+                groupname,
+            } => {
+                let username = UserName::new(username)?;
+                let groupname = GroupName::new(groupname)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                // Binding the group applies the membership policy to it in
+                // `validate_policy`, the same check adding a member gets.
+                let group = mutable_group_target(&snapshot, &groupname, generation)?;
+                let desired = OperationCheck::account(
+                    "user primary group matches request",
+                    AccountCondition::UserPrimaryGroup {
+                        uid: user.uid,
+                        gid: group.gid,
+                    },
+                );
+                Ok(OperationPlan::new(OperationTarget::User(user))
+                    .bind(OperationTarget::Group(group))
+                    .then(
+                        PlannedStep::new(
+                            "change user primary group",
+                            CommandSpec::new(KnownProgram::UserMod)
+                                .fixed_arg("-g")?
+                                .group_name(&groupname)
+                                .user_name(&username),
+                        )
+                        .skip_if_satisfied(desired.clone())
+                        .with_postcondition(desired),
+                    ))
+            }
+            OperationRequest::ChangeUserHome {
+                username,
+                home,
+                move_contents,
+            } => {
+                let username = UserName::new(username)?;
+                let home = HomePath::new(home)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                let desired = OperationCheck::account(
+                    "user home matches request",
+                    AccountCondition::UserHome {
+                        uid: user.uid,
+                        home: home.clone(),
+                    },
+                );
+                let mut command = CommandSpec::new(KnownProgram::UserMod)
+                    .fixed_arg("-d")?
+                    .home_path(&home);
+                if move_contents {
+                    command = command.fixed_arg("-m")?;
+                }
+                Ok(
+                    OperationPlan::new(OperationTarget::User(user.clone())).then(
+                        PlannedStep::new("change user home", command.user_name(&username))
+                            .skip_if_satisfied(desired.clone())
+                            .with_postcondition(desired),
+                    ),
+                )
+            }
             OperationRequest::LockUser { username } => {
                 let username = UserName::new(username)?;
                 let user = mutable_user_target(&snapshot, &username, generation)?;
@@ -821,7 +883,7 @@ impl SystemAdapter {
         let membership_change = plan.steps.iter().any(|step| {
             matches!(
                 step.id.as_str(),
-                "add user to group" | "remove user from group"
+                "add user to group" | "remove user from group" | "change user primary group"
             )
         });
         for target in &plan.bound_targets {
@@ -1375,6 +1437,22 @@ impl AccountSourceReconciler<'_> {
             AccountCondition::UserGecos { uid, gecos } => {
                 match snapshot.users.iter().find(|user| user.uid == *uid) {
                     Some(user) if user.full_name == *gecos => CheckStatus::Satisfied,
+                    Some(_) => CheckStatus::Unsatisfied,
+                    None => CheckStatus::Unsatisfied,
+                }
+            }
+            AccountCondition::UserPrimaryGroup { uid, gid } => {
+                match snapshot.users.iter().find(|user| user.uid == *uid) {
+                    Some(user) if user.primary_gid == *gid => CheckStatus::Satisfied,
+                    Some(_) => CheckStatus::Unsatisfied,
+                    None => CheckStatus::Unsatisfied,
+                }
+            }
+            AccountCondition::UserHome { uid, home } => {
+                match snapshot.users.iter().find(|user| user.uid == *uid) {
+                    Some(user) if user.home_dir == std::path::Path::new(home.as_str()) => {
+                        CheckStatus::Satisfied
+                    }
                     Some(_) => CheckStatus::Unsatisfied,
                     None => CheckStatus::Unsatisfied,
                 }

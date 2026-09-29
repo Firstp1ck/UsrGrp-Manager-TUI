@@ -600,6 +600,9 @@ pub const TEXT_FOOTER: &str = "type to edit  Enter submit  Esc back";
 pub const PASSWORD_FORM_FOOTER: &str =
     "↑↓ field  Space tick  Ctrl+R reveal  Enter on Submit  Esc back";
 
+/// Footer for forms with a text field and checkboxes but no password.
+pub const FORM_FOOTER: &str = "↑↓ field  Space tick  Enter submit  Esc back";
+
 /// Drawn after the text of the focused input field.
 pub const INPUT_CURSOR: &str = "▏";
 

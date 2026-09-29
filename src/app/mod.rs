@@ -380,6 +380,31 @@ pub enum ModalState {
         /// note above the list and never offered as a choice.
         current_label: Option<String>,
     },
+    /// Single-select list of every group for the selected user's primary
+    /// group, captured when the dialog opens. Blocked entries cannot be
+    /// chosen; Enter on one shows the reason in `error`.
+    ModifyPrimaryGroup {
+        selected: usize,
+        /// `groups_all` names with the policy's reason per blocked entry.
+        groups: CandidateList,
+        /// Index of the user's current primary group in `groups`.
+        current: Option<usize>,
+        /// The current primary GID when no group has it, shown as a note.
+        current_gid: Option<u32>,
+        /// Why the last Enter was refused.
+        error: Option<String>,
+    },
+    /// Opens with the current home filled in. Row 0 is the path, row 1 the
+    /// "move contents" checkbox.
+    ModifyHome {
+        selected: usize,
+        value: String,
+        move_contents: bool,
+        /// The home when the dialog opened, shown above the field.
+        current: String,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
+    },
     /// Opens with the current username or full name filled in.
     ModifyTextInput {
         field: ModifyField,
@@ -518,6 +543,8 @@ impl ModalState {
     pub fn form_error(&self) -> Option<&str> {
         match self {
             Self::ModifyTextInput { error, .. }
+            | Self::ModifyPrimaryGroup { error, .. }
+            | Self::ModifyHome { error, .. }
             | Self::ChangePassword { error, .. }
             | Self::GroupAddInput { error, .. }
             | Self::GroupRenameInput { error, .. }
@@ -535,6 +562,8 @@ impl ModalState {
 pub const MAX_NAME_CHARS: usize = 32;
 /// Longest full name (GECOS) a text field accepts, in characters.
 pub const MAX_GECOS_CHARS: usize = 256;
+/// Longest home directory path the home field accepts, in characters.
+pub const MAX_HOME_CHARS: usize = 4096;
 /// Longest password each password field accepts, in characters.
 pub const MAX_PASSWORD_CHARS: usize = 1024;
 /// Form error shown when a keystroke would pass a field's limit.
@@ -767,6 +796,15 @@ pub enum PendingAction {
     UnlockUser {
         username: String,
     },
+    ChangePrimaryGroup {
+        username: String,
+        groupname: String,
+    },
+    ChangeHome {
+        username: String,
+        home: String,
+        move_contents: bool,
+    },
 }
 
 /// Most names an action description lists before summarizing the rest.
@@ -876,6 +914,21 @@ impl PendingAction {
             }
             Self::LockUser { username } => format!("Lock account {username}"),
             Self::UnlockUser { username } => format!("Unlock account {username}"),
+            Self::ChangePrimaryGroup {
+                username,
+                groupname,
+            } => format!("Change primary group of {username} to {groupname}"),
+            Self::ChangeHome {
+                username,
+                home,
+                move_contents,
+            } => {
+                if *move_contents {
+                    format!("Change home of {username} to {home} (moving contents)")
+                } else {
+                    format!("Change home of {username} to {home}")
+                }
+            }
         }
     }
 }
@@ -1987,6 +2040,14 @@ impl AppState {
             gids.get(name)
                 .and_then(|gid| self.adapter.membership_allowed(name, *gid).err())
         })
+    }
+
+    /// Every group for the primary-group picker, in `groups_all` order,
+    /// each with the reason the membership policy refuses it, if it does.
+    /// Reads no host state.
+    pub fn primary_group_candidate_list(&self) -> CandidateList {
+        CandidateList::from_pool(self.groups_all.iter().map(|group| group.name.as_str()), "")
+            .with_blocks(|name| self.membership_block(name))
     }
 
     /// Why the policy refuses adding a user to group `name`, if it does.

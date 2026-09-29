@@ -11,12 +11,12 @@ use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 use crate::{
     app::{
         ActiveTab, AppState, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
-        GroupsFocus, InputMode, MAX_LENGTH_REACHED, MAX_NAME_CHARS, MAX_PASSWORD_CHARS, ModalState,
-        ModifyField, ModifyMenuItem, PendingAction, RunOptions, SecretInput, UsersFocus,
-        filterconf::FiltersConfig, keymap::KeyAction,
+        GroupsFocus, InputMode, MAX_HOME_CHARS, MAX_LENGTH_REACHED, MAX_NAME_CHARS,
+        MAX_PASSWORD_CHARS, ModalState, ModifyField, ModifyMenuItem, PendingAction, RunOptions,
+        SecretInput, UsersFocus, filterconf::FiltersConfig, keymap::KeyAction,
     },
     error::{CoreError, CoreResult, Result},
-    sys::{GroupName, OperationRequest, PasswordRecord, SecretString, UserName},
+    sys::{GroupName, HomePath, OperationRequest, PasswordRecord, SecretString, UserName},
     ui,
 };
 
@@ -415,6 +415,30 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
         ModalState::ModifyShell {
             selected, shells, ..
         } => handle_shell_modal(app, selected, shells, key),
+        ModalState::ModifyPrimaryGroup {
+            selected,
+            groups,
+            current,
+            error,
+            ..
+        } => handle_primary_group_modal(app, selected, groups, *current, error, key),
+        ModalState::ModifyHome {
+            selected,
+            value,
+            move_contents,
+            current,
+            error,
+        } => handle_home_input(
+            app,
+            HomeForm {
+                selected,
+                value,
+                move_contents,
+                current,
+                error,
+            },
+            key,
+        ),
         ModalState::ModifyGroupsAdd {
             selected,
             selected_multi,
@@ -762,9 +786,13 @@ fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     }
 }
 
+/// Rows of the "Modify details" menu: Username, Full name, Shell, Primary
+/// group, Home directory.
+const DETAILS_MENU_ROWS: usize = 5;
+
 fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     if let Some(step) = list_step(key) {
-        move_index(selected, 3, step);
+        move_index(selected, DETAILS_MENU_ROWS, step);
         return;
     }
     match key.code {
@@ -795,6 +823,40 @@ fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent
                             error: None,
                         },
                     )
+                }
+                3 => {
+                    let primary_gid = user.map(|user| user.primary_gid);
+                    let groups = app.primary_group_candidate_list();
+                    let current = primary_gid.and_then(|gid| {
+                        groups.names.iter().position(|name| {
+                            app.groups_all
+                                .iter()
+                                .any(|group| group.gid == gid && group.name == *name)
+                        })
+                    });
+                    open_modal(
+                        app,
+                        ModalState::ModifyPrimaryGroup {
+                            selected: current.unwrap_or(0),
+                            groups,
+                            current,
+                            current_gid: primary_gid.filter(|_| current.is_none()),
+                            error: None,
+                        },
+                    );
+                }
+                4 => {
+                    let current = user.map(|user| user.home_dir.clone()).unwrap_or_default();
+                    open_modal(
+                        app,
+                        ModalState::ModifyHome {
+                            selected: 0,
+                            value: current.clone(),
+                            move_contents: false,
+                            current,
+                            error: None,
+                        },
+                    );
                 }
                 _ => {
                     let mut shells: Vec<String> =
@@ -904,6 +966,112 @@ fn handle_shell_modal(app: &mut AppState, selected: &mut usize, shells: &[String
                     },
                 );
             }
+        }
+        _ => {}
+    }
+}
+
+/// Up/Down/j/k move; Enter changes the primary group to the highlighted
+/// one. The current group and entries the policy blocks are refused with an
+/// inline message instead.
+fn handle_primary_group_modal(
+    app: &mut AppState,
+    selected: &mut usize,
+    groups: &CandidateList,
+    current: Option<usize>,
+    error: &mut Option<String>,
+    key: KeyEvent,
+) {
+    *error = None;
+    if let Some(step) = list_step(key) {
+        move_index(selected, groups.names.len(), step);
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => back(app),
+        KeyCode::Enter => {
+            let (Some(user), Some(groupname)) = (
+                app.users.get(app.selected_user_index),
+                groups.names.get(*selected),
+            ) else {
+                return;
+            };
+            if current == Some(*selected) {
+                *error = Some(format!("{groupname} is already the primary group."));
+            } else if let Some(reason) = groups.blocked_reason(*selected) {
+                *error = Some(reason.to_owned());
+            } else {
+                let action = PendingAction::ChangePrimaryGroup {
+                    username: user.name.clone(),
+                    groupname: groupname.clone(),
+                };
+                start_form_action(app, action, error);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Rows of the home directory form: the path field and the checkbox.
+const HOME_ROW_PATH: usize = 0;
+const HOME_ROW_MOVE: usize = 1;
+
+/// The fields of the home directory form, borrowed from the modal.
+struct HomeForm<'a> {
+    selected: &'a mut usize,
+    value: &'a mut String,
+    move_contents: &'a mut bool,
+    /// The home when the form opened.
+    current: &'a str,
+    error: &'a mut Option<String>,
+}
+
+/// Up/Down and Tab switch between the path and the checkbox; the path takes
+/// typed characters and Backspace, Space ticks the checkbox, and Enter
+/// submits from either row. Edits validate the path as it is typed.
+fn handle_home_input(app: &mut AppState, form: HomeForm<'_>, key: KeyEvent) {
+    let HomeForm {
+        selected,
+        value,
+        move_contents,
+        current,
+        error,
+    } = form;
+    let live_error = |value: &str| live_name_error(HomePath::new(value));
+    match key.code {
+        KeyCode::Esc => back(app),
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => {
+            *selected = if *selected == HOME_ROW_PATH {
+                HOME_ROW_MOVE
+            } else {
+                HOME_ROW_PATH
+            };
+        }
+        KeyCode::Char(' ') if *selected == HOME_ROW_MOVE => *move_contents = !*move_contents,
+        KeyCode::Backspace if *selected == HOME_ROW_PATH => {
+            value.pop();
+            *error = live_error(value);
+        }
+        KeyCode::Char(character) if is_typed(key, character) && *selected == HOME_ROW_PATH => {
+            if has_room(value.chars().count(), MAX_HOME_CHARS, error) {
+                value.push(character);
+                *error = live_error(value);
+            }
+        }
+        KeyCode::Enter => {
+            let Some(user) = app.users.get(app.selected_user_index) else {
+                return;
+            };
+            if std::path::Path::new(value.as_str()) == std::path::Path::new(current) {
+                *error = Some("This is already the home directory.".to_owned());
+                return;
+            }
+            let action = PendingAction::ChangeHome {
+                username: user.name.clone(),
+                home: value.clone(),
+                move_contents: *move_contents,
+            };
+            start_form_action(app, action, error);
         }
         _ => {}
     }
@@ -2066,6 +2234,22 @@ fn operation_request(app: &mut AppState, action: PendingAction) -> CoreResult<Op
         PendingAction::UnlockUser { username } => {
             vec![OperationRequest::UnlockUser { username }]
         }
+        PendingAction::ChangePrimaryGroup {
+            username,
+            groupname,
+        } => vec![OperationRequest::ChangeUserPrimaryGroup {
+            username,
+            groupname,
+        }],
+        PendingAction::ChangeHome {
+            username,
+            home,
+            move_contents,
+        } => vec![OperationRequest::ChangeUserHome {
+            username,
+            home,
+            move_contents,
+        }],
     };
     Ok(if requests.len() == 1 {
         requests.pop().expect("one request remains")
@@ -2108,6 +2292,8 @@ fn plain_step_label(id: &str) -> Option<&'static str> {
         "expire user password" => "force password change",
         "lock user" => "lock account",
         "unlock user" => "unlock account",
+        "change user primary group" => "change primary group",
+        "change user home" => "change home directory",
         "create user" => "create user",
         "delete user" => "delete user",
         "create group" => "create group",
@@ -7078,6 +7264,311 @@ mod tests {
             app.modal(),
             Some(ModalState::OperationConfirm { .. })
         ));
+    }
+
+    /// Alice (primary GID 1000, `dev`) with extra groups `users` (GID 100,
+    /// system), `staff` (GID 1001), and `wheel` (GID 1010, elevation).
+    fn primary_group_app() -> AppState {
+        let mut snapshot = fixture_snapshot();
+        for (gid, name) in [(100, "users"), (1001, "staff"), (1010, "wheel")] {
+            snapshot.groups.push(AccountGroup {
+                gid: Gid(gid),
+                name: GroupName::new(name).unwrap(),
+                members: vec![],
+            });
+        }
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    /// Highlighted row and names of the open primary-group picker.
+    fn primary_group_picker(app: &AppState) -> (usize, Vec<String>) {
+        match app.modal() {
+            Some(ModalState::ModifyPrimaryGroup {
+                selected, groups, ..
+            }) => (*selected, groups.names.clone()),
+            _ => panic!("expected the primary group picker"),
+        }
+    }
+
+    #[test]
+    fn details_menu_offers_primary_group_and_home_directory() {
+        let mut app = user_app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        let screen = rendered(&app);
+        for entry in [
+            "Username",
+            "Full name",
+            "Shell",
+            "Primary group",
+            "Home directory",
+        ] {
+            assert!(screen.contains(entry), "{entry} missing:\n{screen}");
+        }
+        // Up from the first entry wraps to the last one.
+        press(&mut app, KeyCode::Up);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyDetailsMenu { selected: 4 })
+        ));
+    }
+
+    #[test]
+    fn primary_group_picker_marks_the_current_group_and_mutes_blocked_ones() {
+        use ratatui::style::Color;
+        let muted = Color::Rgb(10, 11, 12);
+        let mut app = primary_group_app();
+        app.theme.muted = muted;
+        open_details_row(&mut app, 3);
+        let (selected, names) = primary_group_picker(&app);
+        assert_eq!(names, ["users", "dev", "staff", "wheel"]);
+        // The picker starts on the current group.
+        assert_eq!(selected, 1);
+        let rows = rendered_rows(&app, 100, 30);
+        let screen = rows.join("\n");
+        assert!(screen.contains("Select primary group"), "{screen}");
+        assert!(screen.contains("▶ dev (current)"), "{screen}");
+        assert!(!screen.contains("staff (current)"), "{screen}");
+        assert!(screen.contains(ui::components::LIST_FOOTER), "{screen}");
+        let buffer = rendered_buffer(&app, 100, 30);
+        for blocked in [
+            "users (blocked: system group, protected)",
+            "wheel (blocked: sudo group, protected)",
+        ] {
+            let (x, y) = find_text(&rows, blocked)
+                .unwrap_or_else(|| panic!("{blocked:?} not shown in\n{screen}"));
+            assert_eq!(buffer[(x, y)].fg, muted, "{blocked}");
+        }
+        let (x, y) = find_text(&rows, "staff").unwrap();
+        assert_ne!(buffer[(x, y)].fg, muted, "allowed group");
+    }
+
+    #[test]
+    fn primary_group_picker_refuses_current_and_blocked_groups_inline() {
+        let mut app = primary_group_app();
+        open_details_row(&mut app, 3);
+        // Enter on the current group changes nothing.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyPrimaryGroup { error: Some(message), .. })
+                if message == "dev is already the primary group."
+        ));
+        assert!(rendered(&app).contains("dev is already the primary group."));
+        // A blocked group shows the policy's reason and prepares nothing.
+        press(&mut app, KeyCode::Up);
+        assert_eq!(primary_group_picker(&app).0, 0);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyPrimaryGroup { error: Some(message), .. })
+                if message == "system group, protected"
+        ));
+        assert!(app.pending_operation.is_none());
+        // Moving clears the message.
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(primary_group_picker(&app).0, 3);
+        assert!(
+            app.modal()
+                .is_some_and(|modal| modal.form_error().is_none())
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyPrimaryGroup { error: Some(message), .. })
+                if message == "sudo group, protected"
+        ));
+        assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
+    fn primary_group_picker_confirms_the_exact_usermod_command() {
+        let mut app = primary_group_app();
+        open_details_row(&mut app, 3);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(primary_group_picker(&app).0, 2);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { action, preview, .. })
+                if action == "Change primary group of alice to staff"
+                    && preview == &["usermod -g staff alice"]
+        ));
+    }
+
+    #[test]
+    fn primary_group_picker_notes_a_gid_without_a_group() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.users[0].primary_gid = Gid(4242);
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        open_details_row(&mut app, 3);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::ModifyPrimaryGroup {
+                selected: 0,
+                current: None,
+                current_gid: Some(4242),
+                ..
+            })
+        ));
+        let screen = rendered(&app);
+        assert!(screen.contains("Current primary group: GID 4242 (no group entry)"));
+        assert!(screen.contains("▶ dev"));
+        assert!(!screen.contains("(current)"));
+    }
+
+    /// Value, checkbox, and inline error of the open home form.
+    fn home_form(app: &AppState) -> (String, bool, Option<String>) {
+        match app.modal() {
+            Some(ModalState::ModifyHome {
+                value,
+                move_contents,
+                error,
+                ..
+            }) => (value.clone(), *move_contents, error.clone()),
+            _ => panic!("expected the home directory form"),
+        }
+    }
+
+    #[test]
+    fn home_form_opens_with_the_current_home_and_an_unticked_checkbox() {
+        let mut app = user_app();
+        open_details_row(&mut app, 4);
+        assert_eq!(home_form(&app), ("/home/alice".to_owned(), false, None));
+        let screen = rendered(&app);
+        assert!(screen.contains("Change home directory"), "{screen}");
+        assert!(screen.contains("Current: /home/alice"), "{screen}");
+        assert!(screen.contains("▶ Path: /home/alice▏  11/4096"), "{screen}");
+        assert!(screen.contains("[ ] move contents"), "{screen}");
+        assert!(screen.contains(ui::components::FORM_FOOTER), "{screen}");
+        // Submitting the unchanged path is refused in the form.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            home_form(&app).2.as_deref(),
+            Some("This is already the home directory.")
+        );
+        assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
+    fn home_form_validates_the_path_as_it_is_typed() {
+        let mut app = user_app();
+        open_details_row(&mut app, 4);
+        for _ in 0.."/home/alice".len() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        assert_eq!(
+            home_form(&app).2.as_deref(),
+            Some("must contain 1 to 4096 bytes")
+        );
+        type_text(&mut app, "srv");
+        assert_eq!(home_form(&app).2.as_deref(), Some("must be absolute"));
+        assert!(rendered(&app).contains("must be absolute"));
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_text(&mut app, "/srv/a:b");
+        assert_eq!(
+            home_form(&app).2.as_deref(),
+            Some("must not contain colons")
+        );
+        // Enter with the bad path keeps the form open under the error.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal(), Some(ModalState::ModifyHome { .. })));
+        assert!(
+            home_form(&app)
+                .2
+                .is_some_and(|error| error.ends_with("[E-VALIDATION]"))
+        );
+        assert!(app.pending_operation.is_none());
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_text(&mut app, "alice");
+        assert_eq!(home_form(&app), ("/srv/alice".to_owned(), false, None));
+    }
+
+    #[test]
+    fn home_form_confirms_with_and_without_moving_contents() {
+        for (tick, action, command) in [
+            (
+                false,
+                "Change home of alice to /srv/alice",
+                "usermod -d /srv/alice alice",
+            ),
+            (
+                true,
+                "Change home of alice to /srv/alice (moving contents)",
+                "usermod -d /srv/alice -m alice",
+            ),
+        ] {
+            let mut app = user_app();
+            open_details_row(&mut app, 4);
+            for _ in 0.."/home/alice".len() {
+                press(&mut app, KeyCode::Backspace);
+            }
+            type_text(&mut app, "/srv/alice");
+            if tick {
+                // Space on the path types a space; on the checkbox it ticks.
+                press(&mut app, KeyCode::Down);
+                press(&mut app, KeyCode::Char(' '));
+                assert_eq!(home_form(&app), ("/srv/alice".to_owned(), true, None));
+                assert!(rendered(&app).contains("▶ [x] move contents"));
+            }
+            press(&mut app, KeyCode::Enter);
+            assert!(
+                matches!(
+                    app.modal(),
+                    Some(ModalState::OperationConfirm { action: title, preview, .. })
+                        if title == action && preview == &[command]
+                ),
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_group_and_home_actions_describe_the_change() {
+        assert_eq!(
+            PendingAction::ChangePrimaryGroup {
+                username: "alice".to_owned(),
+                groupname: "staff".to_owned(),
+            }
+            .describe(),
+            "Change primary group of alice to staff"
+        );
+        for (move_contents, expected) in [
+            (true, "Change home of alice to /srv/alice (moving contents)"),
+            (false, "Change home of alice to /srv/alice"),
+        ] {
+            assert_eq!(
+                PendingAction::ChangeHome {
+                    username: "alice".to_owned(),
+                    home: "/srv/alice".to_owned(),
+                    move_contents,
+                }
+                .describe(),
+                expected
+            );
+        }
+        assert_eq!(
+            step_label("change user primary group"),
+            "change primary group"
+        );
+        assert_eq!(step_label("change user home"), "change home directory");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 const ACCOUNT_NAME_LIMIT: usize = 32;
 const GECOS_LIMIT: usize = 256;
-const SHELL_LIMIT: usize = 4096;
+const PATH_LIMIT: usize = 4096;
 const PASSWORD_LIMIT: usize = 1024;
 
 fn account_name(value: &str, field: &'static str) -> CoreResult<()> {
@@ -132,6 +132,30 @@ impl TryFrom<&str> for GroupName {
     }
 }
 
+/// The absolute-path rules shared by shell and home paths: 1 to 4096 bytes,
+/// absolute, and free of control characters.
+fn absolute_path(value: &str, field: &'static str) -> CoreResult<()> {
+    if value.is_empty() || value.len() > PATH_LIMIT {
+        return Err(CoreError::Validation {
+            field,
+            reason: "must contain 1 to 4096 bytes",
+        });
+    }
+    if !Path::new(value).is_absolute() {
+        return Err(CoreError::Validation {
+            field,
+            reason: "must be absolute",
+        });
+    }
+    if value.chars().any(char::is_control) {
+        return Err(CoreError::Validation {
+            field,
+            reason: "must not contain control characters",
+        });
+    }
+    Ok(())
+}
+
 /// A validated shell path suitable for `usermod -s`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ShellPath(String);
@@ -141,24 +165,7 @@ impl ShellPath {
     /// suitable for a mutation request.
     pub fn new(value: impl AsRef<str>) -> CoreResult<Self> {
         let value = value.as_ref();
-        if value.is_empty() || value.len() > SHELL_LIMIT {
-            return Err(CoreError::Validation {
-                field: "shell path",
-                reason: "must contain 1 to 4096 bytes",
-            });
-        }
-        if !Path::new(value).is_absolute() {
-            return Err(CoreError::Validation {
-                field: "shell path",
-                reason: "must be absolute",
-            });
-        }
-        if value.chars().any(char::is_control) {
-            return Err(CoreError::Validation {
-                field: "shell path",
-                reason: "must not contain control characters",
-            });
-        }
+        absolute_path(value, "shell path")?;
         Ok(Self(value.to_owned()))
     }
 
@@ -201,6 +208,44 @@ impl AsRef<str> for ShellPath {
 }
 
 impl fmt::Display for ShellPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A validated home directory path suitable for `usermod -d`: the shell
+/// path rules, and no colon, which would split the passwd record.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct HomePath(String);
+
+impl HomePath {
+    /// Validate and construct an absolute, bounded, control-free and
+    /// colon-free home directory path.
+    pub fn new(value: impl AsRef<str>) -> CoreResult<Self> {
+        let value = value.as_ref();
+        absolute_path(value, "home directory")?;
+        if value.contains(':') {
+            return Err(CoreError::Validation {
+                field: "home directory",
+                reason: "must not contain colons",
+            });
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// The validated path passed to `usermod -d`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for HomePath {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for HomePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -336,6 +381,32 @@ mod tests {
         ] {
             assert!(UserName::new(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn home_paths_are_absolute_bounded_and_record_safe() {
+        for valid in ["/home/alice", "/srv/alice", "/", "/srv/with space"] {
+            assert!(HomePath::new(valid).is_ok(), "{valid}");
+        }
+        for (invalid, reason) in [
+            ("", "must contain 1 to 4096 bytes"),
+            ("home/alice", "must be absolute"),
+            ("~alice", "must be absolute"),
+            ("/home/al\nice", "must not contain control characters"),
+            ("/home/a:b", "must not contain colons"),
+        ] {
+            assert!(
+                matches!(
+                    HomePath::new(invalid),
+                    Err(CoreError::Validation { field: "home directory", reason: got })
+                        if got == reason
+                ),
+                "{invalid:?}"
+            );
+        }
+        assert!(HomePath::new(format!("/{}", "a".repeat(4096))).is_err());
+        // The shell path keeps the same shared rules.
+        assert!(ShellPath::new("bin/sh").is_err());
     }
 
     #[test]
