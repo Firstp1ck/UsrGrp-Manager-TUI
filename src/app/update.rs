@@ -2281,7 +2281,7 @@ fn save_filters(app: &mut AppState) {
         .iter_mut()
         .find(|paths| paths.name == "filter.conf")
     {
-        paths.loaded = Some(path);
+        paths.state = crate::app::ConfigFileState::Loaded(path);
     }
 }
 
@@ -4597,6 +4597,33 @@ mod tests {
             first.path().join("theme.conf").display()
         );
         assert!(lines.contains(&theme));
+    }
+
+    #[test]
+    fn help_does_not_claim_created_when_config_files_could_not_be_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-directory");
+        std::fs::write(&blocker, "").unwrap();
+        let root = blocker.join("config");
+        let mut app = membership_app();
+        app.config_root_provider = Arc::new(crate::app::FixedConfigRootProvider(root.clone()));
+        app.load_configuration();
+        assert!(!app.diagnostics.config_messages.is_empty());
+        let lines = help_text(&app);
+        assert!(
+            lines.iter().all(|line| !line.contains("(created)")),
+            "unexpected (created) in {lines:?}"
+        );
+        for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+            let expected = format!(
+                "{name}: not loaded, would save to {}",
+                root.join(name).display()
+            );
+            assert!(
+                lines.contains(&expected),
+                "missing {expected:?} in {lines:?}"
+            );
+        }
     }
 
     #[test]

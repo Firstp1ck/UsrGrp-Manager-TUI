@@ -1001,36 +1001,57 @@ impl ConfigRootProvider for SystemConfigRootProvider {
     }
 }
 
-/// Single config root chosen with `--config-dir`. The default search order
-/// is not consulted, so reads and writes both use this directory.
+/// What `load_configuration` did with one configuration file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigFileState {
+    /// The file at this path was read.
+    Loaded(String),
+    /// No file existed, so defaults were written to the save path.
+    Created,
+    /// Reading or creating the file failed; defaults are in use and the
+    /// error is in the recorded configuration messages.
+    Failed,
+}
+
 /// Paths of one configuration file, cached for the help dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigFilePaths {
     /// File name, such as `theme.conf`.
     pub name: String,
-    /// The file that was read, or `None` when none existed and defaults
-    /// were written to `save` instead.
-    pub loaded: Option<String>,
+    /// Whether the file was read, created, or could not be loaded.
+    pub state: ConfigFileState,
     /// Where changes are written: the file in the first config root.
     pub save: String,
 }
 
 impl ConfigFilePaths {
-    /// Resolve `name` against the config roots of `app`.
-    fn resolve(app: &AppState, name: &str) -> Self {
-        Self {
+    /// Load `name` with `load` from the file found in the config roots of
+    /// `app`, or from the save path when none exists (`load` then writes
+    /// defaults there), and record which of those happened.
+    fn load<T>(
+        app: &AppState,
+        name: &str,
+        load: impl FnOnce(&str) -> std::io::Result<T>,
+    ) -> (Self, std::io::Result<T>) {
+        let save = app.configuration_write_path(name);
+        let found = app.config_file_read_path(name);
+        let result = load(found.as_deref().unwrap_or(&save));
+        let state = match (&result, found) {
+            (Err(_), _) => ConfigFileState::Failed,
+            (Ok(_), Some(path)) => ConfigFileState::Loaded(path),
+            (Ok(_), None) => ConfigFileState::Created,
+        };
+        let paths = Self {
             name: name.to_owned(),
-            loaded: app.config_file_read_path(name),
-            save: app.configuration_write_path(name),
-        }
-    }
-
-    /// The path to read: the loaded file, else the save path.
-    fn read_path(&self) -> &str {
-        self.loaded.as_deref().unwrap_or(&self.save)
+            state,
+            save,
+        };
+        (paths, result)
     }
 }
 
+/// Single config root chosen with `--config-dir`. The default search order
+/// is not consulted, so reads and writes both use this directory.
 pub struct FixedConfigRootProvider(pub PathBuf);
 impl ConfigRootProvider for FixedConfigRootProvider {
     fn roots(&self) -> Vec<PathBuf> {
@@ -1571,18 +1592,20 @@ impl AppState {
 
     /// Load durable settings, retaining defaults and surfacing any error in UI state.
     pub fn load_configuration(&mut self) {
-        let theme = ConfigFilePaths::resolve(self, "theme.conf");
-        match Theme::load_or_init(theme.read_path()) {
+        let (theme, result) = ConfigFilePaths::load(self, "theme.conf", Theme::load_or_init);
+        match result {
             Ok(loaded) => self.theme = loaded,
             Err(error) => self.record_config_message("theme", &error),
         }
-        let keys = ConfigFilePaths::resolve(self, "keybinds.conf");
-        match keymap::Keymap::load_or_init(keys.read_path()) {
+        let (keys, result) =
+            ConfigFilePaths::load(self, "keybinds.conf", keymap::Keymap::load_or_init);
+        match result {
             Ok(keymap) => self.keymap = keymap,
             Err(error) => self.record_config_message("keymap", &error),
         }
-        let filters = ConfigFilePaths::resolve(self, "filter.conf");
-        match filterconf::FiltersConfig::load_or_init(filters.read_path()) {
+        let (filters, result) =
+            ConfigFilePaths::load(self, "filter.conf", filterconf::FiltersConfig::load_or_init);
+        match result {
             Ok(loaded) => loaded.apply_to(self),
             Err(error) => self.record_config_message("filter", &error),
         }

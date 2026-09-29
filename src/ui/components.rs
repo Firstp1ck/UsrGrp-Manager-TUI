@@ -14,8 +14,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::keymap::KeyAction;
 use crate::app::{
-    ActiveTab, AppState, CandidateList, GroupsFocus, InputMode, MAX_MEMBERSHIP_CANDIDATES,
-    ModalState, UsersFocus,
+    ActiveTab, AppState, CandidateList, ConfigFileState, GroupsFocus, InputMode,
+    MAX_MEMBERSHIP_CANDIDATES, ModalState, UsersFocus,
 };
 
 /// Build a table title from its name, its search query, and the row count.
@@ -1193,16 +1193,19 @@ fn bound_keys(app: &AppState, actions: &[KeyAction]) -> String {
 
 /// `name: path` for config file `name`, from the paths cached when the
 /// configuration was loaded: the file that was read, plus `saves to` when
-/// changes go elsewhere, or the save path marked `(created)` when no file
-/// existed. Rendering never resolves config roots itself.
+/// changes go elsewhere; the save path marked `(created)` when no file
+/// existed and defaults were written; or `not loaded` with the save path
+/// when reading or creating the file failed. Rendering never resolves
+/// config roots itself.
 fn config_path_line(app: &AppState, name: &str) -> String {
     let Some(paths) = app.config_paths.iter().find(|paths| paths.name == name) else {
         return format!("{name}: not loaded");
     };
-    match &paths.loaded {
-        Some(loaded) if *loaded == paths.save => format!("{name}: {loaded}"),
-        Some(loaded) => format!("{name}: {loaded}  saves to {}", paths.save),
-        None => format!("{name}: {} (created)", paths.save),
+    match &paths.state {
+        ConfigFileState::Loaded(loaded) if *loaded == paths.save => format!("{name}: {loaded}"),
+        ConfigFileState::Loaded(loaded) => format!("{name}: {loaded}  saves to {}", paths.save),
+        ConfigFileState::Created => format!("{name}: {} (created)", paths.save),
+        ConfigFileState::Failed => format!("{name}: not loaded, would save to {}", paths.save),
     }
 }
 
