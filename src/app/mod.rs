@@ -1411,6 +1411,40 @@ impl PreparedOperation {
     }
 }
 
+/// Limits on the membership cache (`AppState::user_group_gids`): how many
+/// users and groups are read and how many supplementary membership edges are
+/// recorded. The cache is built in UID/GID order, so the limits cut the same
+/// entries whatever the display order is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MembershipCacheBounds {
+    pub max_users: usize,
+    pub max_groups: usize,
+    pub max_membership_edges: usize,
+}
+
+impl Default for MembershipCacheBounds {
+    fn default() -> Self {
+        Self {
+            max_users: 10_000,
+            max_groups: 10_000,
+            max_membership_edges: 100_000,
+        }
+    }
+}
+
+/// Row of a selection identity: the exact (id, name) pair first, then the
+/// first row with the id alone (for example after a rename).
+pub(crate) fn identity_position<T>(
+    rows: &[T],
+    id: Option<u32>,
+    name: Option<&str>,
+    key: impl Fn(&T) -> (u32, &str),
+) -> Option<usize> {
+    let id = id?;
+    name.and_then(|name| rows.iter().position(|row| key(row) == (id, name)))
+        .or_else(|| rows.iter().position(|row| key(row).0 == id))
+}
+
 /// Most entries an add/remove membership dialog offers.
 pub const MAX_MEMBERSHIP_CANDIDATES: usize = 1024;
 
@@ -1489,13 +1523,20 @@ pub struct AppState {
     pub selected_group_member_index: usize,
     /// Stable selection source of truth for every pane. Indices are only
     /// normalized render coordinates and never define an action target.
+    /// Users and groups are identified by id and name together, because
+    /// account files may give several entries the same UID or GID.
     pub selected_user_uid: Option<u32>,
+    pub selected_user_name: Option<String>,
     pub selected_group_gid: Option<u32>,
+    pub selected_group_name: Option<String>,
     pub selected_user_group_gid: Option<u32>,
+    pub selected_user_group_name: Option<String>,
     pub selected_group_member_name: Option<String>,
     /// Bounded, precomputed primary and supplementary memberships by user.
     /// Renderers consume this cache instead of scanning every group's members.
     pub user_group_gids: HashMap<String, HashSet<u32>>,
+    /// Bounds applied while building `user_group_gids`.
+    pub membership_cache_bounds: MembershipCacheBounds,
     /// Last known terminal size (columns, rows). Page keys derive the page
     /// size from the layout at this size.
     pub terminal_size: (u16, u16),
@@ -1606,10 +1647,14 @@ impl AppState {
             selected_user_group_index: 0,
             selected_group_member_index: 0,
             selected_user_uid: None,
+            selected_user_name: None,
             selected_group_gid: None,
+            selected_group_name: None,
             selected_user_group_gid: None,
+            selected_user_group_name: None,
             selected_group_member_name: None,
             user_group_gids: HashMap::new(),
+            membership_cache_bounds: MembershipCacheBounds::default(),
             terminal_size: (80, 24),
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
@@ -1770,9 +1815,13 @@ impl AppState {
 
     pub fn sort_and_filter(&mut self) {
         self.capture_selection_identities();
-        // UID/GID order first, then a stable sort by the chosen key, so
-        // rows with equal keys stay in UID/GID order.
+        // Build the membership cache from the canonical UID/GID order so its
+        // bounds never depend on the display order.
         self.users_all.sort_by_key(|user| user.uid);
+        self.groups_all.sort_by_key(|group| group.gid);
+        self.rebuild_user_group_cache(self.membership_cache_bounds);
+        // Stable sorts by the chosen key, so rows with equal keys stay in
+        // UID/GID order.
         match self.users_sort {
             UsersSort::Uid => {}
             UsersSort::Name => self
@@ -1781,7 +1830,6 @@ impl AppState {
             UsersSort::Shell => self.users_all.sort_by(|a, b| a.shell.cmp(&b.shell)),
             UsersSort::Home => self.users_all.sort_by(|a, b| a.home_dir.cmp(&b.home_dir)),
         }
-        self.groups_all.sort_by_key(|group| group.gid);
         match self.groups_sort {
             GroupsSort::Gid => {}
             GroupsSort::Name => self
@@ -1791,7 +1839,6 @@ impl AppState {
                 .groups_all
                 .sort_by_key(|group| std::cmp::Reverse(group.members.len())),
         }
-        self.rebuild_user_group_cache();
         crate::search::apply_filters_and_search(self);
         self.normalize_selections();
     }
@@ -1839,20 +1886,18 @@ impl AppState {
         .collect()
     }
 
-    fn rebuild_user_group_cache(&mut self) {
-        const MAX_USERS: usize = 10_000;
-        const MAX_GROUPS: usize = 10_000;
-        const MAX_MEMBERSHIP_EDGES: usize = 100_000;
-
+    /// Rebuild `user_group_gids` from `users_all` and `groups_all` in their
+    /// current order; the bounds apply in that order.
+    fn rebuild_user_group_cache(&mut self, bounds: MembershipCacheBounds) {
         self.user_group_gids.clear();
-        for user in self.users_all.iter().take(MAX_USERS) {
+        for user in self.users_all.iter().take(bounds.max_users) {
             self.user_group_gids
                 .entry(user.name.clone())
                 .or_default()
                 .insert(user.primary_gid);
         }
-        let mut remaining_edges = MAX_MEMBERSHIP_EDGES;
-        for group in self.groups_all.iter().take(MAX_GROUPS) {
+        let mut remaining_edges = bounds.max_membership_edges;
+        for group in self.groups_all.iter().take(bounds.max_groups) {
             for member in group.members.iter().take(remaining_edges) {
                 self.user_group_gids
                     .entry(member.clone())
@@ -1870,22 +1915,31 @@ impl AppState {
     /// refresh/filter/transition. When an identity disappears, use its
     /// bounded nearest visible index and capture that documented neighbor.
     pub fn normalize_selections(&mut self) {
-        self.selected_user_index = self
-            .selected_user_uid
-            .and_then(|uid| self.users.iter().position(|user| user.uid == uid))
-            .unwrap_or(self.selected_user_index)
-            .min(self.users.len().saturating_sub(1));
-        self.selected_group_index = self
-            .selected_group_gid
-            .and_then(|gid| self.groups.iter().position(|group| group.gid == gid))
-            .unwrap_or(self.selected_group_index)
-            .min(self.groups.len().saturating_sub(1));
+        self.selected_user_index = identity_position(
+            &self.users,
+            self.selected_user_uid,
+            self.selected_user_name.as_deref(),
+            |user| (user.uid, user.name.as_str()),
+        )
+        .unwrap_or(self.selected_user_index)
+        .min(self.users.len().saturating_sub(1));
+        self.selected_group_index = identity_position(
+            &self.groups,
+            self.selected_group_gid,
+            self.selected_group_name.as_deref(),
+            |group| (group.gid, group.name.as_str()),
+        )
+        .unwrap_or(self.selected_group_index)
+        .min(self.groups.len().saturating_sub(1));
         let user_groups = self.selected_user_groups();
-        self.selected_user_group_index = self
-            .selected_user_group_gid
-            .and_then(|gid| user_groups.iter().position(|group| group.gid == gid))
-            .unwrap_or(self.selected_user_group_index)
-            .min(user_groups.len().saturating_sub(1));
+        self.selected_user_group_index = identity_position(
+            &user_groups,
+            self.selected_user_group_gid,
+            self.selected_user_group_name.as_deref(),
+            |group| (group.gid, group.name.as_str()),
+        )
+        .unwrap_or(self.selected_user_group_index)
+        .min(user_groups.len().saturating_sub(1));
         let members = self
             .groups
             .get(self.selected_group_index)
@@ -1901,18 +1955,18 @@ impl AppState {
 
     /// Persist stable identities after a user-driven index movement.
     pub fn capture_selection_identities(&mut self) {
-        self.selected_user_uid = self
-            .users
-            .get(self.selected_user_index)
-            .map(|user| user.uid);
-        self.selected_group_gid = self
-            .groups
-            .get(self.selected_group_index)
-            .map(|group| group.gid);
-        self.selected_user_group_gid = self
+        let user = self.users.get(self.selected_user_index);
+        self.selected_user_uid = user.map(|user| user.uid);
+        self.selected_user_name = user.map(|user| user.name.clone());
+        let group = self.groups.get(self.selected_group_index);
+        self.selected_group_gid = group.map(|group| group.gid);
+        self.selected_group_name = group.map(|group| group.name.clone());
+        let user_group = self
             .selected_user_groups()
             .get(self.selected_user_group_index)
-            .map(|group| group.gid);
+            .map(|group| (group.gid, group.name.clone()));
+        self.selected_user_group_gid = user_group.as_ref().map(|(gid, _)| *gid);
+        self.selected_user_group_name = user_group.map(|(_, name)| name);
         self.selected_group_member_name = self
             .groups
             .get(self.selected_group_index)

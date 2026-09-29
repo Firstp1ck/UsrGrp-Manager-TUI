@@ -7901,4 +7901,124 @@ mod tests {
             "{help:?}"
         );
     }
+
+    /// carol and alice share UID 1000; staff and admins share GID 50.
+    fn duplicate_id_app() -> AppState {
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(50),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let group = |gid: u32, name: &str| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: vec![],
+        };
+        let snapshot = AccountSnapshot {
+            users: vec![user(1000, "carol"), user(1000, "alice"), user(1001, "bob")],
+            groups: vec![group(50, "staff"), group(50, "admins"), group(10, "wheel")],
+            shells: vec![],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        isolated_app(adapter, snapshot)
+    }
+
+    #[test]
+    fn sorting_keeps_the_selected_user_when_another_user_shares_its_uid() {
+        let mut app = duplicate_id_app();
+        assert_eq!(user_names(&app), ["carol", "alice", "bob"]);
+        select_user(&mut app, "carol");
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(user_names(&app), ["alice", "bob", "carol"]);
+        assert_eq!(app.users[app.selected_user_index].name, "carol");
+        assert_eq!(app.selected_user_uid, Some(1000));
+        assert_eq!(app.selected_user_name.as_deref(), Some("carol"));
+    }
+
+    #[test]
+    fn sorting_keeps_the_selected_group_when_another_group_shares_its_gid() {
+        let mut app = duplicate_id_app();
+        select_user(&mut app, "carol");
+        let user_group_names = |app: &AppState| -> Vec<String> {
+            app.selected_user_groups()
+                .iter()
+                .map(|group| group.name.clone())
+                .collect()
+        };
+        assert_eq!(user_group_names(&app), ["staff", "admins"]);
+        app.selected_user_group_index = 0;
+        app.active_tab = ActiveTab::Groups;
+        assert_eq!(group_names(&app), ["wheel", "staff", "admins"]);
+        app.selected_group_index = 1;
+        app.capture_selection_identities();
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(group_names(&app), ["admins", "staff", "wheel"]);
+        assert_eq!(app.groups[app.selected_group_index].name, "staff");
+        assert_eq!(app.selected_group_gid, Some(50));
+        assert_eq!(app.selected_group_name.as_deref(), Some("staff"));
+        // The Users-tab membership pane follows the groups order and keeps
+        // its own selection too.
+        assert_eq!(user_group_names(&app), ["admins", "staff"]);
+        assert_eq!(
+            app.selected_user_groups()[app.selected_user_group_index].name,
+            "staff"
+        );
+    }
+
+    #[test]
+    fn selection_falls_back_to_the_id_when_the_name_is_gone() {
+        let mut app = duplicate_id_app();
+        select_user(&mut app, "alice");
+        app.users_all
+            .iter_mut()
+            .find(|user| user.name == "alice")
+            .unwrap()
+            .name = "alicia".to_owned();
+        app.sort_and_filter();
+        // The exact pair is gone; the first row with UID 1000 is chosen.
+        assert_eq!(app.users[app.selected_user_index].name, "carol");
+    }
+
+    #[test]
+    fn membership_cache_is_built_in_id_order_whatever_the_sort() {
+        let mut app = sortable_app();
+        app.membership_cache_bounds = crate::app::MembershipCacheBounds {
+            max_users: 2,
+            max_groups: 2,
+            max_membership_edges: 2,
+        };
+        app.sort_and_filter();
+        let canonical = app.user_group_gids.clone();
+        // UIDs 1000 and 1001 get their primary group; Wheel (GID 10) uses up
+        // both membership edges.
+        let expected: std::collections::HashMap<String, std::collections::HashSet<u32>> = [
+            ("carol".to_owned(), [100].into()),
+            ("alice".to_owned(), [100, 10].into()),
+            ("Bob".to_owned(), [10].into()),
+        ]
+        .into();
+        assert_eq!(canonical, expected);
+
+        for tab in [ActiveTab::Users, ActiveTab::Groups] {
+            app.active_tab = tab;
+            for _ in 0..4 {
+                press(&mut app, KeyCode::Char('s'));
+                assert_eq!(
+                    app.user_group_gids, canonical,
+                    "users sort {:?}, groups sort {:?}",
+                    app.users_sort, app.groups_sort
+                );
+            }
+        }
+    }
 }

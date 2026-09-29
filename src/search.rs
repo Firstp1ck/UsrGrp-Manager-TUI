@@ -11,7 +11,7 @@ const MAX_SHADOW_BYTES: usize = 1024 * 1024;
 const MAX_SHADOW_RECORD_BYTES: usize = 8192;
 const MAX_QUERY_BYTES: usize = 256;
 
-use crate::app::{AppState, GroupsFilter, UsersFilter};
+use crate::app::{AppState, GroupsFilter, UsersFilter, identity_position};
 
 /// Password status cached during an explicit refresh.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -178,11 +178,14 @@ pub fn parse_shadow_records(contents: &str, today: i64) -> HashMap<String, Shado
 /// Purely filter `AppState` from cached state.  It performs no filesystem or
 /// process I/O and preserves selected identities where still visible.
 pub fn apply_filters_and_search(app: &mut AppState) {
-    let selected_user = app.users.get(app.selected_user_index).map(|user| user.uid);
+    let selected_user = app
+        .users
+        .get(app.selected_user_index)
+        .map(|user| (user.uid, user.name.clone()));
     let selected_group = app
         .groups
         .get(app.selected_group_index)
-        .map(|group| group.gid);
+        .map(|group| (group.gid, group.name.clone()));
     // Queries persist across input modes; each tab applies its own query.
     app.users_query = truncate_query_bytes(&app.users_query);
     app.groups_query = truncate_query_bytes(&app.groups_query);
@@ -260,10 +263,12 @@ pub fn apply_filters_and_search(app: &mut AppState) {
     }
     app.users = users;
     app.shadow_filter_skipped = shadow_filter_skipped;
-    app.selected_user_index = selected_user
-        .and_then(|uid| app.users.iter().position(|user| user.uid == uid))
-        .unwrap_or(0)
-        .min(app.users.len().saturating_sub(1));
+    let (uid, name) = selected_user.unzip();
+    app.selected_user_index = identity_position(&app.users, uid, name.as_deref(), |user| {
+        (user.uid, user.name.as_str())
+    })
+    .unwrap_or(0)
+    .min(app.users.len().saturating_sub(1));
 
     let mut groups = app.groups_all.clone();
     if let Some(filter) = app.groups_filter {
@@ -285,10 +290,12 @@ pub fn apply_filters_and_search(app: &mut AppState) {
         });
     }
     app.groups = groups;
-    app.selected_group_index = selected_group
-        .and_then(|gid| app.groups.iter().position(|group| group.gid == gid))
-        .unwrap_or(0)
-        .min(app.groups.len().saturating_sub(1));
+    let (gid, name) = selected_group.unzip();
+    app.selected_group_index = identity_position(&app.groups, gid, name.as_deref(), |group| {
+        (group.gid, group.name.as_str())
+    })
+    .unwrap_or(0)
+    .min(app.groups.len().saturating_sub(1));
     app.selected_group_member_index = app.selected_group_member_index.min(
         app.groups
             .get(app.selected_group_index)
