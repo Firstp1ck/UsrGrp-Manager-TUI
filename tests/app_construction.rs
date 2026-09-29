@@ -76,7 +76,12 @@ fn config_dir_option_is_the_only_config_root() {
         app.configuration_write_path("theme.conf"),
         dir.path().join("theme.conf").to_string_lossy()
     );
-    for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+    for name in [
+        "theme.conf",
+        "keybinds.conf",
+        "filter.conf",
+        "settings.conf",
+    ] {
         assert!(dir.path().join(name).is_file(), "{name} not created");
     }
     assert!(app.diagnostics.config_messages.is_empty());

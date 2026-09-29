@@ -27,7 +27,7 @@ Command-line options:
 
 | Option | Effect |
 | --- | --- |
-| `--config-dir <PATH>` | Read and write `theme.conf`, `filter.conf`, and `keybinds.conf` in `PATH` only. The default search order below is skipped. Missing files are created there. |
+| `--config-dir <PATH>` | Read and write `theme.conf`, `filter.conf`, `keybinds.conf`, and `settings.conf` in `PATH` only. The default search order below is skipped. Missing files are created there. |
 | `--dry-run` | Every change still shows its exact command preview, but confirming it only reports "Dry run: nothing was executed." No sudo prompt appears and no command runs. |
 | `--log-file <PATH>` | Append one line per prepared operation, executed operation (with its result summary), and error to `PATH`. The file is created with mode 0600 and symlinks are refused. Lines contain the same redacted previews the UI shows, never passwords. |
 | `-h`, `--help` | Print usage and exit. |
@@ -41,11 +41,13 @@ Path options also accept `--option=PATH`. An unknown or repeated option prints u
 
 ## Configuration
 
-The application reads `theme.conf`, `filter.conf`, and `keybinds.conf` from `$XDG_CONFIG_HOME/UsrGrpManager`, then `~/.config/UsrGrpManager`, then `~/UsrGrpManager`.
+The application reads `theme.conf`, `filter.conf`, `keybinds.conf`, and `settings.conf` from `$XDG_CONFIG_HOME/UsrGrpManager`, then `~/.config/UsrGrpManager`, then `~/UsrGrpManager`.
 
 Settings are parsed as bounded `key = value` files with source-line diagnostics for malformed, duplicate, unknown, or invalid entries. They are written in one canonical format through a restricted same-directory temporary file, synced, and atomically renamed. Existing symlinks are rejected. Configuration load/save errors are bounded and shown in the UI status state rather than ignored.
 
 Example files are in [`example-configs/`](example-configs/). Theme colors support `#RRGGBB`, `index:N`, `named:color`, and `reset`.
+
+`settings.conf` has one key, `wrap_selection = true|false` (default `true`). With `false`, moving past the first or last row of the users, groups, or member tables stops there instead of wrapping to the other end; page keys stop there too.
 
 `theme.conf` keys:
 

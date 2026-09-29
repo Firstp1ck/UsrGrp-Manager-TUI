@@ -6,6 +6,7 @@
 pub mod filterconf;
 pub mod keymap;
 pub mod logger;
+pub mod settings;
 pub mod update;
 
 pub use logger::Logger;
@@ -1743,6 +1744,8 @@ pub struct AppState {
     pub shadow_filter_skipped: Option<usize>,
     pub actions_context: Option<ActionsContext>,
     pub show_keybinds: bool,
+    /// General settings from settings.conf.
+    pub settings: settings::Settings,
     /// Adapter-owned authority for refresh, preparation, elevation and execution.
     pub adapter: Arc<sys::SystemAdapter>,
     pub account_snapshot: Option<AccountSnapshot>,
@@ -1759,9 +1762,9 @@ pub struct AppState {
     /// One-shot status bar message (`copied "alice"`), shown as the first
     /// segment and cleared by the next key press.
     pub notice: Option<String>,
-    /// Where theme.conf, keybinds.conf and filter.conf were loaded from and
-    /// where they save, as resolved by the last `load_configuration`. Empty
-    /// until then. The help dialog shows these, so rendering never resolves
+    /// Where theme.conf, keybinds.conf, filter.conf and settings.conf were
+    /// loaded from and where they save, as resolved by the last
+    /// `load_configuration`. Empty until then. The help dialog shows these, so rendering never resolves
     /// config roots.
     pub config_paths: Vec<ConfigFilePaths>,
     pub current_username: String,
@@ -1854,6 +1857,7 @@ impl AppState {
             shadow_filter_skipped: None,
             actions_context: None,
             show_keybinds: true,
+            settings: settings::Settings::default(),
             adapter,
             account_snapshot: Some(snapshot),
             diagnostics: CachedDiagnostics::default(),
@@ -1956,7 +1960,13 @@ impl AppState {
             Ok(loaded) => loaded.apply_to(self),
             Err(error) => self.record_config_message("filter", &error),
         }
-        self.config_paths = vec![theme, keys, filters];
+        let (general, result) =
+            ConfigFilePaths::load(self, "settings.conf", settings::Settings::load_or_init);
+        match result {
+            Ok(loaded) => self.settings = loaded,
+            Err(error) => self.record_config_message("settings", &error),
+        }
+        self.config_paths = vec![theme, keys, filters, general];
         self.sort_and_filter();
     }
 

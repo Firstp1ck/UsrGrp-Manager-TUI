@@ -63,8 +63,9 @@ Keyboard-driven TUI for local Linux users and groups.
 Usage: usrgrp-manager [OPTIONS]
 
 Options:
-      --config-dir <PATH>  Read and write theme.conf, filter.conf and keybinds.conf
-                           in PATH only, instead of the default search order
+      --config-dir <PATH>  Read and write theme.conf, filter.conf, keybinds.conf
+                           and settings.conf in PATH only, instead of the
+                           default search order
       --dry-run            Show the command preview for every change, never run it
       --log-file <PATH>    Append prepared operations, results and errors to PATH
                            (created with mode 0600; passwords are never written)

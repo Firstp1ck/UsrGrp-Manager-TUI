@@ -4,9 +4,33 @@ pub mod groups;
 pub mod layout;
 pub mod users;
 
-use ratatui::{Frame, layout::Rect, text::Line, widgets::Paragraph};
+use ratatui::{
+    Frame,
+    layout::{Alignment, Rect},
+    text::Line,
+    widgets::Paragraph,
+};
 
 use crate::app::{ActiveTab, AppState, ModalState};
+
+/// Text of the frame drawn while the accounts load at startup.
+pub const LOADING_TEXT: &str = "Loading accounts...";
+
+/// Startup frame drawn before the first account load. No theme is loaded
+/// yet, so it uses the terminal's default colours.
+pub fn render_loading(frame: &mut Frame) {
+    let area = frame.area();
+    let row = Rect::new(
+        area.x,
+        area.y + area.height / 2,
+        area.width,
+        1.min(area.height),
+    );
+    frame.render_widget(
+        Paragraph::new(LOADING_TEXT).alignment(Alignment::Center),
+        row,
+    );
+}
 
 /// Render a frame from cached state only.  No renderer takes `&mut AppState` or
 /// performs filesystem/process I/O.
@@ -41,11 +65,15 @@ pub fn render(frame: &mut Frame, app: &AppState) {
     match app.active_tab {
         ActiveTab::Users => {
             users::render_users_table(frame, layout.table, app);
-            users::render_user_groups(frame, layout.members, app);
+            if let Some(area) = layout.members {
+                users::render_user_groups(frame, area, app);
+            }
         }
         ActiveTab::Groups => {
             groups::render_groups_table(frame, layout.table, app);
-            groups::render_group_members(frame, layout.members, app);
+            if let Some(area) = layout.members {
+                groups::render_group_members(frame, area, app);
+            }
         }
     }
     components::render_details(frame, layout.details, app, details_title, wrapped);

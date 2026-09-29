@@ -35,6 +35,10 @@ pub fn run_app_with(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     options: RunOptions,
 ) -> Result<()> {
+    // Loading reads every account, home directory and authorized_keys file,
+    // which can take seconds on network homes: show that something is
+    // happening first.
+    terminal.draw(ui::render_loading)?;
     let mut app = AppState::load_system_with(options);
     app.show_config_problems();
     let size = terminal.size()?;
@@ -52,7 +56,8 @@ pub fn run_app_with(
 /// Dispatch one terminal event. Returns `true` when the app should quit.
 ///
 /// Only key presses reach the key handlers. A resize records the new size
-/// for page keys and the preview review; the next loop iteration redraws at
+/// for page keys and the preview review, and moves focus back to the list
+/// when the member pane no longer fits; the next loop iteration redraws at
 /// that size. Mouse capture
 /// is not enabled, so mouse, focus, and paste events are ignored.
 ///
@@ -78,6 +83,10 @@ fn handle_event(app: &mut AppState, event: Event) -> bool {
         }
         Event::Resize(width, height) => {
             app.terminal_size = (width, height);
+            if !ui::layout::members_visible(width) {
+                app.users_focus = UsersFocus::UsersList;
+                app.groups_focus = GroupsFocus::GroupsList;
+            }
             review_preview_after_resize(app);
             false
         }
@@ -142,6 +151,9 @@ fn handle_normal_key(app: &mut AppState, key: KeyEvent) {
                 ActiveTab::Groups => ActiveTab::Users,
             };
         }
+        // The stacked layout of narrow terminals has no member pane to focus.
+        Some(KeyAction::ToggleUsersFocus | KeyAction::ToggleGroupsFocus)
+            if !ui::layout::members_visible(app.terminal_size.0) => {}
         Some(KeyAction::ToggleUsersFocus | KeyAction::ToggleGroupsFocus) => match app.active_tab {
             ActiveTab::Users => {
                 app.users_focus = match app.users_focus {
@@ -343,7 +355,7 @@ fn page_size(app: &AppState) -> usize {
         (ActiveTab::Users, UsersFocus::UsersList, _)
         | (ActiveTab::Groups, _, GroupsFocus::GroupsList) => layout.table,
         (ActiveTab::Users, UsersFocus::MemberOf, _)
-        | (ActiveTab::Groups, _, GroupsFocus::Members) => layout.members,
+        | (ActiveTab::Groups, _, GroupsFocus::Members) => layout.members.unwrap_or(layout.table),
     };
     ui::layout::table_rows(pane)
 }
@@ -366,7 +378,11 @@ fn move_selection(app: &mut AppState, delta: isize) {
         (ActiveTab::Groups, _, GroupsFocus::Members) => &mut app.selected_group_member_index,
     };
     let before = *selected;
-    move_index(selected, len, delta);
+    if app.settings.wrap_selection {
+        move_index(selected, len, delta);
+    } else {
+        clamp_index(selected, len, delta);
+    }
     let parent_changed = *selected != before;
     // A new parent row has its own child list; start its cursor at the top
     // so the child pane never points past the end of the new list.
@@ -381,12 +397,28 @@ fn move_selection(app: &mut AppState, delta: isize) {
     app.capture_selection_identities();
 }
 
+/// Move `index` by `delta` within `len` rows, wrapping past either end.
+/// Dialog lists always wrap; the main tables do unless settings.conf turns
+/// `wrap_selection` off (see [`clamp_index`]).
 fn move_index(index: &mut usize, len: usize, delta: isize) {
     if len == 0 {
         *index = 0;
         return;
     }
     let next = (*index as isize + delta).rem_euclid(len as isize);
+    *index = next as usize;
+}
+
+/// Move `index` by `delta` within `len` rows, stopping at the first and last
+/// row: the main tables with `wrap_selection = false` in settings.conf.
+fn clamp_index(index: &mut usize, len: usize, delta: isize) {
+    if len == 0 {
+        *index = 0;
+        return;
+    }
+    let next = (*index as isize)
+        .saturating_add(delta)
+        .clamp(0, len as isize - 1);
     *index = next as usize;
 }
 
@@ -5714,7 +5746,12 @@ mod tests {
     fn help_shows_loaded_and_save_paths_until_a_filter_save_moves_filter_conf() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
-        for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+        for name in [
+            "theme.conf",
+            "keybinds.conf",
+            "filter.conf",
+            "settings.conf",
+        ] {
             std::fs::write(second.path().join(name), "").unwrap();
         }
         let mut app = membership_app();
@@ -5724,7 +5761,12 @@ mod tests {
         ));
         app.load_configuration();
         let lines = help_text(&app);
-        for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+        for name in [
+            "theme.conf",
+            "keybinds.conf",
+            "filter.conf",
+            "settings.conf",
+        ] {
             let expected = format!(
                 "{name}: {}  saves to {}",
                 second.path().join(name).display(),
@@ -5768,7 +5810,12 @@ mod tests {
             lines.iter().all(|line| !line.contains("(created)")),
             "unexpected (created) in {lines:?}"
         );
-        for name in ["theme.conf", "keybinds.conf", "filter.conf"] {
+        for name in [
+            "theme.conf",
+            "keybinds.conf",
+            "filter.conf",
+            "settings.conf",
+        ] {
             let expected = format!(
                 "{name}: not loaded, would save to {}",
                 root.join(name).display()
@@ -6721,11 +6768,142 @@ mod tests {
             app.show_keybinds,
             ui::details_rows(&app, details_width),
         )
-        .members;
+        .members
+        .unwrap();
         press(&mut app, KeyCode::PageDown);
         assert_eq!(
             app.selected_user_group_index,
             ui::layout::table_rows(members)
+        );
+    }
+
+    #[test]
+    fn loading_frame_is_centered_and_drawn_without_app_state() {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(40, 9)).unwrap();
+        terminal.draw(ui::render_loading).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (0..40)
+                .map(|x| buffer.cell((x, y)).unwrap().symbol().to_owned())
+                .collect()
+        };
+        assert_eq!(row(4).trim(), ui::LOADING_TEXT);
+        // Centered: the blank columns either side differ by at most one.
+        let left = row(4).find('L').unwrap();
+        let right = 40 - left - ui::LOADING_TEXT.len();
+        assert!(left.abs_diff(right) <= 1, "left {left}, right {right}");
+        for y in (0..9).filter(|y| *y != 4) {
+            assert!(row(y).trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn narrow_terminal_stacks_the_details_under_the_table_without_members() {
+        let mut app = paging_app();
+        handle_event(&mut app, Event::Resize(60, 24));
+        let screen = rendered_text(&app, 60, 24);
+        assert!(screen.contains("u000"));
+        assert!(screen.contains("Details"));
+        assert!(!screen.contains("Member of"));
+        // Wide enough again, the member pane is back.
+        assert!(rendered_text(&app, 100, 24).contains("Member of"));
+
+        // Paging moves by the stacked table: 60% of the 20 body rows is 12,
+        // less border and column header.
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_user_index, 9);
+    }
+
+    #[test]
+    fn pane_focus_skips_the_hidden_member_pane() {
+        let mut app = paging_app();
+        handle_event(&mut app, Event::Resize(60, 24));
+        for code in [KeyCode::Right, KeyCode::Char('l'), KeyCode::BackTab] {
+            press(&mut app, code);
+            assert_eq!(app.users_focus, UsersFocus::UsersList);
+        }
+        app.active_tab = ActiveTab::Groups;
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.groups_focus, GroupsFocus::GroupsList);
+
+        handle_event(&mut app, Event::Resize(100, 24));
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.groups_focus, GroupsFocus::Members);
+        app.active_tab = ActiveTab::Users;
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.users_focus, UsersFocus::MemberOf);
+
+        // Shrinking hands focus back to the lists on both tabs.
+        handle_event(&mut app, Event::Resize(69, 24));
+        assert_eq!(app.users_focus, UsersFocus::UsersList);
+        assert_eq!(app.groups_focus, GroupsFocus::GroupsList);
+    }
+
+    #[test]
+    fn wrap_selection_off_stops_at_both_ends() {
+        let mut app = paging_app();
+        app.terminal_size = (100, 40);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_user_index, 49);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_user_index, 0);
+
+        app.settings.wrap_selection = false;
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_user_index, 0);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.selected_user_index, 0);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_user_index, 33);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_user_index, 49);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_user_index, 49);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.selected_user_index, 16);
+    }
+
+    #[test]
+    fn settings_conf_is_loaded_and_listed_in_help() {
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("settings.conf"),
+            "wrap_selection = false\n",
+        )
+        .unwrap();
+        let mut app = paging_app();
+        app.config_root_provider = Arc::new(crate::app::FixedConfigRootProvider(
+            config.path().to_path_buf(),
+        ));
+        app.load_configuration();
+        assert!(!app.settings.wrap_selection);
+        let expected = format!(
+            "settings.conf: {}",
+            config.path().join("settings.conf").display()
+        );
+        let lines = help_text(&app);
+        assert!(
+            lines.contains(&expected),
+            "missing {expected:?} in {lines:?}"
+        );
+
+        std::fs::write(
+            config.path().join("settings.conf"),
+            "wrap_selection = sometimes\n",
+        )
+        .unwrap();
+        let mut app = paging_app();
+        app.config_root_provider = Arc::new(crate::app::FixedConfigRootProvider(
+            config.path().to_path_buf(),
+        ));
+        app.load_configuration();
+        assert!(app.settings.wrap_selection);
+        assert!(
+            app.diagnostics
+                .config_messages
+                .iter()
+                .any(|message| message.starts_with("settings configuration: ")
+                    && message.contains("line 1"))
         );
     }
 

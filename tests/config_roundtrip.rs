@@ -3,6 +3,7 @@ use std::fs;
 use usrgrp_manager::{
     app::{
         GroupsFilter, Theme, ThemePreset, UsersFilter, filterconf::FiltersConfig, keymap::Keymap,
+        settings::Settings,
     },
     config::atomic_write,
 };
@@ -48,6 +49,22 @@ fn canonical_configs_round_trip_and_keep_all_values() {
         FiltersConfig::from_file(filters_path.to_str().unwrap()).unwrap(),
         filters
     );
+
+    let settings_path = directory.path().join("settings.conf");
+    for settings in [
+        Settings {
+            wrap_selection: false,
+        },
+        Settings::default(),
+    ] {
+        settings
+            .write_file(settings_path.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            Settings::from_file(settings_path.to_str().unwrap()).unwrap(),
+            settings
+        );
+    }
 
     let keymap = Keymap::default();
     keymap.write_file(keymap_path.to_str().unwrap()).unwrap();

@@ -1337,6 +1337,7 @@ pub fn help_lines(app: &AppState) -> Vec<Line<'static>> {
             config_path_line(app, "theme.conf"),
             config_path_line(app, "keybinds.conf"),
             config_path_line(app, "filter.conf"),
+            config_path_line(app, "settings.conf"),
             "--config-dir <PATH> reads and writes these files in PATH only".to_owned(),
             "--dry-run shows every command preview and never runs it".to_owned(),
             "--log-file <PATH> appends operations and results to PATH".to_owned(),
