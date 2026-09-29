@@ -378,11 +378,7 @@ fn move_selection(app: &mut AppState, delta: isize) {
         (ActiveTab::Groups, _, GroupsFocus::Members) => &mut app.selected_group_member_index,
     };
     let before = *selected;
-    if app.settings.wrap_selection {
-        move_index(selected, len, delta);
-    } else {
-        clamp_index(selected, len, delta);
-    }
+    step_index(selected, len, delta, app.settings.wrap_selection);
     let parent_changed = *selected != before;
     // A new parent row has its own child list; start its cursor at the top
     // so the child pane never points past the end of the new list.
@@ -397,28 +393,22 @@ fn move_selection(app: &mut AppState, delta: isize) {
     app.capture_selection_identities();
 }
 
-/// Move `index` by `delta` within `len` rows, wrapping past either end.
-/// Dialog lists always wrap; the main tables do unless settings.conf turns
-/// `wrap_selection` off (see [`clamp_index`]).
-fn move_index(index: &mut usize, len: usize, delta: isize) {
+/// Move `index` by `delta` within `len` rows. With `wrap` it wraps past
+/// either end; without it, it stops at the first and last row. Every table,
+/// member pane, and dialog list passes `app.settings.wrap_selection` here.
+/// An empty list resets `index` to 0; a single-row list never moves.
+fn step_index(index: &mut usize, len: usize, delta: isize, wrap: bool) {
     if len == 0 {
         *index = 0;
         return;
     }
-    let next = (*index as isize + delta).rem_euclid(len as isize);
-    *index = next as usize;
-}
-
-/// Move `index` by `delta` within `len` rows, stopping at the first and last
-/// row: the main tables with `wrap_selection = false` in settings.conf.
-fn clamp_index(index: &mut usize, len: usize, delta: isize) {
-    if len == 0 {
-        *index = 0;
-        return;
-    }
-    let next = (*index as isize)
-        .saturating_add(delta)
-        .clamp(0, len as isize - 1);
+    let next = if wrap {
+        (*index as isize + delta).rem_euclid(len as isize)
+    } else {
+        (*index as isize)
+            .saturating_add(delta)
+            .clamp(0, len as isize - 1)
+    };
     *index = next as usize;
 }
 
@@ -445,6 +435,9 @@ enum Answer {
 
 /// Left/Right, h/l, and Tab move between Yes and No; `y` and `n` choose
 /// directly; Enter confirms the highlighted choice.
+///
+/// These keys always toggle, whatever `wrap_selection` says: with only two
+/// choices, clamping would leave one of the two directions doing nothing.
 fn yes_no_answer(selected: &mut usize, key: KeyEvent) -> Answer {
     match key.code {
         KeyCode::Left
@@ -745,7 +738,7 @@ fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
         ActiveTab::Groups => 2,
     };
     if let Some(step) = list_step(key) {
-        move_index(selected, maximum + 1, step);
+        step_index(selected, maximum + 1, step, app.settings.wrap_selection);
         return;
     }
     match key.code {
@@ -806,7 +799,7 @@ fn toggle_user_filter(app: &mut AppState, selected: usize) -> bool {
 
 fn handle_user_actions(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     if let Some(step) = list_step(key) {
-        move_index(selected, 2, step);
+        step_index(selected, 2, step, app.settings.wrap_selection);
         return;
     }
     match key.code {
@@ -833,7 +826,12 @@ fn handle_bulk_actions(
 ) {
     *error = None;
     if let Some(step) = list_step(key) {
-        move_index(selected, BULK_ACTIONS.len(), step);
+        step_index(
+            selected,
+            BULK_ACTIONS.len(),
+            step,
+            app.settings.wrap_selection,
+        );
         return;
     }
     match key.code {
@@ -909,7 +907,12 @@ fn handle_bulk_group_picker(
 ) {
     *error = None;
     if let Some(step) = list_step(key) {
-        move_index(selected, groups.names.len(), step);
+        step_index(
+            selected,
+            groups.names.len(),
+            step,
+            app.settings.wrap_selection,
+        );
         return;
     }
     match key.code {
@@ -1005,7 +1008,7 @@ fn start_bulk_action(
 fn handle_modify_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     let items = app.modify_menu_items();
     if let Some(step) = list_step(key) {
-        move_index(selected, items.len(), step);
+        step_index(selected, items.len(), step, app.settings.wrap_selection);
         return;
     }
     match key.code {
@@ -1064,7 +1067,12 @@ const DETAILS_MENU_ROWS: usize = 5;
 
 fn handle_modify_details(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     if let Some(step) = list_step(key) {
-        move_index(selected, DETAILS_MENU_ROWS, step);
+        step_index(
+            selected,
+            DETAILS_MENU_ROWS,
+            step,
+            app.settings.wrap_selection,
+        );
         return;
     }
     match key.code {
@@ -1220,7 +1228,7 @@ fn handle_text_input(
 
 fn handle_shell_modal(app: &mut AppState, selected: &mut usize, shells: &[String], key: KeyEvent) {
     if let Some(step) = list_step(key) {
-        move_index(selected, shells.len(), step);
+        step_index(selected, shells.len(), step, app.settings.wrap_selection);
         return;
     }
     match key.code {
@@ -1256,7 +1264,12 @@ fn handle_primary_group_modal(
 ) {
     *error = None;
     if let Some(step) = list_step(key) {
-        move_index(selected, groups.names.len(), step);
+        step_index(
+            selected,
+            groups.names.len(),
+            step,
+            app.settings.wrap_selection,
+        );
         return;
     }
     match key.code {
@@ -1361,7 +1374,7 @@ fn handle_user_membership(
     };
     let list = app.user_group_candidate_list(user.uid, adding, dialog.filter);
     let groups = &list.names;
-    match candidate_key(&mut dialog, &list, key) {
+    match candidate_key(&mut dialog, &list, app.settings.wrap_selection, key) {
         CandidateKey::Handled => {}
         CandidateKey::Close => back(app),
         CandidateKey::Apply => {
@@ -1431,6 +1444,7 @@ enum CandidateKey {
 fn candidate_key(
     dialog: &mut CandidateDialog<'_>,
     candidates: &CandidateList,
+    wrap: bool,
     key: KeyEvent,
 ) -> CandidateKey {
     let list = candidates.names.as_slice();
@@ -1438,8 +1452,8 @@ fn candidate_key(
     if *dialog.filtering {
         match key.code {
             KeyCode::Enter | KeyCode::Esc => *dialog.filtering = false,
-            KeyCode::Up => move_index(dialog.selected, list.len(), -1),
-            KeyCode::Down => move_index(dialog.selected, list.len(), 1),
+            KeyCode::Up => step_index(dialog.selected, list.len(), -1, wrap),
+            KeyCode::Down => step_index(dialog.selected, list.len(), 1, wrap),
             KeyCode::Backspace => {
                 if dialog.filter.pop().is_some() {
                     *dialog.selected = 0;
@@ -1457,7 +1471,7 @@ fn candidate_key(
         return CandidateKey::Handled;
     }
     if let Some(step) = list_step(key) {
-        move_index(dialog.selected, list.len(), step);
+        step_index(dialog.selected, list.len(), step, wrap);
         return CandidateKey::Handled;
     }
     let blocked = candidates.blocked_reason(*dialog.selected);
@@ -1499,7 +1513,12 @@ const PASSWORD_MENU_ROWS: usize = 3;
 
 fn handle_password_menu(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
     if let Some(step) = list_step(key) {
-        move_index(selected, PASSWORD_MENU_ROWS, step);
+        step_index(
+            selected,
+            PASSWORD_MENU_ROWS,
+            step,
+            app.settings.wrap_selection,
+        );
         return;
     }
     match key.code {
@@ -1772,7 +1791,7 @@ fn handle_group_actions(
     key: KeyEvent,
 ) {
     if let Some(step) = list_step(key) {
-        move_index(selected, 2, step);
+        step_index(selected, 2, step, app.settings.wrap_selection);
         return;
     }
     match key.code {
@@ -1815,7 +1834,12 @@ fn handle_member_actions(
 ) {
     *error = None;
     if let Some(step) = list_step(key) {
-        move_index(selected, MEMBER_ACTIONS.len(), step);
+        step_index(
+            selected,
+            MEMBER_ACTIONS.len(),
+            step,
+            app.settings.wrap_selection,
+        );
         return;
     }
     match key.code {
@@ -1957,7 +1981,7 @@ fn handle_group_modify(
     key: KeyEvent,
 ) {
     if let Some(step) = list_step(key) {
-        move_index(selected, 3, step);
+        step_index(selected, 3, step, app.settings.wrap_selection);
         return;
     }
     match key.code {
@@ -2066,7 +2090,7 @@ fn handle_group_members(
     };
     let list = app.group_member_candidate_list(group.gid, adding, dialog.filter);
     let users = &list.names;
-    match candidate_key(&mut dialog, &list, key) {
+    match candidate_key(&mut dialog, &list, app.settings.wrap_selection, key) {
         CandidateKey::Handled => {}
         CandidateKey::Close => back(app),
         CandidateKey::Apply => {
@@ -2992,10 +3016,32 @@ mod tests {
     #[test]
     fn index_movement_wraps_without_stateful_rendering() {
         let mut index = 0;
-        move_index(&mut index, 3, -1);
+        step_index(&mut index, 3, -1, true);
         assert_eq!(index, 2);
-        move_index(&mut index, 3, 2);
+        step_index(&mut index, 3, 2, true);
         assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn index_movement_clamps_without_wrap() {
+        let mut index = 0;
+        step_index(&mut index, 3, -1, false);
+        assert_eq!(index, 0);
+        step_index(&mut index, 3, 5, false);
+        assert_eq!(index, 2);
+        step_index(&mut index, 3, 1, false);
+        assert_eq!(index, 2);
+    }
+
+    #[test]
+    fn index_movement_on_empty_and_single_row_lists_stays_at_zero() {
+        for wrap in [true, false] {
+            for (len, delta) in [(0, -1), (0, 1), (1, -1), (1, 1)] {
+                let mut index = 0;
+                step_index(&mut index, len, delta, wrap);
+                assert_eq!(index, 0, "len {len}, delta {delta}, wrap {wrap}");
+            }
+        }
     }
 
     #[test]
@@ -6837,6 +6883,223 @@ mod tests {
         handle_event(&mut app, Event::Resize(69, 24));
         assert_eq!(app.users_focus, UsersFocus::UsersList);
         assert_eq!(app.groups_focus, GroupsFocus::GroupsList);
+    }
+
+    /// Alice (UID 1000) selected, in three groups; `dev` holds three
+    /// members, the `alice` group none; three shells. Default settings.
+    fn three_groups_app() -> AppState {
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(uid),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let group = |gid: u32, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(*member).unwrap())
+                .collect(),
+        };
+        let snapshot = AccountSnapshot {
+            users: vec![user(1000, "alice"), user(1001, "bob"), user(1002, "carol")],
+            groups: vec![
+                group(1000, "alice", &[]),
+                group(1001, "bob", &[]),
+                group(1002, "carol", &[]),
+                group(2000, "dev", &["alice", "bob", "carol"]),
+                group(2001, "ops", &["alice"]),
+            ],
+            shells: vec![
+                ShellPath::new("/bin/bash").unwrap(),
+                ShellPath::new("/bin/sh").unwrap(),
+                ShellPath::new("/bin/zsh").unwrap(),
+            ],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        let alice = app.users.iter().position(|user| user.name == "alice");
+        app.selected_user_index = alice.unwrap();
+        app
+    }
+
+    /// [`three_groups_app`] with `wrap_selection` off.
+    fn no_wrap_app() -> AppState {
+        let mut app = three_groups_app();
+        app.settings.wrap_selection = false;
+        app
+    }
+
+    /// The highlighted row of the open list dialog.
+    fn dialog_row(app: &AppState) -> usize {
+        match app.modal() {
+            Some(
+                ModalState::Actions { selected }
+                | ModalState::ModifyShell { selected, .. }
+                | ModalState::ModifyGroupsAdd { selected, .. },
+            ) => *selected,
+            _ => panic!("no list dialog is open"),
+        }
+    }
+
+    fn press_times(app: &mut AppState, code: KeyCode, times: usize) {
+        for _ in 0..times {
+            press(app, code);
+        }
+    }
+
+    fn open_add_groups(app: &mut AppState, filter: &str) {
+        open_modal(
+            app,
+            ModalState::ModifyGroupsAdd {
+                selected: 0,
+                offset: 0,
+                selected_multi: vec![],
+                filter: filter.to_owned(),
+                filtering: false,
+                error: None,
+            },
+        );
+    }
+
+    #[test]
+    fn wrap_selection_off_clamps_the_actions_menu() {
+        let mut app = no_wrap_app();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(dialog_row(&app), 0);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(dialog_row(&app), 0);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(dialog_row(&app), 0);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(dialog_row(&app), 1);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(dialog_row(&app), 1);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(dialog_row(&app), 1);
+    }
+
+    #[test]
+    fn wrap_selection_off_clamps_the_shell_picker_and_add_groups_list() {
+        let mut app = no_wrap_app();
+        open_details_row(&mut app, 2);
+        let shells = match app.modal() {
+            Some(ModalState::ModifyShell { shells, .. }) => shells.len(),
+            _ => panic!("shell picker is not open"),
+        };
+        assert_eq!(shells, 3);
+        press_times(&mut app, KeyCode::Up, shells + 1);
+        assert_eq!(dialog_row(&app), 0);
+        press_times(&mut app, KeyCode::Down, shells + 1);
+        assert_eq!(dialog_row(&app), shells - 1);
+
+        app.close_modals();
+        let candidates = app.user_group_candidate_list(1000, true, "").names.len();
+        assert_eq!(candidates, 2);
+        open_add_groups(&mut app, "");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(dialog_row(&app), 0);
+        press_times(&mut app, KeyCode::Down, candidates + 1);
+        assert_eq!(dialog_row(&app), candidates - 1);
+        // Up/Down also move while the filter is being typed.
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(dialog_row(&app), candidates - 1);
+        press_times(&mut app, KeyCode::Up, candidates + 1);
+        assert_eq!(dialog_row(&app), 0);
+    }
+
+    #[test]
+    fn wrap_selection_off_clamps_the_groups_table_and_member_panes() {
+        let mut app = no_wrap_app();
+        handle_event(&mut app, Event::Resize(100, 24));
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.users_focus, UsersFocus::MemberOf);
+        let groups = app.selected_user_groups().len();
+        assert!(groups >= 2);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_user_group_index, 0);
+        press_times(&mut app, KeyCode::Down, groups + 1);
+        assert_eq!(app.selected_user_group_index, groups - 1);
+
+        app.active_tab = ActiveTab::Groups;
+        let rows = app.groups.len();
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_group_index, 0);
+        press_times(&mut app, KeyCode::Down, rows + 1);
+        assert_eq!(app.selected_group_index, rows - 1);
+
+        let dev = app.groups.iter().position(|group| group.name == "dev");
+        app.selected_group_index = dev.unwrap();
+        app.selected_group_member_index = 0;
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.groups_focus, GroupsFocus::Members);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_group_member_index, 0);
+        press_times(&mut app, KeyCode::Down, 4);
+        assert_eq!(app.selected_group_member_index, 2);
+    }
+
+    #[test]
+    fn wrap_selection_off_leaves_empty_and_single_row_lists_alone() {
+        let mut app = no_wrap_app();
+        handle_event(&mut app, Event::Resize(100, 24));
+
+        // An empty member pane.
+        app.active_tab = ActiveTab::Groups;
+        let empty = app.groups.iter().position(|group| group.name == "alice");
+        app.selected_group_index = empty.unwrap();
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.groups_focus, GroupsFocus::Members);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_group_member_index, 0);
+
+        // A single-member pane.
+        let single = app.groups.iter().position(|group| group.name == "ops");
+        app.selected_group_index = single.unwrap();
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_group_member_index, 0);
+
+        // An empty and a single-row candidate list.
+        app.active_tab = ActiveTab::Users;
+        for (filter, rows) in [("zzz", 0), ("carol", 1)] {
+            let list = app.user_group_candidate_list(1000, true, filter);
+            assert_eq!(list.names.len(), rows);
+            open_add_groups(&mut app, filter);
+            press(&mut app, KeyCode::Up);
+            press(&mut app, KeyCode::Down);
+            assert_eq!(dialog_row(&app), 0);
+            app.close_modals();
+        }
+    }
+
+    #[test]
+    fn dialog_lists_wrap_by_default() {
+        let mut app = three_groups_app();
+        assert!(app.settings.wrap_selection);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(dialog_row(&app), 1);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(dialog_row(&app), 0);
+
+        app.close_modals();
+        open_add_groups(&mut app, "");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(dialog_row(&app), 1);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(dialog_row(&app), 0);
     }
 
     #[test]

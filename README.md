@@ -73,7 +73,7 @@ Example files are in [`example-configs/`](example-configs/).
 
 `filter.conf` stores the filter state and is rewritten whenever a filter changes. The search and the sort order are not saved.
 
-`settings.conf` has one key, `wrap_selection = true|false` (default `true`). With `false`, moving past the first or last row of the users, groups, or member tables stops there instead of wrapping to the other end; page keys stop there too.
+`settings.conf` has one key, `wrap_selection = true|false` (default `true`). It covers the users, groups, and member tables and the lists inside dialogs: menus, pickers, and the group and member checklists. With `false`, moving past the first or last row stops there instead of wrapping to the other end; page keys stop there too. Yes/no dialogs are not affected: Left/Right, h/l, and Tab always switch between the two buttons.
 
 `theme.conf` keys. Colors take `#RRGGBB`, `index:N`, `named:color`, or `reset`.
 
