@@ -6066,11 +6066,28 @@ mod tests {
         assert!(header.contains(" (keybinds hidden)"), "{header}");
         assert!(header.contains("? help"), "{header}");
         assert!(!header.contains("narrow terminal"));
-        assert!(rendered_rows(&app, 89, 24)[1].contains("(keybinds hidden)"));
+        let header = &rendered_rows(&app, 89, 24)[1];
+        assert!(
+            header.contains(" (keybinds hidden: narrow terminal)"),
+            "{header}"
+        );
+        assert!(header.contains("? help"), "{header}");
         assert!(!rendered_rows(&app, 90, 24)[1].contains("keybinds hidden"));
         assert!(!rendered_rows(&app, 120, 40)[1].contains("keybinds hidden"));
         app.show_keybinds = false;
         assert!(!rendered_rows(&app, 80, 24)[1].contains("keybinds hidden"));
+    }
+
+    #[test]
+    fn header_keeps_help_and_the_notice_at_fifty_columns() {
+        let mut app = single_account_app();
+        app.show_keybinds = true;
+        let header = &rendered_rows(&app, 50, 24)[1];
+        assert!(header.contains(" (keybinds hidden)"), "{header}");
+        assert!(header.contains("? help"), "{header}");
+        assert!(header.contains("usrgrp-manager"), "{header}");
+        assert!(header.contains('…'), "{header}");
+        assert!(!header.contains("narrow terminal"), "{header}");
     }
 
     #[test]

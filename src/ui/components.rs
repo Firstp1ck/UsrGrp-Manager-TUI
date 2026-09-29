@@ -327,7 +327,11 @@ pub fn header_hints(app: &AppState) -> Vec<String> {
 }
 
 /// Added to the header when the keybindings panel is on but the terminal is
-/// too narrow to show it.
+/// too narrow to show it, when it fits after the title and the help hint.
+pub const KEYBINDS_HIDDEN_NOTICE_FULL: &str = " (keybinds hidden: narrow terminal)";
+
+/// Shorter form of [`KEYBINDS_HIDDEN_NOTICE_FULL`] used when the full one does
+/// not fit. The header always keeps room for it.
 pub const KEYBINDS_HIDDEN_NOTICE: &str = " (keybinds hidden)";
 
 /// Columns between the title and the first key hint, and between hints.
@@ -347,16 +351,14 @@ pub fn header_line(app: &AppState, width: usize) -> String {
 ///
 /// Segments are placed by priority: the title, the help hint, the notice
 /// (only when the panel is on but `terminal_width` is too narrow for it),
-/// then the other hints. A segment that does not fit is left out whole and
-/// nothing after it is added. Only the title is ever shortened: the user
-/// name is cut with `…` so the title takes about half of `width`, or more
-/// when the help hint and the notice still fit next to it.
+/// then the other hints. Room for the help hint and the compact notice is
+/// kept before the title is sized, so only the title is ever shortened:
+/// the user name is cut with `…` first, then the whole title. The notice
+/// uses the full wording when it fits after the title and the help hint,
+/// and the compact one otherwise. Other hints that do not fit are left out
+/// whole and nothing after them is added.
 fn header_parts(app: &AppState, width: usize, terminal_width: u16) -> (String, String) {
-    let notice = if app.show_keybinds && !super::layout::keybinds_fit(terminal_width) {
-        KEYBINDS_HIDDEN_NOTICE
-    } else {
-        ""
-    };
+    let notice_shown = app.show_keybinds && !super::layout::keybinds_fit(terminal_width);
     // `header_hints` lists the help hint first when help has a key.
     let help = key_label(app, KeyAction::OpenHelp).map(|key| format!("{key} help"));
     let hints = header_hints(app)
@@ -365,8 +367,12 @@ fn header_parts(app: &AppState, width: usize, terminal_width: u16) -> (String, S
     let reserved = help
         .as_deref()
         .map_or(0, |help| HINT_GAP.len() + text_width(help))
-        + text_width(notice);
-    let title = header_title(app, (width / 2).max(width.saturating_sub(reserved)));
+        + if notice_shown {
+            text_width(KEYBINDS_HIDDEN_NOTICE)
+        } else {
+            0
+        };
+    let title = header_title(app, width.saturating_sub(reserved));
 
     let mut used = text_width(&title);
     let mut shown: Vec<String> = Vec::new();
@@ -379,9 +385,14 @@ fn header_parts(app: &AppState, width: usize, terminal_width: u16) -> (String, S
         }
     }
     let mut left = title;
-    if !notice.is_empty() && used + text_width(notice) <= width {
-        used += text_width(notice);
-        left.push_str(notice);
+    if notice_shown {
+        let notice = [KEYBINDS_HIDDEN_NOTICE_FULL, KEYBINDS_HIDDEN_NOTICE]
+            .into_iter()
+            .find(|notice| used + text_width(notice) <= width);
+        if let Some(notice) = notice {
+            used += text_width(notice);
+            left.push_str(notice);
+        }
     }
     for hint in hints {
         let extra = HINT_GAP.len() + text_width(&hint);
