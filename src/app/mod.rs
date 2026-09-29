@@ -1413,8 +1413,8 @@ impl PreparedOperation {
 
 /// Limits on the membership cache (`AppState::user_group_gids`): how many
 /// users and groups are read and how many supplementary membership edges are
-/// recorded. The cache is built in UID/GID order, so the limits cut the same
-/// entries whatever the display order is.
+/// recorded. The cache is built in (UID, name) and (GID, name) order, so the
+/// limits cut the same entries whatever the display order or sort history is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MembershipCacheBounds {
     pub max_users: usize,
@@ -1826,13 +1826,16 @@ impl AppState {
 
     pub fn sort_and_filter(&mut self) {
         self.capture_selection_identities();
-        // Build the membership cache from the canonical UID/GID order so its
-        // bounds never depend on the display order.
-        self.users_all.sort_by_key(|user| user.uid);
-        self.groups_all.sort_by_key(|group| group.gid);
+        // Build the membership cache from the canonical (UID, name) and
+        // (GID, name) order so its bounds depend neither on the display order
+        // nor on the order a previous sort left rows sharing an ID in.
+        self.users_all
+            .sort_by(|a, b| a.uid.cmp(&b.uid).then_with(|| a.name.cmp(&b.name)));
+        self.groups_all
+            .sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.name.cmp(&b.name)));
         self.rebuild_user_group_cache(self.membership_cache_bounds);
         // Stable sorts by the chosen key, so rows with equal keys stay in
-        // UID/GID order.
+        // canonical order.
         match self.users_sort {
             UsersSort::Uid => {}
             UsersSort::Name => self

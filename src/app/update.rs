@@ -7966,7 +7966,8 @@ mod tests {
         );
     }
 
-    /// carol and alice share UID 1000; staff and admins share GID 50.
+    /// carol and alice share UID 1000; staff and admins share GID 50. Rows
+    /// sharing an ID are ordered by name in the default (ID) order.
     fn duplicate_id_app() -> AppState {
         let user = |uid: u32, name: &str| AccountUser {
             uid: Uid(uid),
@@ -7998,7 +7999,7 @@ mod tests {
     #[test]
     fn sorting_keeps_the_selected_user_when_another_user_shares_its_uid() {
         let mut app = duplicate_id_app();
-        assert_eq!(user_names(&app), ["carol", "alice", "bob"]);
+        assert_eq!(user_names(&app), ["alice", "carol", "bob"]);
         select_user(&mut app, "carol");
 
         press(&mut app, KeyCode::Char('s'));
@@ -8018,11 +8019,11 @@ mod tests {
                 .map(|group| group.name.clone())
                 .collect()
         };
-        assert_eq!(user_group_names(&app), ["staff", "admins"]);
-        app.selected_user_group_index = 0;
+        assert_eq!(user_group_names(&app), ["admins", "staff"]);
+        app.selected_user_group_index = 1;
         app.active_tab = ActiveTab::Groups;
-        assert_eq!(group_names(&app), ["wheel", "staff", "admins"]);
-        app.selected_group_index = 1;
+        assert_eq!(group_names(&app), ["wheel", "admins", "staff"]);
+        app.selected_group_index = 2;
         app.capture_selection_identities();
 
         press(&mut app, KeyCode::Char('s'));
@@ -8047,7 +8048,7 @@ mod tests {
             .iter_mut()
             .find(|user| user.name == "alice")
             .unwrap()
-            .name = "alicia".to_owned();
+            .name = "zoe".to_owned();
         app.sort_and_filter();
         // The exact pair is gone; the first row with UID 1000 is chosen.
         assert_eq!(app.users[app.selected_user_index].name, "carol");
@@ -8084,5 +8085,129 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// App with the given users and groups and small membership-cache bounds.
+    fn bounded_cache_app(
+        users: Vec<AccountUser>,
+        groups: Vec<AccountGroup>,
+        bounds: crate::app::MembershipCacheBounds,
+    ) -> AppState {
+        let snapshot = AccountSnapshot {
+            users,
+            groups,
+            shells: vec![],
+            diagnostics: vec![],
+        };
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(NoRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(1000))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.membership_cache_bounds = bounds;
+        app.sort_and_filter();
+        app
+    }
+
+    /// Cycle the sort of both tabs through every mode and back, rebuilding
+    /// the cache at each step, and run `check` after each one.
+    fn cycle_every_sort(app: &mut AppState, check: impl Fn(&AppState)) {
+        check(app);
+        for (tab, modes) in [(ActiveTab::Users, 4), (ActiveTab::Groups, 3)] {
+            app.active_tab = tab;
+            for _ in 0..modes {
+                press(app, KeyCode::Char('s'));
+                check(app);
+                app.sort_and_filter();
+                check(app);
+            }
+        }
+        assert_eq!(app.users_sort, crate::app::UsersSort::Uid);
+        assert_eq!(app.groups_sort, crate::app::GroupsSort::Gid);
+    }
+
+    #[test]
+    fn membership_cache_ignores_sort_history_for_users_sharing_a_uid() {
+        let user = |uid: u32, name: &str, gid: u32, home: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(gid),
+            full_name: None,
+            home_dir: home.into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        // dave fills the first slot; carol and alice share the UID of the
+        // last slot, so only one of them fits. carol comes first in the
+        // snapshot and in home order, alice first by name.
+        let mut app = bounded_cache_app(
+            vec![
+                user(1000, "dave", 100, "/home/dave"),
+                user(1001, "carol", 200, "/home/carol"),
+                user(1001, "alice", 300, "/srv/alice"),
+            ],
+            vec![],
+            crate::app::MembershipCacheBounds {
+                max_users: 2,
+                max_groups: 10,
+                max_membership_edges: 10,
+            },
+        );
+        let alice = app.user_group_gids.get("alice").cloned();
+        let carol = app.user_group_gids.get("carol").cloned();
+        assert_eq!(alice, Some([300].into()));
+        assert_eq!(carol, None);
+        cycle_every_sort(&mut app, |app| {
+            let step = (app.users_sort, app.groups_sort);
+            assert_eq!(app.user_group_gids.get("alice"), alice.as_ref(), "{step:?}");
+            assert_eq!(app.user_group_gids.get("carol"), carol.as_ref(), "{step:?}");
+        });
+    }
+
+    #[test]
+    fn membership_cache_ignores_sort_history_for_groups_sharing_a_gid() {
+        let user = |uid: u32, name: &str| AccountUser {
+            uid: Uid(uid),
+            name: UserName::new(name).unwrap(),
+            primary_gid: Gid(100),
+            full_name: None,
+            home_dir: format!("/home/{name}").into(),
+            shell: ShellPath::new("/bin/sh").unwrap(),
+        };
+        let group = |gid: u32, name: &str, members: &[&str]| AccountGroup {
+            gid: Gid(gid),
+            name: GroupName::new(name).unwrap(),
+            members: members
+                .iter()
+                .map(|member| UserName::new(member).unwrap())
+                .collect(),
+        };
+        // wheel fills the first slot; staff and admins share the GID of the
+        // last slot, so only one of them fits. staff comes first in the
+        // snapshot and by member count, admins first by name.
+        let mut app = bounded_cache_app(
+            vec![user(1000, "erin"), user(1001, "frank")],
+            vec![
+                group(10, "wheel", &[]),
+                group(50, "staff", &["erin", "frank"]),
+                group(50, "admins", &["frank"]),
+            ],
+            crate::app::MembershipCacheBounds {
+                max_users: 10,
+                max_groups: 2,
+                max_membership_edges: 10,
+            },
+        );
+        let erin = app.user_group_gids.get("erin").cloned();
+        let frank = app.user_group_gids.get("frank").cloned();
+        // admins (GID 50, first by name) takes the last slot; staff is cut,
+        // so erin keeps only her primary group.
+        assert_eq!(erin, Some([100].into()));
+        assert_eq!(frank, Some([100, 50].into()));
+        cycle_every_sort(&mut app, |app| {
+            let step = (app.users_sort, app.groups_sort);
+            assert_eq!(app.user_group_gids.get("erin"), erin.as_ref(), "{step:?}");
+            assert_eq!(app.user_group_gids.get("frank"), frank.as_ref(), "{step:?}");
+        });
     }
 }
