@@ -61,15 +61,23 @@ pub fn run_app_with(
 /// that size. Mouse capture
 /// is not enabled, so mouse, focus, and paste events are ignored.
 ///
-/// Ctrl+C quits from every mode whatever keybinds.conf says, because raw
-/// mode turns off the terminal's own interrupt. A prepared operation has
-/// not run at that point, so it is dropped.
+/// Ctrl+C works in every mode whatever keybinds.conf says, because raw
+/// mode turns off the terminal's own interrupt. With nothing prepared it
+/// quits at once. While an operation is prepared (its preview or the sudo
+/// prompt is open) the first Ctrl+C asks whether to quit and drop it; a
+/// second Ctrl+C, or Yes, quits without running it.
 fn handle_event(app: &mut AppState, event: Event) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             // A notice such as `copied "alice"` lasts until the next key.
             app.notice = None;
             if is_interrupt(key) {
+                if app.pending_operation.is_some()
+                    && !matches!(app.modal(), Some(ModalState::QuitConfirm { .. }))
+                {
+                    open_modal(app, ModalState::QuitConfirm { selected: 1 });
+                    return false;
+                }
                 app.clear_pending_operation();
                 return true;
             }
@@ -79,7 +87,7 @@ fn handle_event(app: &mut AppState, event: Event) -> bool {
                 return true;
             }
             handle_key(app, key);
-            false
+            app.quit_requested
         }
         Event::Resize(width, height) => {
             app.terminal_size = (width, height);
@@ -588,6 +596,7 @@ fn handle_modal_key(app: &mut AppState, key: KeyEvent) {
             username,
             groupname,
         } => handle_member_delete(app, selected, username, groupname, key),
+        ModalState::QuitConfirm { selected } => handle_quit_confirm(app, selected, key),
         ModalState::MemberActions {
             selected,
             username,
@@ -1787,6 +1796,19 @@ fn handle_member_delete(
     }
 }
 
+/// Yes quits and drops the prepared operation; No or Esc returns to the
+/// dialog that was open when Ctrl+C was pressed, with the operation intact.
+fn handle_quit_confirm(app: &mut AppState, selected: &mut usize, key: KeyEvent) {
+    match yes_no_answer(selected, key) {
+        Answer::Confirm if *selected == 0 => {
+            app.clear_pending_operation();
+            app.quit_requested = true;
+        }
+        Answer::Cancel | Answer::Decline | Answer::Confirm => back(app),
+        Answer::Other => {}
+    }
+}
+
 /// Rows of the group actions menu: Modify, then Delete. New groups are
 /// created with the NewUser key, not from this per-group menu.
 fn handle_group_actions(
@@ -2867,7 +2889,8 @@ struct PasswordFields<'a> {
     reveal: &'a mut bool,
 }
 
-/// Ctrl+C, the fixed quit key.
+/// Ctrl+C, the fixed quit key. It asks first while an operation is
+/// prepared; see [`handle_event`].
 fn is_interrupt(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
 }
@@ -9855,8 +9878,8 @@ mod tests {
         assert_eq!(app.users_query, "");
     }
 
-    #[test]
-    fn ctrl_c_drops_a_prepared_operation_before_quitting() {
+    /// `user_app` with a shell change for alice prepared and its preview open.
+    fn app_with_prepared_operation() -> AppState {
         let mut app = user_app();
         start_pending_action(
             &mut app,
@@ -9866,8 +9889,125 @@ mod tests {
             },
         );
         assert!(app.pending_operation.is_some());
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
+        app
+    }
+
+    /// The fields of the preview on top, to check it comes back unchanged.
+    fn full_preview_state(app: &AppState) -> Option<(usize, String, Vec<String>, usize, bool)> {
+        match app.modal() {
+            Some(ModalState::OperationConfirm {
+                selected,
+                action,
+                preview,
+                scroll,
+                seen_all,
+            }) => Some((
+                *selected,
+                action.clone(),
+                preview.clone(),
+                *scroll,
+                *seen_all,
+            )),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn ctrl_c_quits_at_once_from_normal_mode() {
+        let mut app = user_app();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(handle_event(&mut app, ctrl_c()));
+    }
+
+    #[test]
+    fn ctrl_c_with_a_prepared_operation_asks_first() {
+        let mut app = app_with_prepared_operation();
+        let depth = app.modal_depth();
+        assert!(!handle_event(&mut app, ctrl_c()));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::QuitConfirm { selected: 1 })
+        ));
+        assert_eq!(app.modal_depth(), depth + 1, "stacks on the preview");
+        assert!(app.pending_operation.is_some());
+        assert!(!app.last_preview.is_empty());
+    }
+
+    #[test]
+    fn declining_the_quit_question_returns_to_the_preview() {
+        for key in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Enter] {
+            let mut app = app_with_prepared_operation();
+            let before = full_preview_state(&app);
+            assert!(before.is_some());
+            assert!(!handle_event(&mut app, ctrl_c()));
+            assert!(!handle_event(&mut app, key_event(key)), "{key:?}");
+            assert_eq!(full_preview_state(&app), before, "{key:?}");
+            assert!(app.pending_operation.is_some(), "{key:?}");
+            assert!(!app.quit_requested, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn yes_in_the_quit_question_quits_and_drops_the_operation() {
+        let mut app = app_with_prepared_operation();
+        assert!(!handle_event(&mut app, ctrl_c()));
+        assert!(handle_event(&mut app, key_event(KeyCode::Char('y'))));
+        assert!(app.pending_operation.is_none());
+        assert!(app.last_preview.is_empty());
+
+        let mut app = app_with_prepared_operation();
+        assert!(!handle_event(&mut app, ctrl_c()));
+        assert!(!handle_event(&mut app, key_event(KeyCode::Left)));
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::QuitConfirm { selected: 0 })
+        ));
+        assert!(handle_event(&mut app, key_event(KeyCode::Enter)));
+        assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_twice_quits_and_drops_the_operation() {
+        let mut app = app_with_prepared_operation();
+        assert!(!handle_event(&mut app, ctrl_c()));
         assert!(handle_event(&mut app, ctrl_c()));
         assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_at_the_sudo_prompt_asks_and_no_restores_the_prompt() {
+        let log = SharedLog::default();
+        let mut app = app_at_sudo_prompt(1, &log);
+        let depth = app.modal_depth();
+        assert!(!handle_event(&mut app, ctrl_c()));
+        assert!(matches!(app.modal(), Some(ModalState::QuitConfirm { .. })));
+        assert!(!handle_event(&mut app, key_event(KeyCode::Char('n'))));
+        assert_eq!(app.modal_depth(), depth);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::SudoPrompt {
+                attempts: 0,
+                error: None,
+                ..
+            })
+        ));
+        assert!(app.pending_operation.is_some());
+    }
+
+    #[test]
+    fn quit_question_names_the_prepared_operation() {
+        let mut app = app_with_prepared_operation();
+        let action = app.pending_operation.as_ref().unwrap().description.clone();
+        assert!(!handle_event(&mut app, ctrl_c()));
+        let screen = rendered(&app);
+        assert!(screen.contains("Quit?"));
+        assert!(screen.contains("Quit and drop the prepared operation?"));
+        assert!(screen.contains(&action), "{action}");
+        assert!(screen.contains(ui::components::YES_NO_FOOTER));
     }
 
     #[test]

@@ -55,7 +55,7 @@ Press `?` for the help dialog. It lists every key as currently bound in `keybind
 | Delete, `d` | Delete the highlighted user or group, or remove the highlighted membership |
 | Space | Mark a user for bulk actions |
 | `r` | Reread users and groups |
-| `q`, Ctrl+C | Quit (Ctrl+C works everywhere) |
+| `q`, Ctrl+C | Quit (Ctrl+C works everywhere, and asks first while an operation is prepared) |
 
 Table titles show the search, the match count, marks, the sort order, and active filters, for example `[Users]  /al  3 of 45  sort: name  [human]`. Every change opens a command preview first. A preview with more than 12 steps must be scrolled to its last step before Apply works. In dialogs, Esc goes back one level; on the preview or sudo prompt it cancels the operation. The wiki's Keyboard Shortcuts page lists the rest, including `s` to sort and `y` to copy a name through OSC 52.
 
@@ -69,7 +69,7 @@ Settings are parsed as bounded `key = value` files with source-line diagnostics 
 
 Example files are in [`example-configs/`](example-configs/).
 
-`keybinds.conf` has one `Action = Key` line per binding, for example `Refresh = r`, `DeleteSelection = d`, or `ToggleKeybindsPane = Shift+K`. An action can have several keys. Ctrl+C always quits, whatever the file says.
+`keybinds.conf` has one `Action = Key` line per binding, for example `Refresh = r`, `DeleteSelection = d`, or `ToggleKeybindsPane = Shift+K`. An action can have several keys. Ctrl+C always quits, whatever the file says. If a command preview or the sudo prompt is open, it first asks whether to drop the prepared operation; press Ctrl+C again or choose Yes to quit.
 
 `filter.conf` stores the filter state and is rewritten whenever a filter changes. The search and the sort order are not saved.
 

@@ -1053,6 +1053,20 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
             );
             return;
         }
+        ModalState::QuitConfirm { selected } => {
+            let action = app
+                .pending_operation
+                .as_ref()
+                .map_or("", |prepared| prepared.description.as_str());
+            let body = text_lines(format!(
+                "Quit and drop the prepared operation?\n\n{action}\n\n{} Yes   {} No",
+                marker(*selected, 0),
+                marker(*selected, 1)
+            ));
+            let focus = body.len().saturating_sub(1);
+            render_modal_frame(frame, area, app, "Quit?", body, Some(focus), YES_NO_FOOTER);
+            return;
+        }
         ModalState::FilterMenu { selected } => {
             // Shadow chips that cannot apply (`[-]`) are drawn muted.
             let muted = Style::default().fg(app.theme.muted);

@@ -109,6 +109,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalStat
         | ModalState::Help { .. }
         | ModalState::SudoPrompt { .. }
         | ModalState::FilterMenu { .. }
+        | ModalState::QuitConfirm { .. }
         | ModalState::OperationConfirm { .. } => components::render_modal(frame, area, app, modal),
         ModalState::GroupsActions { .. }
         | ModalState::MemberActions { .. }

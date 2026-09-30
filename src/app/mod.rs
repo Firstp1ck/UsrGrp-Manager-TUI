@@ -481,6 +481,11 @@ pub enum ModalState {
         /// Every preview line has been displayed at least once.
         seen_all: bool,
     },
+    /// Ctrl+C while an operation is prepared: quit and drop it, or go back
+    /// to the dialog below. Row 0 is Yes, row 1 is No; opens on No.
+    QuitConfirm {
+        selected: usize,
+    },
     Info {
         /// Dialog title; None shows the default "Result".
         title: Option<String>,
@@ -1791,6 +1796,9 @@ pub struct AppState {
     pending_password: Option<OneShotPassword>,
     /// `--dry-run`: confirmed plans are reported but never handed to the adapter.
     pub dry_run: bool,
+    /// Set by a dialog key handler that ends the program, such as Yes in
+    /// the quit question; the event loop exits after that key.
+    pub quit_requested: bool,
     /// `--log-file`: redacted operation and error log. Dropped after a write failure.
     logger: Option<Logger>,
 }
@@ -1885,6 +1893,7 @@ impl AppState {
             pending_operation: None,
             pending_password: None,
             dry_run: false,
+            quit_requested: false,
             logger: None,
         };
         app.sort_and_filter();
