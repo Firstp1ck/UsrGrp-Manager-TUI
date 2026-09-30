@@ -1670,12 +1670,17 @@ fn handle_password_input(
         KeyCode::Enter if *selected == 3 => {
             if password.is_empty() || !password.matches(confirm) {
                 *error = Some("Passwords do not match or are empty.".to_owned());
+            } else if let Err(problem) = password.check() {
+                // Rejected before it leaves the form: keep both fields so
+                // the user can fix the password instead of retyping it.
+                show_form_error(app, error, &problem);
             } else if let Some(user) = app.users.get(app.selected_user_index) {
                 let username = user.name.clone();
                 let secret = SecretString::new(password.take());
-                // The password has left the form. If the submission fails,
-                // the form stays open under the error, so empty the confirm
-                // field too and make the user type both again.
+                // The password has passed validation and left the form. If
+                // the submission fails, the form stays open under the error,
+                // so empty the confirm field too and make the user type both
+                // again.
                 confirm.clear();
                 match PasswordRecord::new(
                     UserName::new(&username).expect("observed username remains valid"),
@@ -2231,18 +2236,26 @@ fn handle_user_add(
                 if password.is_empty() {
                     start_form_action(app, action, error);
                 } else {
-                    let secret = SecretString::new(password.take());
-                    // The password has left the form. If the submission
-                    // fails, the form stays open under the error, so empty
-                    // the confirm field too and refuse to submit until a new
-                    // password is typed.
-                    confirm.clear();
-                    *password_reentry_required = true;
-                    match UserName::new(name.clone())
-                        .and_then(|username| PasswordRecord::new(username, secret))
-                    {
-                        Ok(record) => start_password_action(app, action, record, error),
+                    // Validate the name and the password before taking the
+                    // password, so a rejected one leaves both fields as typed.
+                    match UserName::new(name.clone()).and_then(|username| {
+                        password.check()?;
+                        Ok(username)
+                    }) {
                         Err(problem) => show_form_error(app, error, &problem),
+                        Ok(username) => {
+                            let secret = SecretString::new(password.take());
+                            // The password has left the form. If the
+                            // submission fails, the form stays open under the
+                            // error, so empty the confirm field too and refuse
+                            // to submit until a new password is typed.
+                            confirm.clear();
+                            *password_reentry_required = true;
+                            match PasswordRecord::new(username, secret) {
+                                Ok(record) => start_password_action(app, action, record, error),
+                                Err(problem) => show_form_error(app, error, &problem),
+                            }
+                        }
                     }
                 }
             }
@@ -4590,6 +4603,120 @@ mod tests {
                 .iter()
                 .any(|step| step.contains("chpasswd"))
         );
+    }
+
+    /// Both password fields of the open form as typed.
+    fn password_values(app: &AppState) -> (String, String) {
+        match app.modal() {
+            Some(
+                ModalState::UserAddInput {
+                    password, confirm, ..
+                }
+                | ModalState::ChangePassword {
+                    password, confirm, ..
+                },
+            ) => (
+                password.display(true).to_string(),
+                confirm.display(true).to_string(),
+            ),
+            _ => panic!("no password form open"),
+        }
+    }
+
+    /// Within the 1024 character field limit but over the 1024 byte
+    /// `chpasswd` limit.
+    fn overlong_password() -> String {
+        "é".repeat(600)
+    }
+
+    #[test]
+    fn change_password_keeps_fields_when_password_is_rejected() {
+        let mut app = root_app();
+        open_modal(
+            &mut app,
+            ModalState::ChangePassword {
+                selected: 0,
+                password: SecretInput::default(),
+                confirm: SecretInput::default(),
+                must_change: false,
+                reveal: false,
+                error: None,
+            },
+        );
+        let typed = overlong_password();
+        type_text(&mut app, &typed);
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, &typed);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.pending_operation.is_none());
+        assert_eq!(app.modal_depth(), 1);
+        assert!(
+            app.modal()
+                .and_then(ModalState::form_error)
+                .is_some_and(|message| message.contains("must not exceed 1024 bytes"))
+        );
+        assert_eq!(password_values(&app), (typed.clone(), typed));
+    }
+
+    /// Open the create user form, type `name` and `password` into both
+    /// password fields, and press Enter on Submit.
+    fn submit_user_add(app: &mut AppState, name: &str, password: &str) {
+        open_user_add(app);
+        type_text(app, name);
+        press(app, KeyCode::Down);
+        type_text(app, password);
+        press(app, KeyCode::Down);
+        type_text(app, password);
+        for _ in 0..3 {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn password_reentry_required(app: &AppState) -> bool {
+        match app.modal() {
+            Some(ModalState::UserAddInput {
+                password_reentry_required,
+                ..
+            }) => *password_reentry_required,
+            _ => panic!("create user form is not open"),
+        }
+    }
+
+    #[test]
+    fn create_user_keeps_password_when_username_is_rejected() {
+        let mut app = root_app();
+        submit_user_add(&mut app, "1bob", "fixture-password");
+        assert!(app.pending_operation.is_none());
+        assert_eq!(app.modal_depth(), 1);
+        assert!(
+            app.modal().and_then(ModalState::form_error).is_some_and(
+                |message| message.contains("must start with an ASCII letter or underscore")
+            )
+        );
+        assert_eq!(
+            password_values(&app),
+            ("fixture-password".to_owned(), "fixture-password".to_owned())
+        );
+        assert!(!password_reentry_required(&app));
+    }
+
+    #[test]
+    fn create_user_keeps_password_when_password_is_rejected() {
+        let mut app = root_app();
+        let typed = overlong_password();
+        submit_user_add(&mut app, "bob", &typed);
+        assert!(app.pending_operation.is_none());
+        assert_eq!(app.modal_depth(), 1);
+        assert!(
+            app.modal()
+                .and_then(ModalState::form_error)
+                .is_some_and(|message| message.contains("must not exceed 1024 bytes"))
+        );
+        assert_eq!(password_values(&app), (typed.clone(), typed));
+        assert!(!password_reentry_required(&app));
     }
 
     /// Users alice (member of `dev`), bob and carol, groups `dev` and `ops`

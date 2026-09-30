@@ -1089,6 +1089,11 @@ impl SecretInput {
     pub fn matches(&self, other: &Self) -> bool {
         self.value == other.value
     }
+    /// Apply the `chpasswd` password rules to the typed value in place, so
+    /// a rejected password stays in the field.
+    pub fn check(&self) -> crate::error::CoreResult<()> {
+        PasswordRecord::check(&self.value)
+    }
     pub fn take(&mut self) -> String {
         std::mem::take(&mut self.value)
     }

@@ -417,6 +417,27 @@ impl Drop for SecretString {
     }
 }
 
+/// The `chpasswd` protocol rules for a password: at most 1024 bytes and no
+/// NUL, carriage return, or newline.
+fn check_password(value: &[u8]) -> CoreResult<()> {
+    if value.len() > PASSWORD_LIMIT {
+        return Err(CoreError::Validation {
+            field: "password",
+            reason: "must not exceed 1024 bytes",
+        });
+    }
+    if value
+        .iter()
+        .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+    {
+        return Err(CoreError::Validation {
+            field: "password",
+            reason: "must not contain NUL, carriage return, or newline",
+        });
+    }
+    Ok(())
+}
+
 /// A bounded password record for `chpasswd` stdin.
 ///
 /// The password is never rendered, placed in argv, or exposed by `Debug`.
@@ -428,23 +449,15 @@ pub struct PasswordRecord {
 impl PasswordRecord {
     /// Construct a record after enforcing the unambiguous `chpasswd` protocol.
     pub fn new(username: UserName, password: SecretString) -> CoreResult<Self> {
-        let value = password.as_bytes();
-        if value.len() > PASSWORD_LIMIT {
-            return Err(CoreError::Validation {
-                field: "password",
-                reason: "must not exceed 1024 bytes",
-            });
-        }
-        if value
-            .iter()
-            .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
-        {
-            return Err(CoreError::Validation {
-                field: "password",
-                reason: "must not contain NUL, carriage return, or newline",
-            });
-        }
+        check_password(password.as_bytes())?;
         Ok(Self { username, password })
+    }
+
+    /// Apply the password rules of [`PasswordRecord::new`] to a borrowed
+    /// value without taking or copying it, so a form can report a problem
+    /// and keep what was typed.
+    pub fn check(password: &str) -> CoreResult<()> {
+        check_password(password.as_bytes())
     }
 
     /// The account whose password is being changed.
@@ -557,5 +570,31 @@ mod tests {
         let mut stdin = Vec::new();
         record.write_to(&mut stdin).unwrap();
         assert_eq!(stdin, b"alice:not-in-argv\n");
+    }
+
+    #[test]
+    fn password_check_matches_the_record_rules() {
+        let record = |value: &str| {
+            PasswordRecord::new(UserName::new("alice").unwrap(), SecretString::new(value))
+        };
+        for invalid in [
+            "a".repeat(1025),
+            "é".repeat(513),
+            "line\nbreak".to_owned(),
+            "carriage\rreturn".to_owned(),
+            "nul\0byte".to_owned(),
+        ] {
+            let checked = PasswordRecord::check(&invalid).unwrap_err();
+            let built = record(&invalid).err().expect("record rejects it too");
+            assert_eq!(checked, built, "{invalid:?}");
+        }
+        for valid in [
+            "correct horse battery",
+            &"a".repeat(1024),
+            "é".repeat(512).as_str(),
+        ] {
+            assert!(PasswordRecord::check(valid).is_ok(), "{valid:?}");
+            assert!(record(valid).is_ok(), "{valid:?}");
+        }
     }
 }
