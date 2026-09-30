@@ -12,8 +12,8 @@ use crate::{
     app::{
         ActiveTab, AppState, BULK_ACTIONS, BULK_ROW_ADD, BULK_ROW_LOCK, BULK_ROW_REMOVE,
         BULK_ROW_UNLOCK, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
-        GroupsFocus, InputMode, MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_LENGTH_REACHED,
-        MAX_NAME_CHARS, MAX_PASSWORD_CHARS, MEMBER_ACTIONS, MEMBER_ROW_GO_TO, ModalState,
+        GroupsFocus, InputMode, MAX_EXPIRY_CHARS, MAX_HOME_BYTES, MAX_LENGTH_REACHED,
+        MAX_NAME_BYTES, MAX_PASSWORD_BYTES, MEMBER_ACTIONS, MEMBER_ROW_GO_TO, ModalState,
         ModifyField, ModifyMenuItem, PendingAction, RunOptions, SecretInput, UsersFocus,
         civil_date_label, filterconf::FiltersConfig, keymap::KeyAction,
     },
@@ -1211,7 +1211,7 @@ fn handle_text_input(
             *error = live_error(value);
         }
         KeyCode::Char(character) if is_typed(key, character) => {
-            if has_room(value.chars().count(), field.max_chars(), error) {
+            if has_room(value.len(), character, field.max_bytes(), error) {
                 value.push(character);
                 *error = live_error(value);
             }
@@ -1347,7 +1347,7 @@ fn handle_home_input(app: &mut AppState, form: HomeForm<'_>, key: KeyEvent) {
             *error = live_error(value);
         }
         KeyCode::Char(character) if is_typed(key, character) && *selected == HOME_ROW_PATH => {
-            if has_room(value.chars().count(), MAX_HOME_CHARS, error) {
+            if has_room(value.len(), character, MAX_HOME_BYTES, error) {
                 value.push(character);
                 *error = live_error(value);
             }
@@ -1608,7 +1608,7 @@ fn handle_expiry_input(
             *error = live_expiry_error(value);
         }
         KeyCode::Char(character) if is_typed(key, character) => {
-            if has_room(value.chars().count(), MAX_EXPIRY_CHARS, error) {
+            if has_room(value.len(), character, MAX_EXPIRY_CHARS, error) {
                 value.push(character);
                 *error = live_expiry_error(value);
             }
@@ -1671,7 +1671,7 @@ fn handle_password_input(
         },
         KeyCode::Char(character) if is_typed(key, character) && *selected < 2 => {
             let field = if *selected == 0 { password } else { confirm };
-            if has_room(field.char_count(), MAX_PASSWORD_CHARS, error) {
+            if has_room(field.len(), character, MAX_PASSWORD_BYTES, error) {
                 field.push(character);
                 *error = None;
             }
@@ -1948,7 +1948,7 @@ fn handle_group_add(
             *error = live_name_error(GroupName::new(&*name));
         }
         KeyCode::Char(character) if is_typed(key, character) => {
-            if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
+            if has_room(name.len(), character, MAX_NAME_BYTES, error) {
                 name.push(character);
                 *error = live_name_error(GroupName::new(&*name));
             }
@@ -2072,7 +2072,7 @@ fn handle_group_rename(
             *error = live_name_error(GroupName::new(&*name));
         }
         KeyCode::Char(character) if is_typed(key, character) => {
-            if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
+            if has_room(name.len(), character, MAX_NAME_BYTES, error) {
                 name.push(character);
                 *error = live_name_error(GroupName::new(&*name));
             }
@@ -2207,7 +2207,7 @@ fn handle_user_add(
             _ => {}
         },
         KeyCode::Char(character) if is_typed(key, character) && *selected == 0 => {
-            if has_room(name.chars().count(), MAX_NAME_CHARS, error) {
+            if has_room(name.len(), character, MAX_NAME_BYTES, error) {
                 name.push(character);
                 *name_touched = true;
                 *error = live_error(name, *name_touched);
@@ -2221,7 +2221,7 @@ fn handle_user_add(
             } else {
                 &mut *confirm
             };
-            if has_room(field.char_count(), MAX_PASSWORD_CHARS, error) {
+            if has_room(field.len(), character, MAX_PASSWORD_BYTES, error) {
                 field.push(character);
                 if *selected == 1 {
                     *password_reentry_required = false;
@@ -2391,9 +2391,12 @@ fn handle_sudo_prompt(
         KeyCode::Esc => cancel_operation(app),
         KeyCode::Backspace => {
             password.pop();
+            *error = None;
         }
-        KeyCode::Char(character) if is_typed(key, character) && password.len() < 1024 => {
-            password.push(character)
+        KeyCode::Char(character) if is_typed(key, character) => {
+            if has_room(password.len(), character, MAX_PASSWORD_BYTES, error) {
+                password.push(character);
+            }
         }
         KeyCode::Enter => {
             if password.is_empty() {
@@ -2909,10 +2912,16 @@ fn is_reveal_toggle(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r' | 'R'))
 }
 
-/// Whether a field holding `count` characters takes one more. At the limit
-/// the form shows [`MAX_LENGTH_REACHED`] instead.
-fn has_room(count: usize, maximum: usize, error: &mut Option<String>) -> bool {
-    if count < maximum {
+/// Whether a field holding `current_bytes` bytes takes `incoming` without
+/// passing `maximum` bytes, the unit the bridge limits count in. When it
+/// does not fit the form shows [`MAX_LENGTH_REACHED`] instead.
+fn has_room(
+    current_bytes: usize,
+    incoming: char,
+    maximum: usize,
+    error: &mut Option<String>,
+) -> bool {
+    if current_bytes + incoming.len_utf8() <= maximum {
         true
     } else {
         *error = Some(MAX_LENGTH_REACHED.to_owned());
@@ -4733,32 +4742,40 @@ mod tests {
         }
     }
 
-    /// Within the 1024 character field limit but over the 1024 byte
-    /// `chpasswd` limit.
+    /// Exceeds the 1024-byte `chpasswd` limit. Tests plant it in the
+    /// fields directly because the form's byte cap would truncate typed
+    /// input.
     fn overlong_password() -> String {
         "é".repeat(600)
+    }
+
+    /// A secret input holding `value`, bypassing the form's insert cap.
+    fn secret_input(value: &str) -> SecretInput {
+        let mut input = SecretInput::default();
+        for character in value.chars() {
+            input.push(character);
+        }
+        input
     }
 
     #[test]
     fn change_password_keeps_fields_when_password_is_rejected() {
         let mut app = root_app();
+        let typed = overlong_password();
         open_modal(
             &mut app,
             ModalState::ChangePassword {
                 selected: 0,
-                password: SecretInput::default(),
-                confirm: SecretInput::default(),
+                password: secret_input(&typed),
+                confirm: secret_input(&typed),
                 must_change: false,
                 reveal: false,
                 error: None,
             },
         );
-        let typed = overlong_password();
-        type_text(&mut app, &typed);
-        press(&mut app, KeyCode::Down);
-        type_text(&mut app, &typed);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down);
+        }
         press(&mut app, KeyCode::Enter);
         assert!(app.pending_operation.is_none());
         assert_eq!(app.modal_depth(), 1);
@@ -4817,7 +4834,21 @@ mod tests {
     fn create_user_keeps_password_when_password_is_rejected() {
         let mut app = root_app();
         let typed = overlong_password();
-        submit_user_add(&mut app, "bob", &typed);
+        open_user_add(&mut app);
+        type_text(&mut app, "bob");
+        match app.modal_mut() {
+            Some(ModalState::UserAddInput {
+                password, confirm, ..
+            }) => {
+                *password = secret_input(&typed);
+                *confirm = secret_input(&typed);
+            }
+            _ => panic!("create user form is not open"),
+        }
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
         assert!(app.pending_operation.is_none());
         assert_eq!(app.modal_depth(), 1);
         assert!(
@@ -8973,7 +9004,7 @@ mod tests {
     }
 
     #[test]
-    fn name_fields_count_characters_and_say_when_full() {
+    fn name_fields_count_bytes_and_say_when_full() {
         let mut app = user_app();
         open_modal(
             &mut app,
@@ -8982,15 +9013,15 @@ mod tests {
                 error: None,
             },
         );
-        // Two bytes each: a byte count would stop at 16.
-        type_text(&mut app, &"é".repeat(32));
-        assert_eq!(text_value(&app).map(|name| name.chars().count()), Some(32));
+        // Two bytes each: 16 of them fill the bridge's 32-byte budget.
+        type_text(&mut app, &"é".repeat(16));
+        assert_eq!(text_value(&app).map(str::len), Some(32));
         assert_ne!(
             app.modal().and_then(ModalState::form_error),
             Some(crate::app::MAX_LENGTH_REACHED)
         );
         press(&mut app, KeyCode::Char('x'));
-        assert_eq!(text_value(&app).map(|name| name.chars().count()), Some(32));
+        assert_eq!(text_value(&app).map(str::len), Some(32));
         assert_eq!(
             app.modal().and_then(ModalState::form_error),
             Some(crate::app::MAX_LENGTH_REACHED)
@@ -9017,6 +9048,119 @@ mod tests {
         // Deleting a character makes room again and clears the message.
         press(&mut app, KeyCode::Backspace);
         assert_eq!(app.modal().and_then(ModalState::form_error), None);
+    }
+
+    #[test]
+    fn name_field_refuses_a_character_that_would_pass_the_byte_limit() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        type_text(&mut app, &"a".repeat(31));
+        press(&mut app, KeyCode::Char('é'));
+        assert_eq!(text_value(&app).map(str::len), Some(31));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(text_value(&app).map(str::len), Some(32));
+        assert_ne!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+    }
+
+    #[test]
+    fn full_name_field_refuses_a_two_byte_character_at_255_bytes() {
+        let mut app = user_app();
+        open_details_row(&mut app, 1);
+        assert_eq!(text_value(&app), Some("Alice"));
+        type_text(&mut app, &"b".repeat(250));
+        press(&mut app, KeyCode::Char('é'));
+        assert_eq!(text_value(&app).map(str::len), Some(255));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(text_value(&app).map(str::len), Some(256));
+    }
+
+    #[test]
+    fn password_field_refuses_a_multibyte_character_at_1023_bytes() {
+        let mut app = root_app();
+        open_user_add(&mut app);
+        press(&mut app, KeyCode::Down);
+        type_text(&mut app, &"p".repeat(1023));
+        press(&mut app, KeyCode::Char('€'));
+        assert_eq!(password_counts(&app), (1023, 0));
+        assert_eq!(
+            app.modal().and_then(ModalState::form_error),
+            Some(crate::app::MAX_LENGTH_REACHED)
+        );
+        press(&mut app, KeyCode::Char('p'));
+        assert_eq!(password_counts(&app), (1024, 0));
+    }
+
+    fn sudo_prompt_state(app: &AppState) -> (usize, Option<&str>) {
+        match app.modal() {
+            Some(ModalState::SudoPrompt {
+                password, error, ..
+            }) => (password.len(), error.as_deref()),
+            _ => panic!("expected the sudo prompt"),
+        }
+    }
+
+    #[test]
+    fn sudo_prompt_says_when_full_and_backspace_clears_it() {
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::SudoPrompt {
+                password: SecretInput::default(),
+                error: None,
+                attempts: 0,
+            },
+        );
+        type_text(&mut app, &"p".repeat(1023));
+        press(&mut app, KeyCode::Char('é'));
+        assert_eq!(
+            sudo_prompt_state(&app),
+            (1023, Some(crate::app::MAX_LENGTH_REACHED))
+        );
+        assert!(rendered(&app).contains("Maximum length reached"));
+        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Char('p'));
+        assert_eq!(
+            sudo_prompt_state(&app),
+            (1024, Some(crate::app::MAX_LENGTH_REACHED))
+        );
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(sudo_prompt_state(&app), (1023, None));
+    }
+
+    #[test]
+    fn sudo_prompt_keeps_cursor_and_error_visible_at_80x16() {
+        let cursor = crate::ui::components::INPUT_CURSOR;
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::SudoPrompt {
+                password: SecretInput::default(),
+                error: None,
+                attempts: 0,
+            },
+        );
+        type_text(&mut app, "secret");
+        assert!(rendered_at(&app, 80, 16).contains(cursor));
+        type_text(&mut app, &"p".repeat(1017));
+        press(&mut app, KeyCode::Char('é'));
+        assert_eq!(
+            sudo_prompt_state(&app),
+            (1023, Some(crate::app::MAX_LENGTH_REACHED))
+        );
+        let screen = rendered_at(&app, 80, 16);
+        assert!(screen.contains(cursor));
+        assert!(screen.contains("Maximum length reached"));
     }
 
     fn password_counts(app: &AppState) -> (usize, usize) {
@@ -9763,9 +9907,10 @@ mod tests {
         type_text(&mut app, &"a".repeat(200));
         let rows = rendered_rows(&app, 30, 10);
         // The value, cursor, and count wrap to 20-column rows; the last one
-        // is `a▏  201/256`, and the first (with the typed glyph) scrolls away.
+        // is `a▏  203/256` (the typed glyph is three bytes), and the first
+        // (with the typed glyph) scrolls away.
         assert!(
-            rows.iter().any(|row| row.contains("a▏  201/256")),
+            rows.iter().any(|row| row.contains("a▏  203/256")),
             "trailing cursor row scrolled out: {rows:#?}"
         );
         assert!(!rows.iter().any(|row| row.contains("▏aaaa")));

@@ -10,13 +10,13 @@ use ratatui::{
 use crate::{
     app::{
         AppState, CandidateList, GroupDiagnostics, GroupsFilter, GroupsFocus, InputMode,
-        MAX_NAME_CHARS, MEMBER_ACTIONS, ModalState, civil_date_label,
+        MAX_NAME_BYTES, MEMBER_ACTIONS, ModalState, civil_date_label,
     },
     search::ShadowState,
     sys::SystemGroup,
     ui::components::{
         CandidateView, DetailLine, DetailPart, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER,
-        YES_NO_FOOTER, candidate_dialog, char_budget, details_plain_text, marker, no_match_text,
+        YES_NO_FOOTER, byte_budget, candidate_dialog, details_plain_text, marker, no_match_text,
         nothing_loaded_lines, push_filter_labels, push_sort_label, render_empty_state,
         render_modal_frame, row_style, search_title, stale_line, text_lines, with_error_line,
     },
@@ -253,7 +253,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             "Create group",
             format!(
                 "Group name:\n{name}{INPUT_CURSOR}  {}",
-                char_budget(name, MAX_NAME_CHARS)
+                byte_budget(name, MAX_NAME_BYTES)
             ),
             Some(1),
             TEXT_FOOTER,
@@ -287,7 +287,7 @@ pub fn render_group_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: 
             "Rename group",
             format!(
                 "New name:\n{name}{INPUT_CURSOR}  {}",
-                char_budget(name, MAX_NAME_CHARS)
+                byte_budget(name, MAX_NAME_BYTES)
             ),
             Some(1),
             TEXT_FOOTER,

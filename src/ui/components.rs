@@ -15,7 +15,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use crate::app::keymap::KeyAction;
 use crate::app::{
     ActiveTab, AppState, CandidateList, ConfigFileState, GroupsFocus, InputMode,
-    MAX_MEMBERSHIP_CANDIDATES, ModalState, UsersFocus,
+    MAX_MEMBERSHIP_CANDIDATES, ModalState, SecretInput, UsersFocus,
 };
 
 /// Build a table title from its name, its search query, and the row count.
@@ -615,9 +615,10 @@ pub fn input_cursor(selected: usize, index: usize) -> &'static str {
     if selected == index { INPUT_CURSOR } else { "" }
 }
 
-/// Characters used out of a field's limit, as `12/32`.
-pub fn char_budget(value: &str, maximum: usize) -> String {
-    format!("{}/{maximum}", value.chars().count())
+/// Bytes used out of a field's limit, as `12/32`. Limits count bytes like
+/// the bridge, so the counter does too.
+pub fn byte_budget(value: &str, maximum: usize) -> String {
+    format!("{}/{maximum}", value.len())
 }
 
 /// Footer for an operation confirmation whose preview scrolls.
@@ -1005,6 +1006,15 @@ pub fn with_error_line<'a>(mut lines: Vec<Line<'a>>, error: Option<&str>) -> Vec
     lines
 }
 
+/// Text of the sudo prompt: the operation, then one `*` per typed character
+/// and the [`INPUT_CURSOR`].
+fn sudo_prompt_body(operation: &str, password: &SecretInput) -> String {
+    format!(
+        "Authenticating to run: {operation}\n\nEnter sudo password:\n{}{INPUT_CURSOR}",
+        "*".repeat(password.char_count())
+    )
+}
+
 pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &ModalState) {
     let (title, body, footer) = match modal {
         ModalState::Info { title, message } => (
@@ -1020,18 +1030,18 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
             password, error, ..
         } => {
             let operation = app.last_preview.first().map_or("", String::as_str);
-            let body = text_lines(format!(
-                "Authenticating to run: {operation}\n\nEnter sudo password:\n{}",
-                "*".repeat(password.len())
-            ));
+            let body = text_lines(sudo_prompt_body(operation, password));
             let body = with_error_line(body, error.as_deref());
+            // Keep the last line in view: the error when there is one,
+            // otherwise the password row with its cursor.
+            let focus = body.len().checked_sub(1);
             render_modal_frame(
                 frame,
                 area,
                 app,
                 "Authentication required",
                 body,
-                None,
+                focus,
                 "Enter submit  Esc cancel operation",
             );
             return;
@@ -1653,4 +1663,25 @@ pub fn candidate_dialog(
         MULTI_FOOTER
     };
     (title, body, focus, footer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{INPUT_CURSOR, SecretInput, sudo_prompt_body};
+
+    #[test]
+    fn sudo_prompt_shows_one_star_per_character_then_the_cursor() {
+        let mut password = SecretInput::default();
+        for character in "éa€".chars() {
+            password.push(character);
+        }
+        let body = sudo_prompt_body("usermod -s /bin/bash alice", &password);
+        assert!(body.ends_with(&format!("\n***{INPUT_CURSOR}")), "{body}");
+
+        let empty = sudo_prompt_body("usermod -s /bin/bash alice", &SecretInput::default());
+        assert!(
+            empty.ends_with(&format!("password:\n{INPUT_CURSOR}")),
+            "{empty}"
+        );
+    }
 }

@@ -11,14 +11,14 @@ use ratatui::{
 use crate::{
     app::{
         AppState, BULK_ACTIONS, CandidateList, DELETE_ROW_HOME, DELETE_ROW_NO, DELETE_ROW_YES,
-        InputMode, MAX_EXPIRY_CHARS, MAX_HOME_CHARS, MAX_NAME_CHARS, ModalState, ModifyField,
+        InputMode, MAX_EXPIRY_CHARS, MAX_HOME_BYTES, MAX_NAME_BYTES, ModalState, ModifyField,
         SecretInput, UsersFocus, civil_date_label,
     },
     search::AccountShadowState,
     sys::SystemUser,
     ui::components::{
         CandidateView, DetailLine, DetailPart, FORM_FOOTER, INPUT_CURSOR, LIST_FOOTER, MENU_FOOTER,
-        PASSWORD_FORM_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, char_budget,
+        PASSWORD_FORM_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, byte_budget, candidate_dialog,
         details_plain_text, input_cursor, marker, no_match_text, nothing_loaded_lines,
         push_filter_labels, push_sort_label, render_empty_state, render_modal_frame, row_style,
         search_title, shadow_skipped_note, stale_line, text_lines, with_error_line,
@@ -428,11 +428,11 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
             match field {
                 ModifyField::Username => format!(
                     "{value}{INPUT_CURSOR}  {}\nThe home directory keeps its current name.",
-                    char_budget(value, field.max_chars())
+                    byte_budget(value, field.max_bytes())
                 ),
                 ModifyField::Fullname => format!(
                     "{value}{INPUT_CURSOR}  {}",
-                    char_budget(value, field.max_chars())
+                    byte_budget(value, field.max_bytes())
                 ),
             },
             Some(0),
@@ -514,7 +514,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 "Current: {current}\n{} Path: {value}{}  {}\n{} [{}] move contents",
                 marker(*selected, 0),
                 input_cursor(*selected, 0),
-                char_budget(value, MAX_HOME_CHARS),
+                byte_budget(value, MAX_HOME_BYTES),
                 marker(*selected, 1),
                 if *move_contents { "x" } else { " " },
             ));
@@ -587,7 +587,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                     Some(None) => "never",
                     None => "unknown",
                 },
-                char_budget(value, MAX_EXPIRY_CHARS),
+                byte_budget(value, MAX_EXPIRY_CHARS),
             ),
             Some(1),
             TEXT_FOOTER,
@@ -667,7 +667,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 "{} Username: {name}{}  {}",
                 marker(*selected, 0),
                 input_cursor(*selected, 0),
-                char_budget(name, MAX_NAME_CHARS),
+                byte_budget(name, MAX_NAME_BYTES),
             ));
             body.extend(password_rows(
                 *selected,

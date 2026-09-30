@@ -34,7 +34,8 @@ pub use operations::{
 };
 #[allow(unused_imports)]
 pub use validation::{
-    ExpiryDate, Gecos, GroupName, HomePath, PasswordRecord, SecretString, ShellPath, UserName,
+    ACCOUNT_NAME_LIMIT, ExpiryDate, GECOS_LIMIT, Gecos, GroupName, HomePath, PASSWORD_LIMIT,
+    PATH_LIMIT, PasswordRecord, SecretString, ShellPath, UserName,
 };
 
 use crate::error::{CoreError, CoreResult, Result};

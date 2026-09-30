@@ -7,10 +7,14 @@ use crate::error::{CoreError, CoreResult};
 use std::{fmt, io::Write, path::Path};
 use zeroize::{Zeroize, Zeroizing};
 
-const ACCOUNT_NAME_LIMIT: usize = 32;
-const GECOS_LIMIT: usize = 256;
-const PATH_LIMIT: usize = 4096;
-const PASSWORD_LIMIT: usize = 1024;
+/// Longest user or group name the bridge accepts, in bytes.
+pub const ACCOUNT_NAME_LIMIT: usize = 32;
+/// Longest full name (GECOS) the bridge accepts, in bytes.
+pub const GECOS_LIMIT: usize = 256;
+/// Longest home directory or shell path the bridge accepts, in bytes.
+pub const PATH_LIMIT: usize = 4096;
+/// Longest password the bridge accepts, in bytes.
+pub const PASSWORD_LIMIT: usize = 1024;
 
 fn account_name(value: &str, field: &'static str) -> CoreResult<()> {
     let bytes = value.as_bytes();

@@ -605,16 +605,21 @@ impl ModalState {
     }
 }
 
-/// Longest username or group name a text field accepts, in characters.
-pub const MAX_NAME_CHARS: usize = 32;
-/// Longest full name (GECOS) a text field accepts, in characters.
-pub const MAX_GECOS_CHARS: usize = 256;
-/// Longest home directory path the home field accepts, in characters.
-pub const MAX_HOME_CHARS: usize = 4096;
+/// Longest username or group name a text field accepts, in bytes. Equal to
+/// the bridge limit in `src/sys/validation.rs`.
+pub const MAX_NAME_BYTES: usize = crate::sys::ACCOUNT_NAME_LIMIT;
+/// Longest full name (GECOS) a text field accepts, in bytes. Equal to the
+/// bridge limit in `src/sys/validation.rs`.
+pub const MAX_GECOS_BYTES: usize = crate::sys::GECOS_LIMIT;
+/// Longest home directory path the home field accepts, in bytes. Equal to the
+/// bridge limit in `src/sys/validation.rs`.
+pub const MAX_HOME_BYTES: usize = crate::sys::PATH_LIMIT;
 /// Length of a `YYYY-MM-DD` expiry date, the most the expiry field accepts.
+/// The date is ASCII, so this is also its length in bytes.
 pub const MAX_EXPIRY_CHARS: usize = 10;
-/// Longest password each password field accepts, in characters.
-pub const MAX_PASSWORD_CHARS: usize = 1024;
+/// Longest password each password field and the sudo prompt accept, in
+/// bytes. Equal to the bridge limit in `src/sys/validation.rs`.
+pub const MAX_PASSWORD_BYTES: usize = crate::sys::PASSWORD_LIMIT;
 /// Form error shown when a keystroke would pass a field's limit.
 pub const MAX_LENGTH_REACHED: &str = "Maximum length reached";
 
@@ -663,11 +668,11 @@ pub enum ModifyField {
 }
 
 impl ModifyField {
-    /// Characters the field accepts before [`MAX_LENGTH_REACHED`].
-    pub fn max_chars(&self) -> usize {
+    /// Bytes the field accepts before [`MAX_LENGTH_REACHED`].
+    pub fn max_bytes(&self) -> usize {
         match self {
-            Self::Username => MAX_NAME_CHARS,
-            Self::Fullname => MAX_GECOS_CHARS,
+            Self::Username => MAX_NAME_BYTES,
+            Self::Fullname => MAX_GECOS_BYTES,
         }
     }
 }
@@ -1055,10 +1060,12 @@ impl SecretInput {
     pub fn pop(&mut self) {
         self.value.pop();
     }
+    /// Bytes typed, the unit length limits count in, like the bridge.
     pub fn len(&self) -> usize {
         self.value.len()
     }
-    /// Characters typed, the unit form limits count in.
+    /// Characters typed, the unit the masked display and the strength hint
+    /// count in. Length limits count bytes; see [`Self::len`].
     pub fn char_count(&self) -> usize {
         self.value.chars().count()
     }
@@ -2802,6 +2809,17 @@ pub fn sudo_group_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::{civil_date_label, read_process_counts, status_real_uid};
+
+    #[test]
+    fn form_limits_are_the_bridge_byte_limits() {
+        use crate::sys::{ACCOUNT_NAME_LIMIT, GECOS_LIMIT, PASSWORD_LIMIT, PATH_LIMIT};
+        assert_eq!((super::MAX_NAME_BYTES, ACCOUNT_NAME_LIMIT), (32, 32));
+        assert_eq!((super::MAX_GECOS_BYTES, GECOS_LIMIT), (256, 256));
+        assert_eq!((super::MAX_HOME_BYTES, PATH_LIMIT), (4096, 4096));
+        assert_eq!((super::MAX_PASSWORD_BYTES, PASSWORD_LIMIT), (1024, 1024));
+        assert_eq!(super::ModifyField::Username.max_bytes(), ACCOUNT_NAME_LIMIT);
+        assert_eq!(super::ModifyField::Fullname.max_bytes(), GECOS_LIMIT);
+    }
 
     #[test]
     fn civil_date_label_converts_days_since_the_epoch() {
