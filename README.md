@@ -57,7 +57,7 @@ Press `?` for the help dialog. It lists every key as currently bound in `keybind
 | `r` | Reread users and groups |
 | `q`, Ctrl+C | Quit (Ctrl+C works everywhere, and asks first while an operation is prepared) |
 
-Table titles show the search, the match count, marks, the sort order, and active filters, for example `[Users]  /al  3 of 45  sort: name  [human]`. Every change opens a command preview first. A preview with more than 12 steps must be scrolled to its last step before Apply works. In dialogs, Esc goes back one level; on the preview or sudo prompt it cancels the operation. The wiki's Keyboard Shortcuts page lists the rest, including `s` to sort and `y` to copy a name through OSC 52.
+Table titles show the search, the match count, marks, the sort order, and active filters, for example `[Users]  /al  3 of 45  sort: name  [human]`. Every change opens a command preview first. A preview with more than 12 steps must be scrolled to its last step before Apply works. In dialogs, Esc goes back one level. On the preview it goes back one step and drops the prepared operation; on the sudo prompt it returns to the preview. Ctrl+C quits, asking first while an operation is prepared. The wiki's Keyboard Shortcuts page lists the rest, including `s` to sort and `y` to copy a name through OSC 52.
 
 Below 70 columns the details pane moves under the table and the member pane is hidden. Below 30x8 the app only asks for a larger terminal.
 

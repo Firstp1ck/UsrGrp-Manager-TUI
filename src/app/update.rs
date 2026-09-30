@@ -1442,7 +1442,8 @@ enum CandidateKey {
 /// filtered candidate list the dialog shows.
 ///
 /// `/` starts filter typing: printable characters and Backspace edit the
-/// filter, Up/Down still move, and Enter or Esc stop typing. Otherwise
+/// filter, Up/Down still move, Enter stops typing and keeps the filter, and
+/// Esc clears it and shows the full list again. Otherwise
 /// Up/Down/j/k move, Space ticks the highlighted row, and `*` ticks every
 /// listed row (or clears them when all are ticked already).
 ///
@@ -1460,7 +1461,12 @@ fn candidate_key(
     *dialog.error = None;
     if *dialog.filtering {
         match key.code {
-            KeyCode::Enter | KeyCode::Esc => *dialog.filtering = false,
+            KeyCode::Enter => *dialog.filtering = false,
+            KeyCode::Esc => {
+                dialog.filter.clear();
+                *dialog.selected = 0;
+                *dialog.filtering = false;
+            }
             KeyCode::Up => step_index(dialog.selected, list.len(), -1, wrap),
             KeyCode::Down => step_index(dialog.selected, list.len(), 1, wrap),
             KeyCode::Backspace => {
@@ -2371,11 +2377,11 @@ fn handle_operation_confirm(
         return;
     }
     match yes_no_answer(selected, key) {
-        Answer::Cancel | Answer::Decline => cancel_operation(app),
+        Answer::Cancel | Answer::Decline => abandon_operation(app),
         // Refused: the dialog stays open and its review line says why.
         Answer::Confirm if *selected == 0 && !review.allows_apply(terminal) => {}
         Answer::Confirm if *selected == 0 => execute_pending_plan(app),
-        Answer::Confirm => cancel_operation(app),
+        Answer::Confirm => abandon_operation(app),
         Answer::Other => {}
     }
 }
@@ -2388,7 +2394,9 @@ fn handle_sudo_prompt(
     key: KeyEvent,
 ) {
     match key.code {
-        KeyCode::Esc => cancel_operation(app),
+        // Back to the preview, which is still open under the prompt; the
+        // prepared operation stays pending.
+        KeyCode::Esc => back(app),
         KeyCode::Backspace => {
             password.pop();
             *error = None;
@@ -3001,10 +3009,11 @@ fn back(app: &mut AppState) {
     app.pop_modal();
 }
 
-/// Drop the prepared operation and close every dialog that led to it.
-fn cancel_operation(app: &mut AppState) {
+/// Drop the prepared operation and close its preview, returning to the
+/// menu or form the preview was opened from with its input intact.
+fn abandon_operation(app: &mut AppState) {
     app.clear_pending_operation();
-    app.close_modals();
+    app.pop_modal();
 }
 
 /// Tick `name`, or untick it when it is ticked already.
@@ -4431,18 +4440,19 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_operation_confirm_cancels_and_closes_every_modal() {
+    fn esc_on_operation_confirm_returns_to_the_list_it_came_from() {
         let mut app = user_app();
         open_shell_change_confirm(&mut app);
         assert!(app.pending_operation.is_some());
         press(&mut app, KeyCode::Esc);
-        assert!(app.modal().is_none());
+        assert!(matches!(app.modal(), Some(ModalState::ModifyShell { .. })));
+        assert_eq!(app.modal_depth(), 4);
         assert!(app.pending_operation.is_none());
-        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.last_preview.is_empty());
     }
 
     #[test]
-    fn esc_on_sudo_prompt_cancels_and_closes_every_modal() {
+    fn esc_on_sudo_prompt_returns_to_the_preview_then_the_menu() {
         let mut app = user_app();
         press(&mut app, KeyCode::Enter);
         // The fixture's only shell is already alice's, so pick one that
@@ -4458,10 +4468,17 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.modal(), Some(ModalState::SudoPrompt { .. })));
         assert_eq!(app.modal_depth(), 3);
+        // The operation stays prepared, so Apply only asks for the password.
         press(&mut app, KeyCode::Esc);
-        assert!(app.modal().is_none());
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
+        assert!(app.pending_operation.is_some());
+        assert_eq!(app.last_preview, ["usermod -s /bin/bash alice"]);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.modal(), Some(ModalState::Actions { .. })));
         assert!(app.pending_operation.is_none());
-        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]
@@ -5098,8 +5115,13 @@ mod tests {
         ));
         assert!(app.pending_operation.is_some());
         press(&mut app, KeyCode::Char('n'));
-        assert!(app.modal().is_none());
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::DeleteConfirm { .. })
+        ));
         assert!(app.pending_operation.is_none());
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
 
         press(&mut app, KeyCode::Delete);
         press(&mut app, KeyCode::Char('y'));
@@ -5682,7 +5704,8 @@ mod tests {
                 if action == "Lock accounts alice, carol"
                     && preview == &["usermod -L alice", "usermod -L carol"]
         ));
-        cancel_operation(&mut app);
+        app.clear_pending_operation();
+        app.close_modals();
         press(&mut app, KeyCode::Enter);
         for _ in 0..3 {
             press(&mut app, KeyCode::Down);
@@ -5878,7 +5901,7 @@ mod tests {
             screen
                 .contains("▶ [-] Expired (shadow unavailable: shadow data has not been refreshed)")
         );
-        assert!(screen.contains("Backspace back  Esc close"));
+        assert!(screen.contains("Backspace/Esc back"));
     }
 
     fn help_scroll(app: &AppState) -> u16 {
@@ -5930,7 +5953,7 @@ mod tests {
         assert!(top.contains("Navigation"));
         assert!(top.contains("Move up: Up, k"));
         assert!(top.contains("Help (rows 1-"));
-        assert!(top.contains("↑↓ PgUp PgDn scroll  Esc close"));
+        assert!(top.contains("↑↓ PgUp PgDn scroll  Esc back"));
         let top_body = help_body(&app, 100, 30);
         assert_eq!(top_body[0].trim_end(), "Navigation");
         for _ in 0..5 {
@@ -6254,7 +6277,7 @@ mod tests {
         press(&mut app, KeyCode::Char('k'));
         let screen = rendered_at(&app, 80, 9);
         assert!(screen.contains("▶ [-] Expired (shadow unavailable"));
-        assert!(screen.contains("Backspace back  Esc close"));
+        assert!(screen.contains("Backspace/Esc back"));
 
         app.close_modals();
         press(&mut app, KeyCode::Char('n'));
@@ -6617,17 +6640,92 @@ mod tests {
     }
 
     #[test]
+    fn every_footer_that_names_esc_says_back() {
+        use crate::ui::components::{
+            FORM_FOOTER, LIST_FOOTER, MENU_FOOTER, MULTI_FOOTER, MULTI_HIGHLIGHTED_FOOTER,
+            PASSWORD_FORM_FOOTER, PREVIEW_FOOTER, TEXT_FOOTER, YES_NO_FOOTER,
+        };
+        for footer in [
+            MENU_FOOTER,
+            LIST_FOOTER,
+            MULTI_FOOTER,
+            MULTI_HIGHLIGHTED_FOOTER,
+            YES_NO_FOOTER,
+            TEXT_FOOTER,
+            PASSWORD_FORM_FOOTER,
+            FORM_FOOTER,
+            PREVIEW_FOOTER,
+        ] {
+            assert!(footer.contains("Esc back"), "{footer:?}");
+        }
+        // Filter typing is not a dialog level: Esc there clears the filter.
+        assert!(crate::ui::components::FILTER_FOOTER.ends_with("Enter keep  Esc clear"));
+    }
+
+    /// A group add form with `name` typed and submitted, its preview on top.
+    fn group_add_preview(name: &str) -> AppState {
+        let mut app = user_app();
+        open_modal(
+            &mut app,
+            ModalState::GroupAddInput {
+                name: String::new(),
+                error: None,
+            },
+        );
+        type_text(&mut app, name);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { .. })
+        ));
+        assert!(app.pending_operation.is_some());
+        assert_eq!(app.modal_depth(), 2);
+        app
+    }
+
+    #[test]
+    fn esc_in_the_preview_returns_to_the_form_and_drops_the_operation() {
+        let mut app = group_add_preview("newgrp");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.modal_depth(), 1);
+        assert_eq!(text_value(&app), Some("newgrp"));
+        assert!(app.pending_operation.is_none());
+        assert!(app.last_preview.is_empty());
+    }
+
+    #[test]
+    fn no_in_the_preview_returns_to_the_form_and_drops_the_operation() {
+        // `n` answers No directly.
+        let mut app = group_add_preview("newgrp");
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.modal_depth(), 1);
+        assert_eq!(text_value(&app), Some("newgrp"));
+        assert!(app.pending_operation.is_none());
+
+        // Enter on the No button, which the preview opens on.
+        let mut app = group_add_preview("newgrp");
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::OperationConfirm { selected: 1, .. })
+        ));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.modal_depth(), 1);
+        assert_eq!(text_value(&app), Some("newgrp"));
+        assert!(app.pending_operation.is_none());
+    }
+
+    #[test]
     fn modal_footers_name_their_keys() {
         let mut app = user_app();
         let cases = [
-            (ModalState::Actions { selected: 0 }, "Backspace back"),
+            (ModalState::Actions { selected: 0 }, "Backspace/Esc back"),
             (delete_dialog(true), "y/n"),
             (
                 ModalState::GroupDeleteConfirm {
                     selected: 1,
                     target_gid: Some(1000),
                 },
-                "←→ choose  y/n  Enter confirm  Esc cancel",
+                "←→ choose  y/n  Enter confirm  Esc back",
             ),
             (
                 ModalState::ModifyGroupsAdd {
@@ -6638,7 +6736,7 @@ mod tests {
                     filtering: false,
                     error: None,
                 },
-                "↑↓ move  Space tick  * all  / filter  Enter apply row  Esc close",
+                "↑↓ move  Space tick  * all  / filter  Enter apply row  Esc back",
             ),
             (
                 ModalState::GroupAddInput {
@@ -6647,13 +6745,13 @@ mod tests {
                 },
                 "Enter submit  Esc back",
             ),
-            (ModalState::FilterMenu { selected: 0 }, "Backspace back"),
+            (ModalState::FilterMenu { selected: 0 }, "Backspace/Esc back"),
             (
                 ModalState::Info {
                     title: None,
                     message: "done".to_owned(),
                 },
-                "Enter/Esc close",
+                "Enter/Esc back",
             ),
         ];
         for (modal, footer) in cases {
@@ -8670,7 +8768,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_while_filtering_only_leaves_filter_typing() {
+    fn esc_while_filtering_clears_the_filter_and_enter_keeps_it() {
         let mut app = membership_app();
         app.active_tab = ActiveTab::Groups;
         open_modal(&mut app, add_members_dialog(2000));
@@ -8678,7 +8776,7 @@ mod tests {
         type_text(&mut app, "j*");
         assert!(ticked(&app).is_empty());
         assert!(rendered(&app).contains("No matches"));
-        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Enter);
         assert!(matches!(
             app.modal(),
             Some(ModalState::GroupModifyAddMembers {
@@ -8687,6 +8785,25 @@ mod tests {
             })
         ));
         assert!(rendered(&app).contains("Filter: j*"));
+
+        // Esc while typing drops the filter and shows the full list again.
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "o");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.modal(),
+            Some(ModalState::GroupModifyAddMembers {
+                filtering: false,
+                selected: 0,
+                filter,
+                ..
+            }) if filter.is_empty()
+        ));
+        assert_eq!(rendered_candidates(&app), ["bob", "carol"]);
+        assert!(!rendered(&app).contains("Filter:"));
         press(&mut app, KeyCode::Esc);
         assert!(app.modal().is_none());
     }
@@ -8700,9 +8817,9 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         let screen = rendered(&app);
         assert!(!screen.contains("Enter apply row"));
-        assert!(screen.contains("* all  / filter  Enter apply  Esc close"));
+        assert!(screen.contains("* all  / filter  Enter apply  Esc back"));
         press(&mut app, KeyCode::Char('/'));
-        assert!(rendered(&app).contains("Enter/Esc done"));
+        assert!(rendered(&app).contains("Enter keep  Esc clear"));
     }
 
     #[test]
@@ -8727,7 +8844,7 @@ mod tests {
         // Drop the dialog border, the table border behind it (a side or the
         // bottom edge, depending on the header height), and padding.
         let footer = footer.trim_end_matches([' ', '│', '─', '┘']);
-        assert!(footer.ends_with("Enter apply row  Esc close"), "{footer:?}");
+        assert!(footer.ends_with("Enter apply row  Esc back"), "{footer:?}");
     }
 
     #[test]
@@ -8873,7 +8990,7 @@ mod tests {
         let depth = app.modal_depth();
         let screen = rendered(&app);
         assert!(screen.contains("Authenticating to run: usermod -s /bin/bash alice"));
-        assert!(screen.contains("Enter submit  Esc cancel operation"));
+        assert!(screen.contains("Enter submit  Esc back"));
         for attempt in 1..=2u8 {
             submit_sudo_password(&mut app);
             let expected = format!("Password rejected (attempt {attempt} of 3)");

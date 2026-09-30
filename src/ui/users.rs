@@ -634,7 +634,7 @@ pub fn render_user_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &
                 "Confirm delete",
                 body,
                 focus,
-                "↑↓ row  ←→ choose  Space tick  y/n  Enter confirm  Esc cancel",
+                "↑↓ row  ←→ choose  Space tick  y/n  Enter confirm  Esc back",
             );
             return;
         }

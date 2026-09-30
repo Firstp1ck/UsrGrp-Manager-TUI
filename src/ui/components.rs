@@ -584,19 +584,20 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 /// Footer for single-choice menus that Backspace also closes.
-pub const MENU_FOOTER: &str = "↑↓ move  Enter select  Backspace back  Esc close";
+pub const MENU_FOOTER: &str = "↑↓ move  Enter select  Backspace/Esc back";
 /// Footer for single-choice lists without a Backspace binding.
 pub const LIST_FOOTER: &str = "↑↓ move  Enter select  Esc back";
 /// Footer for multi-select candidate lists with at least one tick.
-pub const MULTI_FOOTER: &str = "↑↓ move  Space tick  * all  / filter  Enter apply  Esc close";
+pub const MULTI_FOOTER: &str = "↑↓ move  Space tick  * all  / filter  Enter apply  Esc back";
 /// Footer for multi-select candidate lists with nothing ticked: Enter
 /// applies to the highlighted row.
 pub const MULTI_HIGHLIGHTED_FOOTER: &str =
-    "↑↓ move  Space tick  * all  / filter  Enter apply row  Esc close";
+    "↑↓ move  Space tick  * all  / filter  Enter apply row  Esc back";
 /// Footer for multi-select candidate lists while the filter is typed.
-pub const FILTER_FOOTER: &str = "type to filter  Backspace delete  Enter/Esc done";
+/// Enter keeps the filter; Esc clears it.
+pub const FILTER_FOOTER: &str = "type to filter  Backspace delete  Enter keep  Esc clear";
 /// Footer for yes/no dialogs.
-pub const YES_NO_FOOTER: &str = "←→ choose  y/n  Enter confirm  Esc cancel";
+pub const YES_NO_FOOTER: &str = "←→ choose  y/n  Enter confirm  Esc back";
 /// Footer for single-line text inputs.
 pub const TEXT_FOOTER: &str = "type to edit  Enter submit  Esc back";
 /// Footer for forms with several fields, all of which have password
@@ -622,7 +623,7 @@ pub fn byte_budget(value: &str, maximum: usize) -> String {
 }
 
 /// Footer for an operation confirmation whose preview scrolls.
-pub const PREVIEW_FOOTER: &str = "↑↓ PgUp PgDn scroll  ←→ choose  y/n  Enter confirm  Esc cancel";
+pub const PREVIEW_FOOTER: &str = "↑↓ PgUp PgDn scroll  ←→ choose  y/n  Enter confirm  Esc back";
 
 /// Tallest dialog: 18 body rows, the footer row, and two border rows.
 const MAX_MODAL_HEIGHT: u16 = 21;
@@ -1020,7 +1021,7 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
         ModalState::Info { title, message } => (
             title.as_deref().unwrap_or("Result"),
             message.clone(),
-            "Enter/Esc close",
+            "Enter/Esc back",
         ),
         ModalState::Help { scroll } => {
             render_help(frame, area, app, *scroll);
@@ -1042,7 +1043,7 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
                 "Authentication required",
                 body,
                 focus,
-                "Enter submit  Esc cancel operation",
+                "Enter submit  Esc back",
             );
             return;
         }
@@ -1106,7 +1107,7 @@ pub fn render_modal(frame: &mut Frame, area: Rect, app: &AppState, modal: &Modal
                 &title,
                 body,
                 Some(*selected),
-                "↑↓ move  Enter/Space toggle  Backspace back  Esc close",
+                "↑↓ move  Enter/Space toggle  Backspace/Esc back",
             );
             return;
         }
@@ -1413,7 +1414,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &AppState, scroll: u16) {
         &title,
         body,
         None,
-        "↑↓ PgUp PgDn scroll  Esc close",
+        "↑↓ PgUp PgDn scroll  Esc back",
     );
 }
 
