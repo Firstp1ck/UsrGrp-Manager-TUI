@@ -2496,8 +2496,9 @@ fn run_pending_plan(app: &mut AppState, attempts: u8) {
     match app.adapter.execute_prepared_operation(&prepared.plan) {
         Ok(report) => {
             let message = report_message(&report);
-            // The log keeps the internal step ids; the dialog shows plain words.
-            let logged = format_report(&report, |id| id);
+            // The log keeps the internal step ids and error codes; the dialog
+            // shows plain words.
+            let logged = format_report(&report, |id| id, classified_error_message);
             app.log_event("executed", &format!("{steps} => {logged}"));
             if let Some(failed) = &report.failed {
                 // A long preview can push the failure past the line cap, so
@@ -2782,11 +2783,16 @@ fn plain_step_label(id: &str) -> Option<&'static str> {
 /// Result lines after the description: step counts, the failed step, and
 /// whether the account files confirm the outcome.
 fn report_message(report: &crate::sys::OperationReport) -> String {
-    format_report(report, step_label)
+    format_report(report, step_label, CoreError::to_string)
 }
 
-/// `report_message` with the failed step named by `label`.
-fn format_report(report: &crate::sys::OperationReport, label: fn(&str) -> &str) -> String {
+/// `report_message` with the failed step named by `label` and its error
+/// written by `describe`.
+fn format_report(
+    report: &crate::sys::OperationReport,
+    label: fn(&str) -> &str,
+    describe: fn(&CoreError) -> String,
+) -> String {
     let completed = report.completed.len();
     let mut message = format!(
         "{completed} {} completed, {} skipped",
@@ -2797,7 +2803,7 @@ fn format_report(report: &crate::sys::OperationReport, label: fn(&str) -> &str) 
         message.push_str(&format!(
             "\nFailed at {}: {}",
             label(&failed.id),
-            classified_error_message(&failed.error)
+            describe(&failed.error)
         ));
     }
     match &report.reconciliation {
@@ -2815,10 +2821,9 @@ fn format_report(report: &crate::sys::OperationReport, label: fn(&str) -> &str) 
     message
 }
 
-/// Stable, bounded diagnostics shown by the application. `CoreError` never
-/// carries a credential, command output, or password record.
-fn classified_error_message(error: &CoreError) -> String {
-    let code = match error {
+/// Stable code that classifies `error` in the operation log.
+fn error_code(error: &CoreError) -> &'static str {
+    match error {
         CoreError::AuthenticationRequired => "E-AUTH-REQUIRED",
         CoreError::AuthenticationDenied => "E-AUTH-DENIED",
         CoreError::AuthenticationCapability => "E-AUTH-CAPABILITY",
@@ -2832,12 +2837,18 @@ fn classified_error_message(error: &CoreError) -> String {
         CoreError::Io { .. } => "E-IO",
         CoreError::PartialCompletion { .. } => "E-PARTIAL",
         CoreError::PostconditionFailed { .. } => "E-POSTCONDITION",
-    };
-    format!("{error} [{code}]")
+    }
 }
 
-/// Show a classified error above the current dialog and append it to the
-/// operation log. Esc returns to the dialog so the input can be corrected.
+/// Stable, bounded diagnostics written to the operation log: the error text
+/// followed by its bracketed code. Screens show the text alone. `CoreError`
+/// never carries a credential, command output, or password record.
+fn classified_error_message(error: &CoreError) -> String {
+    format!("{error} [{}]", error_code(error))
+}
+
+/// Show an error above the current dialog and append it, with its code, to
+/// the operation log. Esc returns to the dialog so the input can be corrected.
 fn show_error(app: &mut AppState, error: &CoreError) {
     let message = log_error(app, error);
     open_modal(
@@ -2901,10 +2912,11 @@ fn live_name_error<T>(result: CoreResult<T>) -> Option<String> {
     }
 }
 
+/// Append `error` with its code to the operation log and return the plain
+/// text for the screen.
 fn log_error(app: &mut AppState, error: &CoreError) -> String {
-    let message = classified_error_message(error);
-    app.log_event("error", &message);
-    message
+    app.log_event("error", &classified_error_message(error));
+    error.to_string()
 }
 
 /// Report how an operation ended. Every dialog that led to it is closed
@@ -3234,10 +3246,9 @@ mod tests {
         let failed = report(0, true, Verified);
         assert_eq!(report_title(&failed), "Failed");
         assert_eq!(report_title(&report(0, true, partial())), "Failed");
-        let missing =
-            classified_error_message(&CoreError::MissingExecutable { program: "gpasswd" });
-        assert!(missing.ends_with(" [E-EXEC-MISSING]"));
+        let missing = CoreError::MissingExecutable { program: "gpasswd" }.to_string();
         assert!(report_message(&failed).contains(&format!("\nFailed at add member: {missing}\n")));
+        assert!(!report_message(&failed).contains("[E-"));
 
         let halfway = report(1, true, partial());
         assert_eq!(report_title(&halfway), "Partially done");
@@ -3248,15 +3259,88 @@ mod tests {
     }
 
     #[test]
-    fn error_codes_trail_the_message_in_brackets() {
+    fn error_codes_go_to_the_log_but_not_the_screen() {
+        let log = SharedLog::default();
+        let mut app = user_app();
+        app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
         let error = CoreError::Validation {
             field: "user name",
             reason: "must contain 1 to 32 bytes",
         };
+        assert_eq!(error_code(&error), "E-VALIDATION");
         assert_eq!(
-            classified_error_message(&error),
-            "invalid user name: must contain 1 to 32 bytes [E-VALIDATION]"
+            log_error(&mut app, &error),
+            "invalid user name: must contain 1 to 32 bytes"
         );
+        assert!(
+            log.text()
+                .trim_end()
+                .ends_with(" error: invalid user name: must contain 1 to 32 bytes [E-VALIDATION]")
+        );
+    }
+
+    #[test]
+    fn failed_step_shows_plain_text_and_logs_its_code() {
+        let log = SharedLog::default();
+        let snapshot = fixture_snapshot();
+        let adapter = Arc::new(SystemAdapter::from_components(
+            Arc::new(StaticSource(snapshot.clone())),
+            Arc::new(FailRun),
+            Arc::new(FixedIdentityProvider::uid(Uid(0))),
+        ));
+        let mut app = isolated_app(adapter, snapshot);
+        app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
+        start_pending_action(
+            &mut app,
+            PendingAction::ChangeShell {
+                username: "alice".to_owned(),
+                new_shell: "/bin/bash".to_owned(),
+            },
+        );
+        execute_pending_plan(&mut app);
+        let missing = CoreError::MissingExecutable { program: "usermod" }.to_string();
+        match app.modal() {
+            Some(ModalState::Info { message, .. }) => {
+                assert!(message.contains(&format!("\nFailed at change shell: {missing}\n")));
+                assert!(!message.contains("[E-"), "{message}");
+            }
+            _ => panic!("expected the result dialog"),
+        }
+        assert!(!rendered(&app).contains("[E-"));
+        assert!(
+            log.text()
+                .contains(&format!(" error: {missing} [E-EXEC-MISSING]"))
+        );
+    }
+
+    #[test]
+    fn create_user_validation_error_stays_inline_without_a_code() {
+        let log = SharedLog::default();
+        let mut app = root_app();
+        app.set_logger(crate::app::Logger::from_writer(Box::new(log.clone())));
+        open_user_add(&mut app);
+        type_text(&mut app, "1bob");
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.modal_depth(), 1);
+        assert!(app.pending_operation.is_none());
+        match app.modal() {
+            Some(ModalState::UserAddInput {
+                error: Some(message),
+                ..
+            }) => {
+                assert!(
+                    message.ends_with("must start with an ASCII letter or underscore"),
+                    "{message}"
+                );
+                assert!(!message.contains("[E-"));
+            }
+            _ => panic!("expected the create-user form with an error"),
+        }
+        assert!(!rendered(&app).contains("[E-"));
+        assert!(log.text().contains("[E-VALIDATION]"));
     }
 
     #[test]
@@ -3309,7 +3393,8 @@ mod tests {
                 assert_eq!(lines[0], "Change shell of alice to /bin/bash");
                 assert_eq!(lines[1], "0 steps completed, 0 skipped");
                 assert!(lines[2].starts_with("Failed at "));
-                assert!(lines[2].ends_with("[E-EXEC-MISSING]"));
+                let missing = CoreError::MissingExecutable { program: "usermod" }.to_string();
+                assert!(lines[2].ends_with(&missing));
             }
             _ => panic!("expected the result dialog"),
         }
@@ -4382,7 +4467,9 @@ mod tests {
         assert!(matches!(
             app.modal(),
             Some(ModalState::GroupAddInput { name, error: Some(error) })
-                if name == "!" && error.contains("E-VALIDATION")
+                if name == "!"
+                    && error.ends_with("must start with an ASCII letter or underscore")
+                    && !error.contains("[E-")
         ));
         // Fixing the name clears the message while typing.
         press(&mut app, KeyCode::Backspace);
@@ -9264,11 +9351,9 @@ mod tests {
         // Enter with the bad path keeps the form open under the error.
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.modal(), Some(ModalState::ModifyHome { .. })));
-        assert!(
-            home_form(&app)
-                .2
-                .is_some_and(|error| error.ends_with("[E-VALIDATION]"))
-        );
+        assert!(home_form(&app).2.is_some_and(
+            |error| error.ends_with("must not contain colons") && !error.contains("[E-")
+        ));
         assert!(app.pending_operation.is_none());
         for _ in 0..3 {
             press(&mut app, KeyCode::Backspace);
@@ -9469,11 +9554,9 @@ mod tests {
         // Enter with a bad date keeps the form open under the error.
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.modal(), Some(ModalState::ModifyExpiry { .. })));
-        assert!(
-            expiry_form(&app)
-                .1
-                .is_some_and(|error| error.ends_with("[E-VALIDATION]"))
-        );
+        assert!(expiry_form(&app).1.is_some_and(|error| {
+            error.ends_with("year must be between 1970 and 9999") && !error.contains("[E-")
+        }));
         assert!(app.pending_operation.is_none());
     }
 
