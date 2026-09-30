@@ -21,7 +21,7 @@ use crate::{
         PASSWORD_FORM_FOOTER, TEXT_FOOTER, YES_NO_FOOTER, candidate_dialog, char_budget,
         details_plain_text, input_cursor, marker, no_match_text, nothing_loaded_lines,
         push_filter_labels, push_sort_label, render_empty_state, render_modal_frame, row_style,
-        search_title, shadow_skipped_note, text_lines, with_error_line,
+        search_title, shadow_skipped_note, stale_line, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -55,17 +55,20 @@ pub fn users_table_title(app: &AppState) -> String {
     title
 }
 
-/// What the users table says when it has no rows: nothing was loaded
-/// (with the stale reason), or the search and filters hide every user.
+/// What the users table says when it has no rows: nothing was loaded, or
+/// the search and filters hide every user. Either way the stale label with
+/// its reason follows when the last refresh failed.
 pub fn users_empty_lines(app: &AppState) -> Vec<String> {
     if app.users_all.is_empty() {
         nothing_loaded_lines(app, "users")
     } else {
-        vec![no_match_text(
+        let mut lines = vec![no_match_text(
             "users",
             &app.users_query,
             &app.active_user_filter_labels(),
-        )]
+        )];
+        lines.extend(stale_line(app));
+        lines
     }
 }
 
@@ -887,4 +890,40 @@ fn choices_page(options: &[String], selected: usize) -> String {
         .map(|(index, option)| format!("{} {option}", marker(selected, index)))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One loaded user `alice` and a search that matches nobody.
+    fn filtered_out_app() -> AppState {
+        let mut app = AppState::new();
+        app.users_all = vec![SystemUser {
+            uid: 1000,
+            name: "alice".to_owned(),
+            primary_gid: 100,
+            full_name: None,
+            home_dir: "/home/alice".to_owned(),
+            shell: "/bin/sh".to_owned(),
+        }];
+        app.users_query = "zzz".to_owned();
+        app.sort_and_filter();
+        assert!(app.users.is_empty());
+        app
+    }
+
+    #[test]
+    fn filtered_out_users_show_the_stale_reason_after_a_failed_refresh() {
+        let mut app = filtered_out_app();
+        app.last_refresh_label = "22:13:20 UTC".to_owned();
+        app.diagnostics.stale_reason = Some("boom".to_owned());
+        assert_eq!(
+            users_empty_lines(&app),
+            ["No users match /zzz", "STALE since 22:13:20 UTC: boom"]
+        );
+
+        app.diagnostics.stale_reason = None;
+        assert_eq!(users_empty_lines(&app), ["No users match /zzz"]);
+    }
 }

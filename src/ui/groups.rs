@@ -18,7 +18,7 @@ use crate::{
         CandidateView, DetailLine, DetailPart, INPUT_CURSOR, MENU_FOOTER, TEXT_FOOTER,
         YES_NO_FOOTER, candidate_dialog, char_budget, details_plain_text, marker, no_match_text,
         nothing_loaded_lines, push_filter_labels, push_sort_label, render_empty_state,
-        render_modal_frame, row_style, search_title, text_lines, with_error_line,
+        render_modal_frame, row_style, search_title, stale_line, text_lines, with_error_line,
     },
     ui::layout::table_rows,
 };
@@ -53,17 +53,20 @@ fn groups_filter_label(app: &AppState) -> Option<&'static str> {
     }
 }
 
-/// What the groups table says when it has no rows: nothing was loaded
-/// (with the stale reason), or the search and filter hide every group.
+/// What the groups table says when it has no rows: nothing was loaded, or
+/// the search and filter hide every group. Either way the stale label with
+/// its reason follows when the last refresh failed.
 pub fn groups_empty_lines(app: &AppState) -> Vec<String> {
     if app.groups_all.is_empty() {
         nothing_loaded_lines(app, "groups")
     } else {
-        vec![no_match_text(
+        let mut lines = vec![no_match_text(
             "groups",
             &app.groups_query,
             groups_filter_label(app).as_slice(),
-        )]
+        )];
+        lines.extend(stale_line(app));
+        lines
     }
 }
 
@@ -354,4 +357,37 @@ fn member_candidates(
         .map_or_else(CandidateList::default, |group| {
             app.group_member_candidate_list(group.gid, adding, filter)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One loaded group `staff` and a search that matches none.
+    fn filtered_out_app() -> AppState {
+        let mut app = AppState::new();
+        app.groups_all = vec![SystemGroup {
+            gid: 100,
+            name: "staff".to_owned(),
+            members: vec![],
+        }];
+        app.groups_query = "zzz".to_owned();
+        app.sort_and_filter();
+        assert!(app.groups.is_empty());
+        app
+    }
+
+    #[test]
+    fn filtered_out_groups_show_the_stale_reason_after_a_failed_refresh() {
+        let mut app = filtered_out_app();
+        app.last_refresh_label = "22:13:20 UTC".to_owned();
+        app.diagnostics.stale_reason = Some("boom".to_owned());
+        assert_eq!(
+            groups_empty_lines(&app),
+            ["No groups match /zzz", "STALE since 22:13:20 UTC: boom"]
+        );
+
+        app.diagnostics.stale_reason = None;
+        assert_eq!(groups_empty_lines(&app), ["No groups match /zzz"]);
+    }
 }

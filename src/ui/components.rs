@@ -1482,13 +1482,20 @@ pub fn no_match_text(noun: &str, query: &str, filters: &[&str]) -> String {
     text
 }
 
+/// The stale label with its reason (`STALE since 22:13:20 UTC: boom`) when
+/// the last refresh failed, for the second line of a table's empty state.
+pub fn stale_line(app: &AppState) -> Option<String> {
+    app.diagnostics
+        .stale_reason
+        .is_some()
+        .then(|| refresh_label(app))
+}
+
 /// Empty-state lines for a table with nothing loaded: `No users loaded`,
 /// then the stale label with its reason when the last refresh failed.
 pub fn nothing_loaded_lines(app: &AppState, noun: &str) -> Vec<String> {
     let mut lines = vec![format!("No {noun} loaded")];
-    if app.diagnostics.stale_reason.is_some() {
-        lines.push(refresh_label(app));
-    }
+    lines.extend(stale_line(app));
     lines
 }
 
