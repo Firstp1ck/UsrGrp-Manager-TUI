@@ -1394,21 +1394,20 @@ fn render_help(frame: &mut Frame, area: Rect, app: &AppState, scroll: u16) {
 }
 
 /// Filter menu rows for the active tab, without the cursor. User chips read
-/// `[x] Human users`; shadow chips read `[-] Locked (shadow unavailable:
-/// <reason>)` while shadow data is unavailable. The groups menu is a radio:
-/// `(•) User GIDs`.
+/// `[x] Human users`; shadow chips read `[x] Locked (shadow)`, or
+/// `[-] Locked (<reason>)` while `shadow_chips_blocked` gives a reason
+/// (`shadow unavailable: ...`, `2 users without shadow record`). The groups
+/// menu is a radio: `(•) User GIDs`.
 pub fn filter_menu_rows(app: &AppState) -> Vec<String> {
     use crate::app::{ActiveTab, GroupsFilter};
-    use crate::search::ShadowState;
     match app.active_tab {
         ActiveTab::Users => {
             let chips = &app.users_filter_chips;
             let check = |on: bool, label: &str| format!("[{}] {label}", if on { "x" } else { " " });
-            let shadow = |on: bool, label: &str| match &app.diagnostics.shadow {
-                ShadowState::Known(_) => check(on, &format!("{label} (shadow)")),
-                ShadowState::Unavailable { reason } => {
-                    format!("[-] {label} (shadow unavailable: {reason})")
-                }
+            let blocked = app.shadow_chips_blocked();
+            let shadow = |on: bool, label: &str| match &blocked {
+                None => check(on, &format!("{label} (shadow)")),
+                Some(reason) => format!("[-] {label} ({reason})"),
             };
             vec![
                 "Show all".to_owned(),

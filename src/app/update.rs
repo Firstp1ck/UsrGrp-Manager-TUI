@@ -765,10 +765,10 @@ fn handle_filter_modal(app: &mut AppState, selected: &mut usize, key: KeyEvent) 
 }
 
 /// Apply Enter/Space on row `selected` of the users filter menu. Returns
-/// false when the row is disabled: the shadow chips while shadow data is
-/// unavailable.
+/// false when the row is disabled: the shadow chips while
+/// `shadow_chips_blocked` gives a reason. "Show all" still clears them.
 fn toggle_user_filter(app: &mut AppState, selected: usize) -> bool {
-    let shadow_known = matches!(app.diagnostics.shadow, crate::search::ShadowState::Known(_));
+    let shadow_blocked = app.shadow_chips_blocked().is_some();
     let chips = &mut app.users_filter_chips;
     match selected {
         0 => {
@@ -788,7 +788,7 @@ fn toggle_user_filter(app: &mut AppState, selected: usize) -> bool {
         }
         3 => chips.inactive = !chips.inactive,
         4 => chips.no_home = !chips.no_home,
-        5..=7 if !shadow_known => return false,
+        5..=7 if shadow_blocked => return false,
         5 => chips.locked = !chips.locked,
         6 => chips.no_password = !chips.no_password,
         7 => chips.expired = !chips.expired,
@@ -6381,8 +6381,9 @@ mod tests {
         };
         app.diagnostics.shadow =
             crate::search::ShadowState::Known([("alice".to_owned(), locked)].into_iter().collect());
-        toggle_filter_row(&mut app, 5);
-        assert!(app.users_filter_chips.locked);
+        // A chip persisted in filter.conf stays on while the chips are blocked.
+        app.users_filter_chips.locked = true;
+        app.sort_and_filter();
         assert_eq!(app.shadow_filter_skipped, Some(2));
         assert_eq!(user_names(&app), ["alice", "bob", "carol"]);
         let title = ui::users::users_table_title(&app);
@@ -6396,7 +6397,86 @@ mod tests {
             rows.iter()
                 .any(|row| row.contains("shadow filter skipped: 2 users"))
         );
-        assert!(rows.iter().any(|row| row.contains("[x] Locked (shadow)")));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("[-] Locked (2 users without shadow record)"))
+        );
+    }
+
+    /// `filter_app` with shadow known for `names`, none of them locked.
+    fn filter_app_with_shadow(config: &tempfile::TempDir, names: &[&str]) -> AppState {
+        let mut app = filter_app(config);
+        app.diagnostics.shadow = crate::search::ShadowState::Known(
+            names
+                .iter()
+                .map(|name| ((*name).to_owned(), Default::default()))
+                .collect(),
+        );
+        app.sort_and_filter();
+        app
+    }
+
+    #[test]
+    fn shadow_chips_refuse_toggles_while_a_listed_user_has_no_record() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app_with_shadow(&config, &["alice", "bob"]);
+        assert_eq!(app.shadow_records_missing, 1);
+        assert_eq!(
+            app.shadow_chips_blocked().as_deref(),
+            Some("1 user without shadow record")
+        );
+        assert!(!toggle_user_filter(&mut app, 5));
+        assert!(!app.users_filter_chips.locked);
+        toggle_filter_row(&mut app, 5);
+        assert!(!app.users_filter_chips.locked);
+        assert!(!config.path().join("filter.conf").exists());
+    }
+
+    #[test]
+    fn shadow_chips_toggle_when_every_listed_user_has_a_record() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app_with_shadow(&config, &["alice", "bob", "carol"]);
+        assert_eq!(app.shadow_chips_blocked(), None);
+        assert!(toggle_user_filter(&mut app, 5));
+        assert!(app.users_filter_chips.locked);
+    }
+
+    #[test]
+    fn show_all_clears_a_persisted_shadow_chip_while_blocked() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app_with_shadow(&config, &["alice"]);
+        app.users_filter_chips.locked = true;
+        app.sort_and_filter();
+        assert!(app.shadow_chips_blocked().is_some());
+        toggle_filter_row(&mut app, 0);
+        assert!(!app.users_filter_chips.locked);
+        assert_eq!(app.shadow_filter_skipped, None);
+    }
+
+    #[test]
+    fn filter_menu_rows_give_the_reason_the_shadow_chips_are_blocked() {
+        let config = tempfile::tempdir().unwrap();
+        let mut app = filter_app_with_shadow(&config, &["alice"]);
+        let rows = ui::components::filter_menu_rows(&app);
+        assert_eq!(rows[5], "[-] Locked (2 users without shadow record)");
+        assert_eq!(rows[6], "[-] No password (2 users without shadow record)");
+        assert_eq!(rows[7], "[-] Expired (2 users without shadow record)");
+
+        app.diagnostics.shadow = crate::search::ShadowState::Unavailable {
+            reason: "permission denied".to_owned(),
+        };
+        app.sort_and_filter();
+        let rows = ui::components::filter_menu_rows(&app);
+        assert_eq!(
+            rows[5],
+            "[-] Locked (shadow unavailable: permission denied)"
+        );
+
+        let mut app = filter_app_with_shadow(&config, &["alice", "bob", "carol"]);
+        app.users_filter_chips.expired = true;
+        let rows = ui::components::filter_menu_rows(&app);
+        assert_eq!(rows[5], "[ ] Locked (shadow)");
+        assert_eq!(rows[7], "[x] Expired (shadow)");
     }
 
     #[test]

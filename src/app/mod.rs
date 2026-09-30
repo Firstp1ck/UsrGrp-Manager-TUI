@@ -1747,6 +1747,10 @@ pub struct AppState {
     /// and this many listed users had no shadow record, so the shadow chips
     /// were not applied.
     pub shadow_filter_skipped: Option<usize>,
+    /// Set by the last filter pass while shadow is known: how many users left
+    /// after the non-shadow filters have no shadow record. Counted whether or
+    /// not a shadow chip is on; 0 while shadow is unavailable.
+    pub shadow_records_missing: usize,
     pub actions_context: Option<ActionsContext>,
     pub show_keybinds: bool,
     /// General settings from settings.conf.
@@ -1860,6 +1864,7 @@ impl AppState {
             users_sort: UsersSort::default(),
             groups_sort: GroupsSort::default(),
             shadow_filter_skipped: None,
+            shadow_records_missing: 0,
             actions_context: None,
             show_keybinds: true,
             settings: settings::Settings::default(),
@@ -2061,6 +2066,25 @@ impl AppState {
         self.users_filter_chips.human_only = human;
         self.users_filter_chips.system_only = system;
         self.users_filter = None;
+    }
+
+    /// Why the shadow chips (locked, no password, expired) cannot be used,
+    /// or `None` when they can: `shadow unavailable: <reason>` without
+    /// shadow data, `N users without shadow record` when the last filter
+    /// pass found listed users with no record. The filter menu renders and
+    /// toggles the chips by this one rule.
+    pub fn shadow_chips_blocked(&self) -> Option<String> {
+        match &self.diagnostics.shadow {
+            crate::search::ShadowState::Unavailable { reason } => {
+                Some(format!("shadow unavailable: {reason}"))
+            }
+            crate::search::ShadowState::Known(_) if self.shadow_records_missing > 0 => {
+                let count = self.shadow_records_missing;
+                let users = if count == 1 { "user" } else { "users" };
+                Some(format!("{count} {users} without shadow record"))
+            }
+            crate::search::ShadowState::Known(_) => None,
+        }
     }
 
     /// Short names of the user filters that narrow the list, in menu order.

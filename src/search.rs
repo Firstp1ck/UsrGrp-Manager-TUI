@@ -222,27 +222,30 @@ pub fn apply_filters_and_search(app: &mut AppState) {
         });
     }
     let mut shadow_filter_skipped = None;
-    if chips.any_shadow()
-        && let ShadowState::Known(statuses) = &app.diagnostics.shadow
-    {
+    let mut shadow_records_missing = 0;
+    if let ShadowState::Known(statuses) = &app.diagnostics.shadow {
         // Do not claim a complete status filter when any visible account is
-        // unknown to shadow.  The UI keeps the selected filter visible and
-        // titles report how many users lacked a record.
+        // unknown to shadow.  The count is kept even with no shadow chip on,
+        // so the filter menu can disable the chips before they are chosen;
+        // titles report how many users lacked a record when a chip is on.
         let without_record = users
             .iter()
             .filter(|user| !statuses.contains_key(&user.name))
             .count();
-        if without_record > 0 {
-            shadow_filter_skipped = Some(without_record);
-        } else {
-            if chips.locked {
-                users.retain(|user| statuses[&user.name].locked);
-            }
-            if chips.no_password {
-                users.retain(|user| statuses[&user.name].no_password);
-            }
-            if chips.expired {
-                users.retain(|user| statuses[&user.name].expired);
+        shadow_records_missing = without_record;
+        if chips.any_shadow() {
+            if without_record > 0 {
+                shadow_filter_skipped = Some(without_record);
+            } else {
+                if chips.locked {
+                    users.retain(|user| statuses[&user.name].locked);
+                }
+                if chips.no_password {
+                    users.retain(|user| statuses[&user.name].no_password);
+                }
+                if chips.expired {
+                    users.retain(|user| statuses[&user.name].expired);
+                }
             }
         }
     }
@@ -263,6 +266,7 @@ pub fn apply_filters_and_search(app: &mut AppState) {
     }
     app.users = users;
     app.shadow_filter_skipped = shadow_filter_skipped;
+    app.shadow_records_missing = shadow_records_missing;
     let (uid, name) = selected_user.unzip();
     app.selected_user_index = identity_position(&app.users, uid, name.as_deref(), |user| {
         (user.uid, user.name.as_str())
@@ -306,6 +310,80 @@ pub fn apply_filters_and_search(app: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::SystemUser;
+
+    /// A deterministic app listing `names` (UIDs from 1000), shadow known for
+    /// `with_record`, and `locked_names` among them locked.
+    fn shadow_app(names: &[&str], with_record: &[&str], locked_names: &[&str]) -> AppState {
+        let mut app = AppState::new();
+        app.users_all = (1000..)
+            .zip(names)
+            .map(|(uid, name)| SystemUser {
+                uid,
+                name: (*name).to_owned(),
+                primary_gid: uid,
+                full_name: None,
+                home_dir: format!("/home/{name}"),
+                shell: "/bin/sh".to_owned(),
+            })
+            .collect();
+        app.diagnostics.shadow = ShadowState::Known(
+            with_record
+                .iter()
+                .map(|name| {
+                    let status = ShadowStatus {
+                        locked: locked_names.contains(name),
+                        ..Default::default()
+                    };
+                    ((*name).to_owned(), status)
+                })
+                .collect(),
+        );
+        app
+    }
+
+    fn listed(app: &AppState) -> Vec<&str> {
+        app.users.iter().map(|user| user.name.as_str()).collect()
+    }
+
+    #[test]
+    fn missing_shadow_records_are_counted_without_a_shadow_chip() {
+        let mut app = shadow_app(&["alice", "bob"], &["alice"], &[]);
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.shadow_records_missing, 1);
+        assert_eq!(app.shadow_filter_skipped, None);
+        assert_eq!(listed(&app), ["alice", "bob"]);
+    }
+
+    #[test]
+    fn missing_shadow_records_skip_an_active_shadow_chip() {
+        let mut app = shadow_app(&["alice", "bob"], &["alice"], &["alice"]);
+        app.users_filter_chips.locked = true;
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.shadow_records_missing, 1);
+        assert_eq!(app.shadow_filter_skipped, Some(1));
+        assert_eq!(listed(&app), ["alice", "bob"]);
+    }
+
+    #[test]
+    fn complete_shadow_records_let_the_shadow_chip_filter() {
+        let mut app = shadow_app(&["alice", "bob"], &["alice", "bob"], &["alice"]);
+        app.users_filter_chips.locked = true;
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.shadow_records_missing, 0);
+        assert_eq!(app.shadow_filter_skipped, None);
+        assert_eq!(listed(&app), ["alice"]);
+    }
+
+    #[test]
+    fn missing_shadow_records_count_only_users_left_by_other_chips() {
+        // bob (UID 1001) lacks a record but the system chip hides him.
+        let mut app = shadow_app(&["root", "bob"], &["root"], &[]);
+        app.users_all[0].uid = 0;
+        app.users_filter_chips.system_only = true;
+        apply_filters_and_search(&mut app);
+        assert_eq!(app.shadow_records_missing, 0);
+    }
 
     #[test]
     fn parser_marks_known_shadow_status() {
