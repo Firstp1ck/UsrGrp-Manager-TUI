@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use usrgrp_manager::{
-    app::{AppState, is_default_protected_group, is_default_protected_user},
+    app::{AppState, GroupsFilter, is_default_protected_group, is_default_protected_user},
     sys::{
         AccountGroup, AccountSnapshot, AccountUser, FixedIdentityProvider, Gecos, Gid, GroupName,
         ShellPath, SystemAdapter, Uid, UserName,
@@ -104,4 +104,25 @@ fn ui_default_protected_policy_matches_w3_fail_closed_presentation() {
     app.groups[0].gid = 42;
     assert!(is_default_protected_user(&app.users[0]));
     assert!(is_default_protected_group(&app.groups[0]));
+}
+
+#[test]
+fn groups_tab_filter_does_not_hide_user_memberships() {
+    let mut app = app();
+    app.selected_user_index = 0;
+    app.capture_selection_identities();
+    app.groups_filter = Some(GroupsFilter::OnlySystemGids);
+    app.sort_and_filter();
+
+    assert!(
+        app.groups.iter().all(|group| group.gid < 1000),
+        "Groups tab must only list system GIDs"
+    );
+    assert_eq!(app.users[app.selected_user_index].name, "alice");
+    let gids: Vec<u32> = app
+        .selected_user_groups()
+        .iter()
+        .map(|group| group.gid)
+        .collect();
+    assert_eq!(gids, vec![1000]);
 }

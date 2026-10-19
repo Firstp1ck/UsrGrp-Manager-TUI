@@ -44,7 +44,7 @@ fn rendering_does_not_mutate_selection_or_pagination_state() {
         app.selected_group_index,
         app.selected_user_group_index,
         app.selected_group_member_index,
-        app.rows_per_page,
+        app.terminal_size,
     );
     let mut terminal = Terminal::new(TestBackend::new(32, 8)).unwrap();
     terminal.draw(|frame| ui::render(frame, &app)).unwrap();
@@ -55,7 +55,7 @@ fn rendering_does_not_mutate_selection_or_pagination_state() {
             app.selected_group_index,
             app.selected_user_group_index,
             app.selected_group_member_index,
-            app.rows_per_page
+            app.terminal_size
         )
     );
 }

@@ -67,15 +67,15 @@ impl<C: TerminalControl> TerminalResources<C> {
             return Err(resources.with_cleanup(error));
         }
         resources.alternate_screen = true;
-        if let Err(error) = resources.control.enable_mouse_capture() {
-            return Err(resources.with_cleanup(error));
-        }
-        resources.mouse_capture = true;
+        // Mouse capture is intentionally not acquired: the TUI has no mouse
+        // handling, and capturing the mouse would block the terminal's own
+        // text selection (e.g. copying a UID or path).
         Ok(resources)
     }
 
     /// Best-effort reverse cleanup. Every acquired capability is attempted even
     /// when an earlier cleanup fails; the first failure remains observable.
+    /// Capabilities that were never acquired (such as mouse capture) are skipped.
     pub fn restore(&mut self) -> io::Result<()> {
         let mut first_error = None;
         if self.mouse_capture {

@@ -33,7 +33,10 @@ pub use operations::{
     UserTarget, execute_plan, preflight_plan, require_complete,
 };
 #[allow(unused_imports)]
-pub use validation::{Gecos, GroupName, PasswordRecord, SecretString, ShellPath, UserName};
+pub use validation::{
+    ACCOUNT_NAME_LIMIT, ExpiryDate, GECOS_LIMIT, Gecos, GroupName, HomePath, PASSWORD_LIMIT,
+    PATH_LIMIT, PasswordRecord, SecretString, ShellPath, UserName,
+};
 
 use crate::error::{CoreError, CoreResult, Result};
 use operations::AccountCondition;
@@ -154,32 +157,42 @@ impl ProtectedIdentityPolicy {
         if target.uid < self.minimum_mutable_uid
             && !self.allowed_service_users.contains(&target.uid)
         {
-            return Err(target_error("service user is protected by policy"));
+            return Err(target_error("system user, protected"));
         }
         Ok(())
     }
 
     fn check_group(&self, target: &GroupTarget) -> CoreResult<()> {
-        if target.gid == Gid(0) || target.name.as_str() == "root" {
-            return Err(target_error("root group is immutable"));
+        match self.group_rejection(target.gid, &target.name) {
+            Some(reason) => Err(target_error(reason)),
+            None => Ok(()),
         }
-        if target.gid < self.minimum_mutable_gid
-            && !self.allowed_service_groups.contains(&target.gid)
-        {
-            return Err(target_error("service group is protected by policy"));
-        }
-        Ok(())
     }
 
     fn check_elevation_membership(&self, group: &GroupName) -> CoreResult<()> {
-        if self.elevation_groups.contains(group)
-            && !self.allowed_elevation_membership_groups.contains(group)
-        {
-            return Err(target_error(
-                "elevation-group membership requires explicit policy allowlist",
-            ));
+        match self.elevation_rejection(group) {
+            Some(reason) => Err(target_error(reason)),
+            None => Ok(()),
         }
-        Ok(())
+    }
+
+    /// Why group `name` (`gid`) may not be mutated, if it may not.
+    fn group_rejection(&self, gid: Gid, name: &GroupName) -> Option<&'static str> {
+        if gid == Gid(0) || name.as_str() == "root" {
+            return Some("root group is immutable");
+        }
+        if gid < self.minimum_mutable_gid && !self.allowed_service_groups.contains(&gid) {
+            return Some("system group, protected");
+        }
+        None
+    }
+
+    /// Why membership of `group` may not change, if it is an elevation
+    /// group that is not allowlisted.
+    fn elevation_rejection(&self, group: &GroupName) -> Option<&'static str> {
+        (self.elevation_groups.contains(group)
+            && !self.allowed_elevation_membership_groups.contains(group))
+        .then_some("sudo group, protected")
     }
 }
 
@@ -239,6 +252,27 @@ impl SystemAdapter {
             identity,
             policy,
             pending_secret: Mutex::new(None),
+        }
+    }
+
+    /// Whether the policy lets a user be added to group `group` (`gid`).
+    /// Evaluates the same group and elevation-group checks that preparing a
+    /// membership change does, without reading the host. On rejection the
+    /// reason is returned; the elevation reason is reported first because it
+    /// is the more specific one when both apply.
+    pub fn membership_allowed(
+        &self,
+        group: &str,
+        gid: u32,
+    ) -> std::result::Result<(), &'static str> {
+        let name = GroupName::new(group).map_err(|_| "invalid group name")?;
+        match self
+            .policy
+            .elevation_rejection(&name)
+            .or_else(|| self.policy.group_rejection(Gid(gid), &name))
+        {
+            Some(reason) => Err(reason),
+            None => Ok(()),
         }
     }
 
@@ -493,7 +527,7 @@ impl SystemAdapter {
                 let gecos = Gecos::new(gecos)?;
                 let user = mutable_user_target(&snapshot, &username, generation)?;
                 let desired = OperationCheck::account(
-                    "user GECOS matches request",
+                    "user full name matches request",
                     AccountCondition::UserGecos {
                         uid: user.uid,
                         gecos: Some(gecos.clone()),
@@ -573,6 +607,113 @@ impl SystemAdapter {
                             .user_name(&username),
                     )
                     .with_postcondition(OperationCheck::new("password expiry is observed")),
+                ))
+            }
+            OperationRequest::ChangeUserPrimaryGroup {
+                username,
+                groupname,
+            } => {
+                let username = UserName::new(username)?;
+                let groupname = GroupName::new(groupname)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                // Binding the group applies the membership policy to it in
+                // `validate_policy`, the same check adding a member gets.
+                let group = mutable_group_target(&snapshot, &groupname, generation)?;
+                let desired = OperationCheck::account(
+                    "user primary group matches request",
+                    AccountCondition::UserPrimaryGroup {
+                        uid: user.uid,
+                        name: user.name.clone(),
+                        gid: group.gid,
+                    },
+                );
+                Ok(OperationPlan::new(OperationTarget::User(user))
+                    .bind(OperationTarget::Group(group))
+                    .then(
+                        PlannedStep::new(
+                            "change user primary group",
+                            CommandSpec::new(KnownProgram::UserMod)
+                                .fixed_arg("-g")?
+                                .group_name(&groupname)
+                                .user_name(&username),
+                        )
+                        .skip_if_satisfied(desired.clone())
+                        .with_postcondition(desired),
+                    ))
+            }
+            OperationRequest::ChangeUserHome {
+                username,
+                home,
+                move_contents,
+            } => {
+                let username = UserName::new(username)?;
+                let home = HomePath::new(home)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                let desired = OperationCheck::account(
+                    "user home matches request",
+                    AccountCondition::UserHome {
+                        uid: user.uid,
+                        name: user.name.clone(),
+                        home: home.clone(),
+                    },
+                );
+                let mut command = CommandSpec::new(KnownProgram::UserMod)
+                    .fixed_arg("-d")?
+                    .home_path(&home);
+                if move_contents {
+                    command = command.fixed_arg("-m")?;
+                }
+                Ok(
+                    OperationPlan::new(OperationTarget::User(user.clone())).then(
+                        PlannedStep::new("change user home", command.user_name(&username))
+                            .skip_if_satisfied(desired.clone())
+                            .with_postcondition(desired),
+                    ),
+                )
+            }
+            OperationRequest::SetAccountExpiry { username, date } => {
+                let username = UserName::new(username)?;
+                let date = date.map(ExpiryDate::new).transpose()?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                let command = CommandSpec::new(KnownProgram::ChAge).fixed_arg("-E")?;
+                let command = match &date {
+                    Some(date) => command.expiry_date(date),
+                    None => command.fixed_arg("-1")?,
+                };
+                // The expiry lives in /etc/shadow, which this source does not
+                // read: report the result as unobserved, never verified.
+                Ok(OperationPlan::new(OperationTarget::User(user)).then(
+                    PlannedStep::new("set account expiry", command.user_name(&username))
+                        .with_postcondition(OperationCheck::new("account expiry is observed")),
+                ))
+            }
+            OperationRequest::LockUser { username } => {
+                let username = UserName::new(username)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                // The lock flag lives in /etc/shadow, which this source does
+                // not read: report the result as unobserved, never verified.
+                Ok(OperationPlan::new(OperationTarget::User(user)).then(
+                    PlannedStep::new(
+                        "lock user",
+                        CommandSpec::new(KnownProgram::UserMod)
+                            .fixed_arg("-L")?
+                            .user_name(&username),
+                    )
+                    .with_postcondition(OperationCheck::new("account lock state is observed")),
+                ))
+            }
+            OperationRequest::UnlockUser { username } => {
+                let username = UserName::new(username)?;
+                let user = mutable_user_target(&snapshot, &username, generation)?;
+                // Same shadow limitation as `LockUser`.
+                Ok(OperationPlan::new(OperationTarget::User(user)).then(
+                    PlannedStep::new(
+                        "unlock user",
+                        CommandSpec::new(KnownProgram::UserMod)
+                            .fixed_arg("-U")?
+                            .user_name(&username),
+                    )
+                    .with_postcondition(OperationCheck::new("account lock state is observed")),
                 ))
             }
         }?;
@@ -761,7 +902,7 @@ impl SystemAdapter {
         let membership_change = plan.steps.iter().any(|step| {
             matches!(
                 step.id.as_str(),
-                "add user to group" | "remove user from group"
+                "add user to group" | "remove user from group" | "change user primary group"
             )
         });
         for target in &plan.bound_targets {
@@ -1319,8 +1460,37 @@ impl AccountSourceReconciler<'_> {
                     None => CheckStatus::Unsatisfied,
                 }
             }
+            AccountCondition::UserPrimaryGroup { uid, name, gid } => {
+                match named_user(snapshot, *uid, name) {
+                    Some(user) if user.primary_gid == *gid => CheckStatus::Satisfied,
+                    Some(_) => CheckStatus::Unsatisfied,
+                    None => CheckStatus::Unsatisfied,
+                }
+            }
+            AccountCondition::UserHome { uid, name, home } => {
+                match named_user(snapshot, *uid, name) {
+                    Some(user) if user.home_dir == std::path::Path::new(home.as_str()) => {
+                        CheckStatus::Satisfied
+                    }
+                    Some(_) => CheckStatus::Unsatisfied,
+                    None => CheckStatus::Unsatisfied,
+                }
+            }
         }
     }
+}
+
+/// The account with both this UID and this name. The passwd parser accepts
+/// shared UIDs, so matching the UID alone could check another account.
+fn named_user<'a>(
+    snapshot: &'a AccountSnapshot,
+    uid: Uid,
+    name: &UserName,
+) -> Option<&'a AccountUser> {
+    snapshot
+        .users
+        .iter()
+        .find(|user| user.uid == uid && user.name == *name)
 }
 
 impl OperationReconciler for AccountSourceReconciler<'_> {

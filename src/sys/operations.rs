@@ -2,7 +2,7 @@
 
 use super::{
     CommandPreview, CommandRunner, CommandSpec, CoreError, CoreResult, ElevationGrant, Gecos, Gid,
-    GroupName, PasswordRecord, ShellPath, Uid, UserName,
+    GroupName, HomePath, PasswordRecord, ShellPath, Uid, UserName,
 };
 
 /// A stable user identity captured when an operation is planned.
@@ -82,6 +82,33 @@ pub enum OperationRequest {
     ExpireUserPassword {
         username: String,
     },
+    /// Lock the account's password (`usermod -L`).
+    LockUser {
+        username: String,
+    },
+    /// Unlock the account's password (`usermod -U`).
+    UnlockUser {
+        username: String,
+    },
+    /// Change the account's primary group (`usermod -g`). The group must
+    /// pass the same policy as adding a member to it.
+    ChangeUserPrimaryGroup {
+        username: String,
+        groupname: String,
+    },
+    /// Change the account's home directory (`usermod -d`), moving the old
+    /// home's contents there when `move_contents` is set (`-m`).
+    ChangeUserHome {
+        username: String,
+        home: String,
+        move_contents: bool,
+    },
+    /// Set the day the account expires (`chage -E YYYY-MM-DD`), or remove
+    /// the expiry when `date` is None (`chage -E -1`).
+    SetAccountExpiry {
+        username: String,
+        date: Option<String>,
+    },
     /// Ordered requests compiled by the trusted adapter into one exact plan.
     Composite {
         requests: Vec<OperationRequest>,
@@ -119,6 +146,19 @@ pub(crate) enum AccountCondition {
     UserGecos {
         uid: Uid,
         gecos: Option<Gecos>,
+    },
+    /// Checked on the account with this UID and name: the passwd parser
+    /// accepts shared UIDs, so the UID alone can name another account.
+    UserPrimaryGroup {
+        uid: Uid,
+        name: UserName,
+        gid: Gid,
+    },
+    /// Matched on UID and name, like `UserPrimaryGroup`.
+    UserHome {
+        uid: Uid,
+        name: UserName,
+        home: HomePath,
     },
 }
 

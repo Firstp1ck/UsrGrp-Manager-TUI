@@ -1,7 +1,10 @@
 use std::fs;
 
 use usrgrp_manager::{
-    app::{GroupsFilter, Theme, UsersFilter, filterconf::FiltersConfig, keymap::Keymap},
+    app::{
+        GroupsFilter, Theme, ThemePreset, UsersFilter, filterconf::FiltersConfig, keymap::Keymap,
+        settings::Settings,
+    },
     config::atomic_write,
 };
 
@@ -47,6 +50,22 @@ fn canonical_configs_round_trip_and_keep_all_values() {
         filters
     );
 
+    let settings_path = directory.path().join("settings.conf");
+    for settings in [
+        Settings {
+            wrap_selection: false,
+        },
+        Settings::default(),
+    ] {
+        settings
+            .write_file(settings_path.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            Settings::from_file(settings_path.to_str().unwrap()).unwrap(),
+            settings
+        );
+    }
+
     let keymap = Keymap::default();
     keymap.write_file(keymap_path.to_str().unwrap()).unwrap();
     let mut parsed_bindings = Keymap::from_file(keymap_path.to_str().unwrap())
@@ -60,6 +79,95 @@ fn canonical_configs_round_trip_and_keep_all_values() {
         (format!("{action:?}"), Keymap::format_key(*modifiers, *code))
     });
     assert_eq!(parsed_bindings, expected_bindings);
+}
+
+#[test]
+fn theme_preset_selects_the_base_and_is_written_back_only_when_set() {
+    use ratatui::style::Color;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("theme.conf");
+    let path = path.to_str().unwrap();
+
+    // The preset is the base wherever it appears; other keys override it.
+    fs::write(path, "title = #010203\npreset = dark\n").unwrap();
+    let theme = Theme::from_file(path).unwrap();
+    assert_eq!(theme.preset, Some(ThemePreset::Dark));
+    assert_eq!(theme.title, Color::Rgb(1, 2, 3));
+    assert_eq!(
+        Theme {
+            preset: None,
+            title: Theme::dark().title,
+            ..theme
+        },
+        Theme::dark()
+    );
+
+    theme.write_file(path).unwrap();
+    let written = fs::read_to_string(path).unwrap();
+    assert!(written.contains("\npreset = dark\n"), "{written}");
+    assert_eq!(Theme::from_file(path).unwrap(), theme);
+
+    fs::write(path, "preset = mocha\n").unwrap();
+    let mocha = Theme::from_file(path).unwrap();
+    assert_eq!(mocha.preset, Some(ThemePreset::Mocha));
+    assert_eq!(
+        Theme {
+            preset: None,
+            ..mocha
+        },
+        Theme::mocha()
+    );
+
+    // Without a preset the base is Mocha and no preset line is written.
+    Theme::mocha().write_file(path).unwrap();
+    let written = fs::read_to_string(path).unwrap();
+    assert!(
+        !written.lines().any(|line| line.starts_with("preset")),
+        "{written}"
+    );
+    assert_eq!(Theme::from_file(path).unwrap(), Theme::mocha());
+
+    fs::write(path, "text = #FFFFFF\npreset = solarized\n").unwrap();
+    let error = Theme::from_file(path).unwrap_err().to_string();
+    assert!(
+        error.contains("line 2") && error.contains("preset"),
+        "{error}"
+    );
+    fs::write(path, "preset = dark\npreset = mocha\n").unwrap();
+    assert!(
+        Theme::from_file(path)
+            .unwrap_err()
+            .to_string()
+            .contains("line 2")
+    );
+}
+
+#[test]
+fn old_muted_spelling_is_read_and_written_as_muted() {
+    use ratatui::style::Color;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("theme.conf");
+    let path = path.to_str().unwrap();
+    fs::write(path, "_muted = named:red\n").unwrap();
+    let theme = Theme::from_file(path).unwrap();
+    assert_eq!(theme.muted, Color::Red);
+    theme.write_file(path).unwrap();
+    let written = fs::read_to_string(path).unwrap();
+    assert!(written.contains("\nmuted = named:red\n"), "{written}");
+    assert!(!written.contains("_muted"), "{written}");
+}
+
+#[test]
+fn example_theme_matches_the_written_mocha_default() {
+    let example = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/theme.conf");
+    assert_eq!(Theme::from_file(example).unwrap(), Theme::mocha());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("theme.conf");
+    Theme::mocha().write_file(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        fs::read_to_string(example).unwrap()
+    );
 }
 
 #[test]

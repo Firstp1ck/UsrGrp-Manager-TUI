@@ -10,6 +10,11 @@ pub enum KeyAction {
     OpenFilterMenu,
     OpenHelp,
     StartSearch,
+    ClearSearch,
+    Refresh,
+    CycleSort,
+    ToggleMark,
+    CopySelection,
     NewUser,
     DeleteSelection,
     SwitchTab,
@@ -38,12 +43,23 @@ impl Keymap {
         use KeyModifiers as Modifiers;
         let entries = [
             ((Modifiers::NONE, Char('q')), Quit),
-            ((Modifiers::NONE, Esc), Ignore),
+            // The event loop quits on Ctrl+C in every mode anyway; binding it
+            // here lists it in the keybindings panel.
+            ((Modifiers::CONTROL, Char('c')), Quit),
+            // Esc in the main view clears the active tab's search. `Ignore`
+            // stays valid in keybinds.conf but is no longer bound by default.
+            ((Modifiers::NONE, Esc), ClearSearch),
             ((Modifiers::NONE, Char('f')), OpenFilterMenu),
             ((Modifiers::NONE, Char('/')), StartSearch),
+            ((Modifiers::NONE, Char('r')), Refresh),
+            ((Modifiers::NONE, Char('s')), CycleSort),
+            ((Modifiers::NONE, Char(' ')), ToggleMark),
+            ((Modifiers::NONE, Char('y')), CopySelection),
             ((Modifiers::NONE, Char('n')), NewUser),
             ((Modifiers::NONE, Char('?')), OpenHelp),
             ((Modifiers::NONE, Delete), DeleteSelection),
+            // For keyboards without a Delete key.
+            ((Modifiers::NONE, Char('d')), DeleteSelection),
             ((Modifiers::NONE, Tab), SwitchTab),
             ((Modifiers::NONE, BackTab), ToggleUsersFocus),
             ((Modifiers::SHIFT, BackTab), ToggleUsersFocus),
@@ -51,12 +67,15 @@ impl Keymap {
             ((Modifiers::NONE, Enter), EnterAction),
             ((Modifiers::NONE, Up), MoveUp),
             ((Modifiers::NONE, Down), MoveDown),
-            ((Modifiers::NONE, Left), MoveLeftPage),
-            ((Modifiers::NONE, Right), MoveRightPage),
+            // Left/Right and h/l switch the focused pane. Paging stays on
+            // PageUp/PageDown; MoveLeftPage/MoveRightPage remain valid in
+            // keybinds.conf but are no longer bound by default.
+            ((Modifiers::NONE, Left), ToggleUsersFocus),
+            ((Modifiers::NONE, Right), ToggleUsersFocus),
             ((Modifiers::NONE, Char('k')), MoveUp),
             ((Modifiers::NONE, Char('j')), MoveDown),
-            ((Modifiers::NONE, Char('h')), MoveLeftPage),
-            ((Modifiers::NONE, Char('l')), MoveRightPage),
+            ((Modifiers::NONE, Char('h')), ToggleUsersFocus),
+            ((Modifiers::NONE, Char('l')), ToggleUsersFocus),
             ((Modifiers::SHIFT, Char('k')), ToggleKeybindsPane),
             ((Modifiers::SHIFT, Char('K')), ToggleKeybindsPane),
             ((Modifiers::NONE, Char('K')), ToggleKeybindsPane),
@@ -165,6 +184,7 @@ impl Keymap {
             KeyCode::Right => "Right".to_owned(),
             KeyCode::PageUp => "PageUp".to_owned(),
             KeyCode::PageDown => "PageDown".to_owned(),
+            KeyCode::Char(' ') => "Space".to_owned(),
             KeyCode::Char(character) => character.to_string(),
             other => format!("{other:?}"),
         };
@@ -206,6 +226,7 @@ fn parse_key(specification: &str) -> Option<(KeyModifiers, KeyCode)> {
         "Right" => KeyCode::Right,
         "PageUp" => KeyCode::PageUp,
         "PageDown" => KeyCode::PageDown,
+        "Space" => KeyCode::Char(' '),
         value if value.chars().count() == 1 => KeyCode::Char(value.chars().next()?),
         _ => return None,
     };
@@ -226,6 +247,11 @@ fn parse_action(value: &str) -> Option<KeyAction> {
         "OpenFilterMenu" => OpenFilterMenu,
         "OpenHelp" => OpenHelp,
         "StartSearch" => StartSearch,
+        "ClearSearch" => ClearSearch,
+        "Refresh" => Refresh,
+        "CycleSort" => CycleSort,
+        "ToggleMark" => ToggleMark,
+        "CopySelection" => CopySelection,
         "NewUser" => NewUser,
         "DeleteSelection" => DeleteSelection,
         "SwitchTab" => SwitchTab,
@@ -251,6 +277,11 @@ pub fn format_action(action: KeyAction) -> &'static str {
         OpenFilterMenu => "OpenFilterMenu",
         OpenHelp => "OpenHelp",
         StartSearch => "StartSearch",
+        ClearSearch => "ClearSearch",
+        Refresh => "Refresh",
+        CycleSort => "CycleSort",
+        ToggleMark => "ToggleMark",
+        CopySelection => "CopySelection",
         NewUser => "NewUser",
         DeleteSelection => "DeleteSelection",
         SwitchTab => "SwitchTab",
@@ -265,5 +296,207 @@ pub fn format_action(action: KeyAction) -> &'static str {
         MoveLeftPage => "MoveLeftPage",
         MoveRightPage => "MoveRightPage",
         Ignore => "Ignore",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn left_right_and_h_l_switch_panes_by_default() {
+        let keymap = Keymap::default();
+        for code in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+        ] {
+            assert_eq!(
+                keymap.resolve(&key(code)),
+                Some(KeyAction::ToggleUsersFocus)
+            );
+        }
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::PageDown)),
+            Some(KeyAction::PageDown)
+        );
+        assert!(keymap.all_bindings().iter().all(|(_, action)| !matches!(
+            action,
+            KeyAction::MoveLeftPage | KeyAction::MoveRightPage
+        )));
+    }
+
+    #[test]
+    fn example_keybinds_parse_and_switch_panes_with_h_l() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        let keymap = Keymap::from_file(path).unwrap();
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::Char('l'))),
+            Some(KeyAction::ToggleUsersFocus)
+        );
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::Left)),
+            Some(KeyAction::ToggleUsersFocus)
+        );
+    }
+
+    #[test]
+    fn esc_clears_search_by_default_and_ignore_stays_parseable() {
+        assert_eq!(
+            Keymap::default().resolve(&key(KeyCode::Esc)),
+            Some(KeyAction::ClearSearch)
+        );
+        assert_eq!(parse_action("ClearSearch"), Some(KeyAction::ClearSearch));
+        assert_eq!(format_action(KeyAction::ClearSearch), "ClearSearch");
+        assert_eq!(parse_action("Ignore"), Some(KeyAction::Ignore));
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&key(KeyCode::Esc)),
+            Some(KeyAction::ClearSearch)
+        );
+    }
+
+    #[test]
+    fn r_refreshes_by_default_and_in_the_example_config() {
+        assert_eq!(
+            Keymap::default().resolve(&key(KeyCode::Char('r'))),
+            Some(KeyAction::Refresh)
+        );
+        assert_eq!(parse_action("Refresh"), Some(KeyAction::Refresh));
+        assert_eq!(format_action(KeyAction::Refresh), "Refresh");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path)
+                .unwrap()
+                .resolve(&key(KeyCode::Char('r'))),
+            Some(KeyAction::Refresh)
+        );
+    }
+
+    #[test]
+    fn s_cycles_sort_by_default_and_in_the_example_config() {
+        assert_eq!(
+            Keymap::default().resolve(&key(KeyCode::Char('s'))),
+            Some(KeyAction::CycleSort)
+        );
+        assert_eq!(parse_action("CycleSort"), Some(KeyAction::CycleSort));
+        assert_eq!(format_action(KeyAction::CycleSort), "CycleSort");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path)
+                .unwrap()
+                .resolve(&key(KeyCode::Char('s'))),
+            Some(KeyAction::CycleSort)
+        );
+    }
+
+    #[test]
+    fn space_toggles_marks_by_default_and_in_the_example_config() {
+        let space = key(KeyCode::Char(' '));
+        assert_eq!(
+            Keymap::default().resolve(&space),
+            Some(KeyAction::ToggleMark)
+        );
+        assert_eq!(parse_action("ToggleMark"), Some(KeyAction::ToggleMark));
+        assert_eq!(format_action(KeyAction::ToggleMark), "ToggleMark");
+        // A space cannot be written as a config value, so it is spelled out.
+        assert_eq!(
+            parse_key("Space"),
+            Some((KeyModifiers::NONE, KeyCode::Char(' ')))
+        );
+        assert_eq!(
+            Keymap::format_key(KeyModifiers::NONE, KeyCode::Char(' ')),
+            "Space"
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&space),
+            Some(KeyAction::ToggleMark)
+        );
+    }
+
+    #[test]
+    fn y_copies_the_selection_by_default_and_in_the_example_config() {
+        let y = key(KeyCode::Char('y'));
+        assert_eq!(
+            Keymap::default().resolve(&y),
+            Some(KeyAction::CopySelection)
+        );
+        assert_eq!(
+            parse_action("CopySelection"),
+            Some(KeyAction::CopySelection)
+        );
+        assert_eq!(format_action(KeyAction::CopySelection), "CopySelection");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&y),
+            Some(KeyAction::CopySelection)
+        );
+    }
+
+    #[test]
+    fn d_deletes_by_default_and_in_the_example_config() {
+        let d = key(KeyCode::Char('d'));
+        let keymap = Keymap::default();
+        assert_eq!(keymap.resolve(&d), Some(KeyAction::DeleteSelection));
+        assert_eq!(
+            keymap.resolve(&key(KeyCode::Delete)),
+            Some(KeyAction::DeleteSelection)
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        let example = Keymap::from_file(path).unwrap();
+        assert_eq!(example.resolve(&d), Some(KeyAction::DeleteSelection));
+        assert_eq!(
+            example.resolve(&key(KeyCode::Delete)),
+            Some(KeyAction::DeleteSelection)
+        );
+    }
+
+    #[test]
+    fn space_binding_survives_a_write_and_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keybinds.conf");
+        let path = path.to_str().unwrap();
+        Keymap::default().write_file(path).unwrap();
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("ToggleMark = Space\n")
+        );
+        assert_eq!(
+            Keymap::from_file(path)
+                .unwrap()
+                .resolve(&key(KeyCode::Char(' '))),
+            Some(KeyAction::ToggleMark)
+        );
+    }
+
+    #[test]
+    fn ctrl_c_quits_by_default_and_in_the_example_config() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(Keymap::default().resolve(&ctrl_c), Some(KeyAction::Quit));
+        assert_eq!(
+            Keymap::format_key(KeyModifiers::CONTROL, KeyCode::Char('c')),
+            "Ctrl+c"
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/example-configs/keybinds.conf");
+        assert_eq!(
+            Keymap::from_file(path).unwrap().resolve(&ctrl_c),
+            Some(KeyAction::Quit)
+        );
+    }
+
+    #[test]
+    fn page_actions_stay_parseable_for_existing_configs() {
+        assert_eq!(parse_action("MoveLeftPage"), Some(KeyAction::MoveLeftPage));
+        assert_eq!(
+            parse_action("MoveRightPage"),
+            Some(KeyAction::MoveRightPage)
+        );
     }
 }

@@ -10,7 +10,7 @@ use std::{
 };
 
 use usrgrp_manager::{
-    app::{AppState, CachedDiagnostics, Clock, ConfigRootProvider, DiagnosticProvider, InputMode},
+    app::{AppState, CachedDiagnostics, Clock, ConfigRootProvider, DiagnosticProvider},
     search::apply_filters_and_search,
     sys::{AccountSnapshot, SystemAdapter},
 };
@@ -18,10 +18,11 @@ use usrgrp_manager::{
 #[test]
 fn search_query_is_bounded_without_host_io() {
     let mut app = AppState::new();
-    app.input_mode = InputMode::SearchUsers;
-    app.search_query = "x".repeat(10_000);
+    app.users_query = "x".repeat(10_000);
+    app.groups_query = "é".repeat(10_000);
     apply_filters_and_search(&mut app);
-    assert_eq!(app.search_query.len(), 256);
+    assert_eq!(app.users_query.len(), 256);
+    assert_eq!(app.groups_query.len(), 256);
 }
 
 struct FixedClock;

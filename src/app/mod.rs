@@ -5,10 +5,14 @@
 //! rendering or tests.
 pub mod filterconf;
 pub mod keymap;
+pub mod logger;
+pub mod settings;
 pub mod update;
 
+pub use logger::Logger;
+
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::File,
     io::Read,
     path::PathBuf,
@@ -50,11 +54,66 @@ pub enum InputMode {
     Modal,
 }
 
+/// Built-in base palette a theme file can select with `preset = mocha | dark`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemePreset {
+    Mocha,
+    Dark,
+}
+
+impl ThemePreset {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "mocha" => Some(Self::Mocha),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mocha => "mocha",
+            Self::Dark => "dark",
+        }
+    }
+
+    /// The preset's colors, with the preset recorded so it is written back.
+    fn theme(self) -> Theme {
+        let base = match self {
+            Self::Mocha => Theme::mocha(),
+            Self::Dark => Theme::dark(),
+        };
+        Theme {
+            preset: Some(self),
+            ..base
+        }
+    }
+}
+
+/// Theme keys that take a color. `_muted` is the old spelling of `muted`,
+/// still read so existing files keep loading.
+const THEME_COLOR_KEYS: [&str; 11] = [
+    "text",
+    "muted",
+    "_muted",
+    "title",
+    "border",
+    "header_bg",
+    "header_fg",
+    "status_bg",
+    "status_fg",
+    "highlight_fg",
+    "highlight_bg",
+];
+
 /// Color palette for theming the TUI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
+    /// Base chosen by the file's `preset` key, if it had one. Only a theme
+    /// read with a preset writes the key back.
+    pub preset: Option<ThemePreset>,
     pub text: Color,
-    pub _muted: Color,
+    pub muted: Color,
     pub title: Color,
     pub border: Color,
     pub header_bg: Color,
@@ -69,14 +128,16 @@ impl Theme {
     /// Dark default theme with neutral grays and cyan accents.
     pub fn dark() -> Self {
         Self {
+            preset: None,
             text: Color::Gray,
-            _muted: Color::DarkGray,
+            muted: Color::DarkGray,
             title: Color::Cyan,
             border: Color::Gray,
             header_bg: Color::Black,
             header_fg: Color::Cyan,
-            status_bg: Color::DarkGray,
-            status_fg: Color::Black,
+            // Black, not DarkGray: muted status spans are DarkGray.
+            status_bg: Color::Black,
+            status_fg: Color::Gray,
             highlight_fg: Color::Yellow,
             highlight_bg: Color::Reset,
         }
@@ -85,8 +146,9 @@ impl Theme {
     /// Catppuccin Mocha theme defaults.
     pub fn mocha() -> Self {
         Self {
+            preset: None,
             text: Color::Rgb(0xcd, 0xd6, 0xf4),
-            _muted: Color::Rgb(0x7f, 0x84, 0x9c),
+            muted: Color::Rgb(0x7f, 0x84, 0x9c),
             title: Color::Rgb(0xcb, 0xa6, 0xf7),
             border: Color::Rgb(0x58, 0x5b, 0x70),
             header_bg: Color::Rgb(0x31, 0x32, 0x44),
@@ -99,33 +161,55 @@ impl Theme {
     }
 
     /// Load a theme with line-oriented, lossless supported-color parsing.
+    /// The base is Mocha, or the `preset` key's palette wherever that key
+    /// appears in the file; every color key then overrides the base.
     pub fn from_file(path: &str) -> std::io::Result<Self> {
         let contents = crate::config::read_bounded(path)?;
-        let mut theme = Self::mocha();
+        let mut preset = None;
+        let mut colors = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for assignment in crate::config::parse_assignments(&contents)? {
-            let key = assignment.key.as_str();
-            if !seen.insert(key.to_owned()) {
+            let key = assignment.key;
+            if !seen.insert(key.clone()) {
                 return config_line_error(assignment.line, "duplicate theme key");
+            }
+            if key == "preset" {
+                let Some(parsed) = ThemePreset::parse(&assignment.value) else {
+                    return config_line_error(assignment.line, "invalid theme preset");
+                };
+                preset = Some(parsed);
+                continue;
+            }
+            if !THEME_COLOR_KEYS.contains(&key.as_str()) {
+                return config_line_error(assignment.line, "unknown theme key");
             }
             let Some(color) = Self::parse_color(&assignment.value) else {
                 return config_line_error(assignment.line, "invalid theme color");
             };
-            match key {
-                "text" => theme.text = color,
-                "muted" | "_muted" => theme._muted = color,
-                "title" => theme.title = color,
-                "border" => theme.border = color,
-                "header_bg" => theme.header_bg = color,
-                "header_fg" => theme.header_fg = color,
-                "status_bg" => theme.status_bg = color,
-                "status_fg" => theme.status_fg = color,
-                "highlight_fg" => theme.highlight_fg = color,
-                "highlight_bg" => theme.highlight_bg = color,
-                _ => return config_line_error(assignment.line, "unknown theme key"),
-            }
+            colors.push((key, color));
+        }
+        let mut theme = preset.map_or_else(Self::mocha, ThemePreset::theme);
+        for (key, color) in colors {
+            theme.set_color(&key, color);
         }
         Ok(theme)
+    }
+
+    /// Set the color named by one of [`THEME_COLOR_KEYS`].
+    fn set_color(&mut self, key: &str, color: Color) {
+        match key {
+            "text" => self.text = color,
+            "muted" | "_muted" => self.muted = color,
+            "title" => self.title = color,
+            "border" => self.border = color,
+            "header_bg" => self.header_bg = color,
+            "header_fg" => self.header_fg = color,
+            "status_bg" => self.status_bg = color,
+            "status_fg" => self.status_fg = color,
+            "highlight_fg" => self.highlight_fg = color,
+            "highlight_bg" => self.highlight_bg = color,
+            _ => {}
+        }
     }
 
     fn parse_color(value: &str) -> Option<Color> {
@@ -194,14 +278,20 @@ impl Theme {
         }
     }
 
-    /// Atomically persist every theme field in the canonical format.
+    /// Atomically persist every theme field in the canonical format. The
+    /// `preset` line is written only when the theme was read with one.
     pub fn write_file(&self, path: &str) -> std::io::Result<()> {
         let mut contents = String::from(
-            "# usrgrp-manager theme configuration\n# Format: key = value\n# Colors: #RRGGBB, index:N, named:color, or reset\n\n",
+            "# usrgrp-manager theme configuration\n# Format: key = value\n# Optional: preset = mocha | dark picks the base colors; the keys below override it\n# Colors: #RRGGBB, index:N, named:color, or reset\n\n",
         );
+        if let Some(preset) = self.preset {
+            contents.push_str("preset = ");
+            contents.push_str(preset.name());
+            contents.push('\n');
+        }
         for (key, color) in [
             ("text", self.text),
-            ("muted", self._muted),
+            ("muted", self.muted),
             ("title", self.title),
             ("border", self.border),
             ("header_bg", self.header_bg),
@@ -246,21 +336,48 @@ pub enum ModalState {
     Actions {
         selected: usize,
     },
+    /// Enter on the users list while users are marked: the rows of
+    /// [`BULK_ACTIONS`]. `error` says why the last choice was refused, for
+    /// example which marked user the bridge protects.
+    BulkActions {
+        selected: usize,
+        error: Option<String>,
+    },
+    /// Single-select group list for adding (`adding`) or removing every
+    /// marked user, captured when the dialog opens. Blocked entries cannot
+    /// be chosen; Enter on one shows the reason in `error`.
+    BulkGroupPicker {
+        adding: bool,
+        selected: usize,
+        groups: CandidateList,
+        error: Option<String>,
+    },
     FilterMenu {
         selected: usize,
     },
     ModifyMenu {
         selected: usize,
     },
+    /// `selected` indexes the filtered list; ticks are kept by name so they
+    /// survive filter changes.
     ModifyGroupsAdd {
         selected: usize,
         offset: usize,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        /// Keys edit `filter` until Enter or Esc.
+        filtering: bool,
+        /// Why the last tick was refused, shown under the list.
+        error: Option<String>,
     },
+    /// Same fields as `ModifyGroupsAdd`.
     ModifyGroupsRemove {
         selected: usize,
         offset: usize,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        filtering: bool,
+        error: Option<String>,
     },
     ModifyDetailsMenu {
         selected: usize,
@@ -268,33 +385,110 @@ pub enum ModalState {
     ModifyShell {
         selected: usize,
         offset: usize,
+        /// Shells from `/etc/shells`, led by the user's current shell when
+        /// that one is not listed there.
         shells: Vec<String>,
+        /// Index of the user's current shell in `shells`.
+        current: Option<usize>,
+        /// The current shell was prepended because `/etc/shells` lacks it.
+        current_unlisted: bool,
+        /// The user's current shell when it is a label rather than a path,
+        /// such as `(default /bin/sh)` for an empty passwd shell. Shown as a
+        /// note above the list and never offered as a choice.
+        current_label: Option<String>,
     },
+    /// Single-select list of every group for the selected user's primary
+    /// group, captured when the dialog opens. Blocked entries cannot be
+    /// chosen; Enter on one shows the reason in `error`.
+    ModifyPrimaryGroup {
+        selected: usize,
+        /// `groups_all` names with the policy's reason per blocked entry.
+        groups: CandidateList,
+        /// Index of the user's current primary group in `groups`.
+        current: Option<usize>,
+        /// The current primary GID when no group has it, shown as a note.
+        current_gid: Option<u32>,
+        /// Why the last Enter was refused.
+        error: Option<String>,
+    },
+    /// Opens with the current home filled in. Row 0 is the path, row 1 the
+    /// "move contents" checkbox.
+    ModifyHome {
+        selected: usize,
+        value: String,
+        move_contents: bool,
+        /// The home when the dialog opened, shown above the field.
+        current: String,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
+    },
+    /// Opens with the current username or full name filled in.
     ModifyTextInput {
         field: ModifyField,
         value: String,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
+    /// Rows: [`DELETE_ROW_HOME`], [`DELETE_ROW_YES`], [`DELETE_ROW_NO`].
+    /// Everything shown is captured when the dialog opens.
     DeleteConfirm {
         selected: usize,
         allowed: bool,
         delete_home: bool,
+        username: String,
+        uid: u32,
+        home: String,
+        /// The target is the account running this program.
+        is_self: bool,
+        /// Running processes owned by the target, from the last refresh.
+        process_count: Option<usize>,
     },
     ModifyPasswordMenu {
         selected: usize,
+    },
+    /// Opens with the cached expiry date filled in, or empty when the
+    /// account never expires or shadow could not be read. Empty submits
+    /// "never expires".
+    ModifyExpiry {
+        value: String,
+        /// The expiry when the dialog opened: `Some(None)` never expires,
+        /// `None` unknown because shadow has no readable record.
+        current: Option<Option<String>>,
+        /// Validation problem shown inline under the field.
+        error: Option<String>,
     },
     ChangePassword {
         selected: usize,
         password: SecretInput,
         confirm: SecretInput,
         must_change: bool,
+        /// Ctrl+R shows both password fields in clear text.
+        reveal: bool,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
     /// The exact redacted bridge plan is visible before it can run.
+    /// Long previews scroll; Apply is refused until the last step has been
+    /// on screen.
     OperationConfirm {
         selected: usize,
+        /// What the operation does, from [`PendingAction::describe`]; the
+        /// dialog is titled `Confirm: <action>`.
         action: String,
         preview: Vec<String>,
+        /// Index of the first preview line shown.
+        scroll: usize,
+        /// Every preview line has been displayed at least once.
+        seen_all: bool,
+    },
+    /// Ctrl+C while an operation is prepared: quit and drop it, or go back
+    /// to the dialog below. Row 0 is Yes, row 1 is No; opens on No.
+    QuitConfirm {
+        selected: usize,
     },
     Info {
+        /// Dialog title; None shows the default "Result".
+        title: Option<String>,
         message: String,
     },
     Help {
@@ -303,6 +497,8 @@ pub enum ModalState {
     SudoPrompt {
         password: SecretInput,
         error: Option<String>,
+        /// Passwords already rejected for the pending operation.
+        attempts: u8,
     },
     GroupsActions {
         selected: usize,
@@ -310,6 +506,8 @@ pub enum ModalState {
     },
     GroupAddInput {
         name: String,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
     GroupDeleteConfirm {
         selected: usize,
@@ -317,27 +515,49 @@ pub enum ModalState {
     },
     ConfirmRemoveUserFromGroup {
         selected: usize,
-        group_name: String,
+        username: String,
+        groupname: String,
+    },
+    /// Enter on a member in the Members pane: rows [`MEMBER_ROW_GO_TO`]
+    /// and [`MEMBER_ROW_REMOVE`] for `username` in `groupname`.
+    MemberActions {
+        selected: usize,
+        username: String,
+        groupname: String,
+        /// Why the last Enter was refused, such as a member without a
+        /// local user record.
+        error: Option<String>,
     },
     GroupModifyMenu {
         selected: usize,
         target_gid: Option<u32>,
     },
+    /// Same list fields as `ModifyGroupsAdd`.
     GroupModifyAddMembers {
         selected: usize,
         offset: usize,
         target_gid: Option<u32>,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        filtering: bool,
+        error: Option<String>,
     },
+    /// Same list fields as `ModifyGroupsAdd`.
     GroupModifyRemoveMembers {
         selected: usize,
         offset: usize,
         target_gid: Option<u32>,
-        selected_multi: Vec<usize>,
+        selected_multi: Vec<String>,
+        filter: String,
+        filtering: bool,
+        error: Option<String>,
     },
+    /// Opens with the current group name filled in.
     GroupRenameInput {
         name: String,
         target_gid: Option<u32>,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
     UserAddInput {
         selected: usize,
@@ -346,8 +566,100 @@ pub enum ModalState {
         confirm: SecretInput,
         create_home: bool,
         add_to_wheel: bool,
+        /// Ctrl+R shows both password fields in clear text.
+        reveal: bool,
+        /// Set once a submission has consumed the typed password. Until a new
+        /// password is typed, submitting is refused, so a failed attempt
+        /// cannot be retried as an account without a password.
+        password_reentry_required: bool,
+        /// Set by the first edit of the username field. Until then an empty
+        /// name is not reported, so a fresh form opens without an error.
+        name_touched: bool,
+        /// Validation problem shown inline under the fields.
+        error: Option<String>,
     },
 }
+
+impl ModalState {
+    /// The inline validation message of a form or multi-select dialog, if
+    /// it has one.
+    pub fn form_error(&self) -> Option<&str> {
+        match self {
+            Self::ModifyTextInput { error, .. }
+            | Self::BulkActions { error, .. }
+            | Self::MemberActions { error, .. }
+            | Self::BulkGroupPicker { error, .. }
+            | Self::ModifyPrimaryGroup { error, .. }
+            | Self::ModifyHome { error, .. }
+            | Self::ModifyExpiry { error, .. }
+            | Self::ChangePassword { error, .. }
+            | Self::GroupAddInput { error, .. }
+            | Self::GroupRenameInput { error, .. }
+            | Self::UserAddInput { error, .. }
+            | Self::ModifyGroupsAdd { error, .. }
+            | Self::ModifyGroupsRemove { error, .. }
+            | Self::GroupModifyAddMembers { error, .. }
+            | Self::GroupModifyRemoveMembers { error, .. } => error.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// Longest username or group name a text field accepts, in bytes. Equal to
+/// the bridge limit in `src/sys/validation.rs`.
+pub const MAX_NAME_BYTES: usize = crate::sys::ACCOUNT_NAME_LIMIT;
+/// Longest full name (GECOS) a text field accepts, in bytes. Equal to the
+/// bridge limit in `src/sys/validation.rs`.
+pub const MAX_GECOS_BYTES: usize = crate::sys::GECOS_LIMIT;
+/// Longest home directory path the home field accepts, in bytes. Equal to the
+/// bridge limit in `src/sys/validation.rs`.
+pub const MAX_HOME_BYTES: usize = crate::sys::PATH_LIMIT;
+/// Length of a `YYYY-MM-DD` expiry date, the most the expiry field accepts.
+/// The date is ASCII, so this is also its length in bytes.
+pub const MAX_EXPIRY_CHARS: usize = 10;
+/// Longest password each password field and the sudo prompt accept, in
+/// bytes. Equal to the bridge limit in `src/sys/validation.rs`.
+pub const MAX_PASSWORD_BYTES: usize = crate::sys::PASSWORD_LIMIT;
+/// Form error shown when a keystroke would pass a field's limit.
+pub const MAX_LENGTH_REACHED: &str = "Maximum length reached";
+
+/// Why root and system accounts cannot be deleted: replaces Yes in their
+/// delete dialog and answers Enter on it.
+pub const PROTECTED_USER_MESSAGE: &str =
+    "Root and system accounts (UID below 1000) cannot be deleted from this tool.";
+/// Why root and system groups cannot be deleted or renamed.
+pub const PROTECTED_GROUP_MESSAGE: &str =
+    "Root and system groups (GID below 1000) cannot be changed from this tool.";
+
+/// Rows of the bulk actions menu, in order.
+pub const BULK_ACTIONS: [&str; 4] = [
+    "Add marked users to a group",
+    "Remove marked users from a group",
+    "Lock marked",
+    "Unlock marked",
+];
+/// Row of [`BULK_ACTIONS`] that adds the marked users to a group.
+pub const BULK_ROW_ADD: usize = 0;
+/// Row of [`BULK_ACTIONS`] that removes the marked users from a group.
+pub const BULK_ROW_REMOVE: usize = 1;
+/// Row of [`BULK_ACTIONS`] that locks the marked accounts.
+pub const BULK_ROW_LOCK: usize = 2;
+/// Row of [`BULK_ACTIONS`] that unlocks the marked accounts.
+pub const BULK_ROW_UNLOCK: usize = 3;
+
+/// Rows of the member actions menu, in order.
+pub const MEMBER_ACTIONS: [&str; 2] = ["Go to user", "Remove from group"];
+/// Row of [`MEMBER_ACTIONS`] that shows the member on the Users tab.
+pub const MEMBER_ROW_GO_TO: usize = 0;
+/// Row of [`MEMBER_ACTIONS`] that asks to remove the member from the group.
+pub const MEMBER_ROW_REMOVE: usize = 1;
+
+/// "Also delete home" checkbox row of the user delete dialog.
+pub const DELETE_ROW_HOME: usize = 0;
+/// Yes button of the user delete dialog.
+pub const DELETE_ROW_YES: usize = 1;
+/// No button of the user delete dialog, where the cursor starts.
+pub const DELETE_ROW_NO: usize = 2;
 
 #[derive(Clone, Debug)]
 pub enum ModifyField {
@@ -355,7 +667,43 @@ pub enum ModifyField {
     Fullname,
 }
 
-#[derive(Clone, Debug, Default)]
+impl ModifyField {
+    /// Bytes the field accepts before [`MAX_LENGTH_REACHED`].
+    pub fn max_bytes(&self) -> usize {
+        match self {
+            Self::Username => MAX_NAME_BYTES,
+            Self::Fullname => MAX_GECOS_BYTES,
+        }
+    }
+}
+
+/// One entry of the "Modify user" menu. The renderer and the key handler both
+/// index [`AppState::modify_menu_items`], so a highlighted row is always the
+/// entry that opens.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModifyMenuItem {
+    AddGroup,
+    RemoveGroup,
+    Details,
+    Password,
+    Lock,
+    Unlock,
+}
+
+impl ModifyMenuItem {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AddGroup => "Add group",
+            Self::RemoveGroup => "Remove group",
+            Self::Details => "Modify details",
+            Self::Password => "Password",
+            Self::Lock => "Lock account",
+            Self::Unlock => "Unlock account",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UsersFilterChips {
     pub human_only: bool,
     pub system_only: bool,
@@ -364,6 +712,13 @@ pub struct UsersFilterChips {
     pub locked: bool,
     pub no_password: bool,
     pub expired: bool,
+}
+
+impl UsersFilterChips {
+    /// Whether any chip backed by shadow data (locked, no password, expired) is on.
+    pub fn any_shadow(&self) -> bool {
+        self.locked || self.no_password || self.expired
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -376,6 +731,68 @@ pub enum UsersFilter {
 pub enum GroupsFilter {
     OnlyUserGids,
     OnlySystemGids,
+}
+
+/// Row order of the Users table, cycled with `CycleSort`. Not persisted.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum UsersSort {
+    #[default]
+    Uid,
+    Name,
+    Shell,
+    Home,
+}
+
+impl UsersSort {
+    /// The order after this one; the last wraps to UID.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Uid => Self::Name,
+            Self::Name => Self::Shell,
+            Self::Shell => Self::Home,
+            Self::Home => Self::Uid,
+        }
+    }
+
+    /// Title label (`sort: name`), or `None` for the default UID order.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Uid => None,
+            Self::Name => Some("name"),
+            Self::Shell => Some("shell"),
+            Self::Home => Some("home"),
+        }
+    }
+}
+
+/// Row order of the Groups table, cycled with `CycleSort`. Not persisted.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum GroupsSort {
+    #[default]
+    Gid,
+    Name,
+    /// Most secondary members first.
+    Members,
+}
+
+impl GroupsSort {
+    /// The order after this one; the last wraps to GID.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Gid => Self::Name,
+            Self::Name => Self::Members,
+            Self::Members => Self::Gid,
+        }
+    }
+
+    /// Title label (`sort: members`), or `None` for the default GID order.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Gid => None,
+            Self::Name => Some("name"),
+            Self::Members => Some("members"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -436,7 +853,8 @@ pub enum PendingAction {
         username: String,
         set_password: bool,
         create_home: bool,
-        add_to_wheel: bool,
+        /// The sudo group to join, when the box was ticked.
+        sudo_group: Option<String>,
     },
     DeleteUser {
         username: String,
@@ -449,6 +867,183 @@ pub enum PendingAction {
     ResetPassword {
         username: String,
     },
+    LockUser {
+        username: String,
+    },
+    UnlockUser {
+        username: String,
+    },
+    /// Lock every marked account in one composite operation.
+    LockUsers {
+        usernames: Vec<String>,
+    },
+    /// Unlock every marked account in one composite operation.
+    UnlockUsers {
+        usernames: Vec<String>,
+    },
+    ChangePrimaryGroup {
+        username: String,
+        groupname: String,
+    },
+    ChangeHome {
+        username: String,
+        home: String,
+        move_contents: bool,
+    },
+    /// `date` is `YYYY-MM-DD`; None removes the expiry.
+    SetAccountExpiry {
+        username: String,
+        date: Option<String>,
+    },
+}
+
+/// Most names an action description lists before summarizing the rest.
+const DESCRIBE_MAX_NAMES: usize = 5;
+
+/// `wheel, docker`; past [`DESCRIBE_MAX_NAMES`] the rest become `and 3 more`.
+pub(crate) fn describe_names(names: &[String]) -> String {
+    let mut text = names
+        .iter()
+        .take(DESCRIBE_MAX_NAMES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > DESCRIBE_MAX_NAMES {
+        text.push_str(&format!(" and {} more", names.len() - DESCRIBE_MAX_NAMES));
+    }
+    text
+}
+
+/// `account` for one name, `accounts` for several.
+fn accounts(names: &[String]) -> &'static str {
+    if names.len() == 1 {
+        "account"
+    } else {
+        "accounts"
+    }
+}
+
+impl PendingAction {
+    /// What the action does, as one sentence for the confirmation title and
+    /// the result dialog: `Change shell of alice to /bin/zsh`.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::AddUserToGroup {
+                username,
+                groupname,
+            } => format!("Add {username} to {groupname}"),
+            Self::RemoveUserFromGroup {
+                username,
+                groupname,
+            } => format!("Remove {username} from {groupname}"),
+            Self::AddUserToGroups {
+                username,
+                groupnames,
+            } => format!("Add {username} to {}", describe_names(groupnames)),
+            Self::RemoveUserFromGroups {
+                username,
+                groupnames,
+            } => format!("Remove {username} from {}", describe_names(groupnames)),
+            Self::AddMembersToGroup {
+                groupname,
+                usernames,
+            } => format!("Add {} to {groupname}", describe_names(usernames)),
+            Self::RemoveMembersFromGroup {
+                groupname,
+                usernames,
+            } => format!("Remove {} from {groupname}", describe_names(usernames)),
+            Self::ChangeShell {
+                username,
+                new_shell,
+            } => format!("Change shell of {username} to {new_shell}"),
+            Self::ChangeFullname { username, .. } => format!("Set full name of {username}"),
+            Self::ChangeUsername {
+                old_username,
+                new_username,
+            } => format!("Rename user {old_username} to {new_username}"),
+            Self::CreateGroup { groupname } => format!("Create group {groupname}"),
+            Self::DeleteGroup { groupname } => format!("Delete group {groupname}"),
+            Self::RenameGroup { old_name, new_name } => {
+                format!("Rename group {old_name} to {new_name}")
+            }
+            Self::CreateUserWithOptions {
+                username,
+                set_password,
+                create_home,
+                sudo_group,
+            } => {
+                let mut options = Vec::new();
+                if *create_home {
+                    options.push("home".to_owned());
+                }
+                if *set_password {
+                    options.push("password".to_owned());
+                }
+                if let Some(group) = sudo_group {
+                    options.push(format!("sudo group {group}"));
+                }
+                if options.is_empty() {
+                    format!("Create user {username}")
+                } else {
+                    format!("Create user {username} ({})", options.join(", "))
+                }
+            }
+            Self::DeleteUser {
+                username,
+                delete_home,
+            } => {
+                if *delete_home {
+                    format!("Delete user {username} and its home")
+                } else {
+                    format!("Delete user {username}")
+                }
+            }
+            Self::SetPassword {
+                username,
+                must_change,
+            } => {
+                if *must_change {
+                    format!("Set password for {username} (must change at next login)")
+                } else {
+                    format!("Set password for {username}")
+                }
+            }
+            Self::ResetPassword { username } => {
+                format!("Force {username} to change password at next login")
+            }
+            Self::LockUser { username } => format!("Lock account {username}"),
+            Self::UnlockUser { username } => format!("Unlock account {username}"),
+            Self::LockUsers { usernames } => {
+                format!("Lock {} {}", accounts(usernames), describe_names(usernames))
+            }
+            Self::UnlockUsers { usernames } => {
+                format!(
+                    "Unlock {} {}",
+                    accounts(usernames),
+                    describe_names(usernames)
+                )
+            }
+            Self::ChangePrimaryGroup {
+                username,
+                groupname,
+            } => format!("Change primary group of {username} to {groupname}"),
+            Self::ChangeHome {
+                username,
+                home,
+                move_contents,
+            } => {
+                if *move_contents {
+                    format!("Change home of {username} to {home} (moving contents)")
+                } else {
+                    format!("Change home of {username} to {home}")
+                }
+            }
+            Self::SetAccountExpiry { username, date } => match date {
+                Some(date) => format!("Set account expiry of {username} to {date}"),
+                None => format!("Remove account expiry of {username}"),
+            },
+        }
+    }
 }
 
 /// Password input which cannot be cloned or formatted and is zeroized when
@@ -465,8 +1060,40 @@ impl SecretInput {
     pub fn pop(&mut self) {
         self.value.pop();
     }
+    /// Bytes typed, the unit length limits count in, like the bridge.
     pub fn len(&self) -> usize {
         self.value.len()
+    }
+    /// Characters typed, the unit the masked display and the strength hint
+    /// count in. Length limits count bytes; see [`Self::len`].
+    pub fn char_count(&self) -> usize {
+        self.value.chars().count()
+    }
+    /// One `*` per character, or the typed text when `reveal` is set. The
+    /// copy is zeroized on drop; borrow it for the render, never re-format it.
+    pub fn display(&self, reveal: bool) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(if reveal {
+            self.value.clone()
+        } else {
+            "*".repeat(self.char_count())
+        })
+    }
+    /// Rough strength hint: `weak` under 8 characters, `strong` from 12
+    /// characters with letters, digits, and symbols, otherwise `ok`.
+    pub fn strength(&self) -> &'static str {
+        let has = |test: fn(&char) -> bool| self.value.chars().any(|c| test(&c));
+        let count = self.char_count();
+        if count < 8 {
+            "weak"
+        } else if count >= 12
+            && has(|c| c.is_alphabetic())
+            && has(|c| c.is_numeric())
+            && has(|c| !c.is_alphanumeric())
+        {
+            "strong"
+        } else {
+            "ok"
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
@@ -474,8 +1101,18 @@ impl SecretInput {
     pub fn matches(&self, other: &Self) -> bool {
         self.value == other.value
     }
+    /// Apply the `chpasswd` password rules to the typed value in place, so
+    /// a rejected password stays in the field.
+    pub fn check(&self) -> crate::error::CoreResult<()> {
+        PasswordRecord::check(&self.value)
+    }
     pub fn take(&mut self) -> String {
         std::mem::take(&mut self.value)
+    }
+    /// Zeroize and empty the field.
+    pub fn clear(&mut self) {
+        use zeroize::Zeroize;
+        self.value.zeroize();
     }
 }
 
@@ -486,6 +1123,9 @@ impl Drop for SecretInput {
     }
 }
 
+/// Title of the dialog and help section that list configuration problems.
+pub const CONFIG_PROBLEMS_TITLE: &str = "Configuration problems";
+
 /// Cached, bounded diagnostics populated only by explicit refresh effects.
 #[derive(Clone, Debug, Default)]
 pub struct CachedDiagnostics {
@@ -494,6 +1134,9 @@ pub struct CachedDiagnostics {
     /// Group summaries are computed during refresh, never by a frame render.
     pub groups: HashMap<u32, GroupDiagnostics>,
     pub group_mtime_days: Option<u64>,
+    /// Days since the UNIX epoch when this refresh ran, so the details pane
+    /// can say how long ago /etc/group changed without reading the clock.
+    pub refreshed_days: u64,
     pub stale_reason: Option<String>,
     /// At most three source/line diagnostics are retained for display.
     pub config_messages: Vec<String>,
@@ -505,6 +1148,9 @@ pub struct HomeDiagnostics {
     pub exists: Option<bool>,
     pub permissions: Option<String>,
     pub authorized_key_count: Option<usize>,
+    /// Processes whose real UID is this account's. None when /proc could
+    /// not be read completely.
+    pub process_count: Option<usize>,
 }
 
 /// Cached group facts used by the details pane. Counts are bounded by the
@@ -517,6 +1163,43 @@ pub struct GroupDiagnostics {
     pub empty_password_members: usize,
     pub expired_members: usize,
     pub members_truncated: bool,
+}
+
+/// Format the time of day of `time` as `HH:MM:SS UTC`. Times before the
+/// UNIX epoch show as midnight.
+pub fn utc_time_label(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+        % 86_400;
+    format!(
+        "{:02}:{:02}:{:02} UTC",
+        seconds / 3_600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+/// Format a day count since the UNIX epoch as a `YYYY-MM-DD` calendar date
+/// (proleptic Gregorian, UTC). Negative counts are dates before 1970.
+pub fn civil_date_label(days: i64) -> String {
+    // Howard Hinnant's days-to-civil algorithm, with eras of 400 years
+    // counted from 0000-03-01 so leap days fall at the end of each year.
+    let z = days.saturating_add(719_468);
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// Injectable clock for deterministic diagnostics and config-root tests.
@@ -553,6 +1236,131 @@ impl ConfigRootProvider for SystemConfigRootProvider {
     }
 }
 
+/// What `load_configuration` did with one configuration file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigFileState {
+    /// The file at this path was read.
+    Loaded(String),
+    /// No file existed, so defaults were written to the save path.
+    Created,
+    /// Reading or creating the file failed; defaults are in use and the
+    /// error is in the recorded configuration messages.
+    Failed,
+}
+
+/// Paths of one configuration file, cached for the help dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigFilePaths {
+    /// File name, such as `theme.conf`.
+    pub name: String,
+    /// Whether the file was read, created, or could not be loaded.
+    pub state: ConfigFileState,
+    /// Where changes are written: the file in the first config root.
+    pub save: String,
+}
+
+impl ConfigFilePaths {
+    /// Load `name` with `load` from the file found in the config roots of
+    /// `app`, or from the save path when none exists (`load` then writes
+    /// defaults there), and record which of those happened.
+    fn load<T>(
+        app: &AppState,
+        name: &str,
+        load: impl FnOnce(&str) -> std::io::Result<T>,
+    ) -> (Self, std::io::Result<T>) {
+        let save = app.configuration_write_path(name);
+        let found = app.config_file_read_path(name);
+        let result = load(found.as_deref().unwrap_or(&save));
+        let state = match (&result, found) {
+            (Err(_), _) => ConfigFileState::Failed,
+            (Ok(_), Some(path)) => ConfigFileState::Loaded(path),
+            (Ok(_), None) => ConfigFileState::Created,
+        };
+        let paths = Self {
+            name: name.to_owned(),
+            state,
+            save,
+        };
+        (paths, result)
+    }
+}
+
+/// Single config root chosen with `--config-dir`. The default search order
+/// is not consulted, so reads and writes both use this directory.
+pub struct FixedConfigRootProvider(pub PathBuf);
+impl ConfigRootProvider for FixedConfigRootProvider {
+    fn roots(&self) -> Vec<PathBuf> {
+        vec![self.0.clone()]
+    }
+}
+
+/// Startup options from the command line. The default is the plain TUI.
+#[derive(Default)]
+pub struct RunOptions {
+    /// Replace the default config search roots with this one directory.
+    pub config_dir: Option<PathBuf>,
+    /// Show every prepared preview but never execute it.
+    pub dry_run: bool,
+    /// Already-opened operation log.
+    pub logger: Option<Logger>,
+}
+
+/// Where the copy key sends its OSC 52 sequence. The production sink writes
+/// to the terminal; tests inject a recording fake so nothing reaches one.
+pub trait ClipboardSink: Send + Sync {
+    fn copy(&self, bytes: &[u8]) -> std::io::Result<()>;
+}
+
+/// Writes the sequence to stdout, where the terminal turns it into a
+/// clipboard update if it allows OSC 52.
+pub struct StdoutClipboard;
+impl ClipboardSink for StdoutClipboard {
+    fn copy(&self, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(bytes)?;
+        stdout.flush()
+    }
+}
+
+/// Longest text the copy key sends, in bytes.
+pub const MAX_COPY_BYTES: usize = 256;
+
+/// Standard base64 (RFC 4648 alphabet) with `=` padding.
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let triple = chunk.iter().enumerate().fold(0u32, |acc, (index, byte)| {
+            acc | (u32::from(*byte) << (16 - 8 * index))
+        });
+        for index in 0..4 {
+            if index <= chunk.len() {
+                let sextet = (triple >> (18 - 6 * index)) & 0x3f;
+                out.push(char::from(ALPHABET[sextet as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// The OSC 52 sequence that asks the terminal to put `text` on the
+/// clipboard: `ESC ] 52 ; c ; <base64> BEL`.
+pub fn osc52_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))
+}
+
+/// `text` cut to at most `MAX_COPY_BYTES` bytes at a character boundary.
+fn cap_copy_text(text: &str) -> &str {
+    let mut end = text.len().min(MAX_COPY_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Injectable bounded diagnostics effect. Renderers only consume its result.
 pub trait DiagnosticProvider: Send + Sync {
     fn refresh(&self, snapshot: &AccountSnapshot, now: SystemTime) -> CachedDiagnostics;
@@ -566,9 +1374,13 @@ impl DiagnosticProvider for SystemDiagnosticProvider {
         const MAX_TOTAL_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
         let mut diagnostics = CachedDiagnostics {
             shadow: crate::search::read_shadow_state(),
+            refreshed_days: now
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs() / 86_400),
             ..CachedDiagnostics::default()
         };
         let mut remaining_bytes = MAX_TOTAL_DIAGNOSTIC_BYTES;
+        let process_counts = read_process_counts(std::path::Path::new("/proc"));
         for user in snapshot.users.iter().take(MAX_USERS) {
             let metadata = std::fs::metadata(&user.home_dir);
             let (exists, permissions) = match metadata {
@@ -598,6 +1410,9 @@ impl DiagnosticProvider for SystemDiagnosticProvider {
                     exists,
                     permissions,
                     authorized_key_count,
+                    process_count: process_counts
+                        .as_ref()
+                        .map(|counts| counts.get(&user.uid.0).copied().unwrap_or(0)),
                 },
             );
             if remaining_bytes == 0 {
@@ -653,6 +1468,68 @@ impl DiagnosticProvider for SystemDiagnosticProvider {
     }
 }
 
+/// Most `/proc` entries scanned for process counts.
+const MAX_PROC_ENTRIES: usize = 65_536;
+/// Most bytes read from one `/proc/<pid>/status` file.
+const MAX_PROC_STATUS_BYTES: u64 = 4096;
+
+/// Count processes per real UID from `<proc_root>/<pid>/status`. Fails
+/// closed: returns None when the directory cannot be listed, has more than
+/// [`MAX_PROC_ENTRIES`] entries, a status file cannot be opened or read for
+/// any reason other than NotFound (its process exited mid-scan), or a status
+/// file has no parseable `Uid:` line. A partial count is never reported as
+/// complete.
+fn read_process_counts(proc_root: &std::path::Path) -> Option<HashMap<u32, usize>> {
+    let mut counts = HashMap::new();
+    let mut entries = std::fs::read_dir(proc_root).ok()?;
+    for entry in entries.by_ref().take(MAX_PROC_ENTRIES) {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Some(bytes) = read_proc_status(&entry.path().join("status")).ok()? else {
+            continue;
+        };
+        let uid = status_real_uid(&String::from_utf8_lossy(&bytes))?;
+        *counts.entry(uid).or_default() += 1;
+    }
+    if entries.next().is_some() {
+        return None;
+    }
+    Some(counts)
+}
+
+/// Read at most [`MAX_PROC_STATUS_BYTES`] of one status file. `Ok(None)`
+/// means the process exited (NotFound) and is skipped; any other open or
+/// read error is returned and fails the whole scan.
+fn read_proc_status(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take(MAX_PROC_STATUS_BYTES)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    };
+    match read() {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Real UID from the `Uid:` line of a `/proc/<pid>/status` file.
+fn status_real_uid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|ids| ids.split_whitespace().next())
+        .and_then(|uid| uid.parse().ok())
+}
+
 fn read_authorized_key_count(path: &std::path::Path, limit: usize) -> Option<(usize, usize)> {
     if limit == 0 {
         return None;
@@ -695,6 +1572,8 @@ impl OneShotPassword {
 /// separate from generic UI requests/reports and drops it on cancellation.
 pub struct PreparedOperation {
     pub(crate) plan: OperationPlan,
+    /// What the plan does, from [`PendingAction::describe`].
+    pub description: String,
 }
 impl PreparedOperation {
     pub fn preview(&self) -> Vec<String> {
@@ -706,6 +1585,111 @@ impl PreparedOperation {
             .map(|preview| preview.render())
             .collect()
     }
+}
+
+/// Limits on the membership cache (`AppState::user_group_gids`): how many
+/// users and groups are read and how many supplementary membership edges are
+/// recorded. The cache is built in (UID, name) and (GID, name) order, so the
+/// limits cut the same entries whatever the display order or sort history is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MembershipCacheBounds {
+    pub max_users: usize,
+    pub max_groups: usize,
+    pub max_membership_edges: usize,
+}
+
+impl Default for MembershipCacheBounds {
+    fn default() -> Self {
+        Self {
+            max_users: 10_000,
+            max_groups: 10_000,
+            max_membership_edges: 100_000,
+        }
+    }
+}
+
+/// Row of a selection identity: the exact (id, name) pair first, then the
+/// first row with the id alone (for example after a rename).
+pub(crate) fn identity_position<T>(
+    rows: &[T],
+    id: Option<u32>,
+    name: Option<&str>,
+    key: impl Fn(&T) -> (u32, &str),
+) -> Option<usize> {
+    let id = id?;
+    name.and_then(|name| rows.iter().position(|row| key(row) == (id, name)))
+        .or_else(|| rows.iter().position(|row| key(row).0 == id))
+}
+
+/// Most entries an add/remove membership dialog offers.
+pub const MAX_MEMBERSHIP_CANDIDATES: usize = 1024;
+
+/// The entries a membership dialog lists after its filter, capped at
+/// [`MAX_MEMBERSHIP_CANDIDATES`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CandidateList {
+    /// Listed names, in display order.
+    pub names: Vec<String>,
+    /// How many candidates matched the filter before the cap.
+    pub total: usize,
+    /// Per listed name, why the policy refuses the membership change, or
+    /// `None` when it is allowed. Empty when nothing was checked.
+    pub blocked: Vec<Option<&'static str>>,
+}
+
+impl CandidateList {
+    /// Keep the names in `pool` that contain `filter` (ignoring case), up to
+    /// the cap, and count every match.
+    fn from_pool<'a>(pool: impl IntoIterator<Item = &'a str>, filter: &str) -> Self {
+        let filter = filter.to_lowercase();
+        let mut list = Self::default();
+        for name in pool {
+            if !filter.is_empty() && !name.to_lowercase().contains(&filter) {
+                continue;
+            }
+            list.total += 1;
+            if list.names.len() < MAX_MEMBERSHIP_CANDIDATES {
+                list.names.push(name.to_owned());
+            }
+        }
+        list
+    }
+
+    /// Every name in `pool`, uncapped, for single-select pickers such as the
+    /// primary group, where a missing entry could not be chosen at all.
+    fn every<'a>(pool: impl IntoIterator<Item = &'a str>) -> Self {
+        let names: Vec<String> = pool.into_iter().map(str::to_owned).collect();
+        Self {
+            total: names.len(),
+            names,
+            blocked: Vec::new(),
+        }
+    }
+
+    /// True when matches were left out because of the cap.
+    pub fn is_capped(&self) -> bool {
+        self.total > self.names.len()
+    }
+
+    /// Record, for every listed name, why `reason` refuses it.
+    fn with_blocks(mut self, reason: impl Fn(&str) -> Option<&'static str>) -> Self {
+        self.blocked = self.names.iter().map(|name| reason(name)).collect();
+        self
+    }
+
+    /// Why the entry at `index` cannot be ticked, if it cannot.
+    pub fn blocked_reason(&self, index: usize) -> Option<&'static str> {
+        self.blocked.get(index).copied().flatten()
+    }
+}
+
+/// `ticked` names that are in `pool`, in tick order.
+fn offered(pool: &[&str], ticked: &[String]) -> Vec<String> {
+    ticked
+        .iter()
+        .filter(|name| pool.contains(&name.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// In-memory application state.  It intentionally stores no sudo credential.
@@ -726,35 +1710,88 @@ pub struct AppState {
     pub selected_group_member_index: usize,
     /// Stable selection source of truth for every pane. Indices are only
     /// normalized render coordinates and never define an action target.
+    /// Users and groups are identified by id and name together, because
+    /// account files may give several entries the same UID or GID.
     pub selected_user_uid: Option<u32>,
+    pub selected_user_name: Option<String>,
     pub selected_group_gid: Option<u32>,
+    pub selected_group_name: Option<String>,
     pub selected_user_group_gid: Option<u32>,
+    pub selected_user_group_name: Option<String>,
     pub selected_group_member_name: Option<String>,
+    /// Users marked for bulk actions, by (UID, name) like the selection, so
+    /// marks survive searching, filtering, and sorting. Marks of users that
+    /// are gone after a refresh are dropped.
+    pub marked_users: BTreeSet<(u32, String)>,
     /// Bounded, precomputed primary and supplementary memberships by user.
     /// Renderers consume this cache instead of scanning every group's members.
     pub user_group_gids: HashMap<String, HashSet<u32>>,
-    pub rows_per_page: usize,
+    /// Bounds applied while building `user_group_gids`.
+    pub membership_cache_bounds: MembershipCacheBounds,
+    /// Last known terminal size (columns, rows). Page keys derive the page
+    /// size from the layout at this size.
+    pub terminal_size: (u16, u16),
     pub _table_state: TableState,
     pub input_mode: InputMode,
-    pub search_query: String,
+    /// Search text for the Users table. It stays applied in every input
+    /// mode until the user clears it.
+    pub users_query: String,
+    /// Search text for the Groups table, independent of `users_query`.
+    pub groups_query: String,
+    /// The query as it was when `/` started editing, restored by Esc.
+    search_before_edit: String,
     pub theme: Theme,
     pub keymap: keymap::Keymap,
-    pub modal: Option<ModalState>,
+    /// Open dialogs, innermost last. Only the top is rendered and receives keys.
+    modals: Vec<ModalState>,
+    /// Counts pops and clears so key handling can tell whether the handled
+    /// dialog was dismissed (see `detach_top_modal`).
+    modal_pops: u64,
     pub users_focus: UsersFocus,
     pub groups_focus: GroupsFocus,
     pub users_filter: Option<UsersFilter>,
     pub groups_filter: Option<GroupsFilter>,
     pub users_filter_chips: UsersFilterChips,
+    /// Row order of each table, applied by `sort_and_filter`.
+    pub users_sort: UsersSort,
+    pub groups_sort: GroupsSort,
+    /// Set by the last filter pass when shadow is known, a shadow chip is on,
+    /// and this many listed users had no shadow record, so the shadow chips
+    /// were not applied.
+    pub shadow_filter_skipped: Option<usize>,
+    /// Set by the last filter pass while shadow is known: how many users left
+    /// after the non-shadow filters have no shadow record. Counted whether or
+    /// not a shadow chip is on; 0 while shadow is unavailable.
+    pub shadow_records_missing: usize,
     pub actions_context: Option<ActionsContext>,
     pub show_keybinds: bool,
+    /// General settings from settings.conf.
+    pub settings: settings::Settings,
     /// Adapter-owned authority for refresh, preparation, elevation and execution.
     pub adapter: Arc<sys::SystemAdapter>,
     pub account_snapshot: Option<AccountSnapshot>,
     pub diagnostics: CachedDiagnostics,
+    /// Time of the last successful account refresh as `HH:MM:SS UTC`, empty
+    /// until one succeeds. A failed refresh keeps the previous value, so the
+    /// status bar can say since when the shown data is stale.
+    pub last_refresh_label: String,
     clock: Arc<dyn Clock>,
     diagnostic_provider: Arc<dyn DiagnosticProvider>,
     config_root_provider: Arc<dyn ConfigRootProvider>,
+    /// Receives the OSC 52 sequence of the copy key.
+    clipboard: Arc<dyn ClipboardSink>,
+    /// One-shot status bar message (`copied "alice"`), shown as the first
+    /// segment and cleared by the next key press.
+    pub notice: Option<String>,
+    /// Where theme.conf, keybinds.conf, filter.conf and settings.conf were
+    /// loaded from and where they save, as resolved by the last
+    /// `load_configuration`. Empty until then. The help dialog shows these, so rendering never resolves
+    /// config roots.
+    pub config_paths: Vec<ConfigFilePaths>,
     pub current_username: String,
+    /// Group the create-user form offers to add the new account to. Set
+    /// from `UGM_SUDO_GROUP` by `load_system_with`; `wheel` otherwise.
+    pub sudo_group: String,
     pub last_preview: Vec<String>,
     pub last_report: Option<OperationReport>,
     /// The only application-held operation capability. It contains the exact
@@ -764,6 +1801,13 @@ pub struct AppState {
     /// non-cloneable capability exists only while converting a password modal
     /// into its one exact trusted operation.
     pending_password: Option<OneShotPassword>,
+    /// `--dry-run`: confirmed plans are reported but never handed to the adapter.
+    pub dry_run: bool,
+    /// Set by a dialog key handler that ends the program, such as Yes in
+    /// the quit question; the event loop exits after that key.
+    pub quit_requested: bool,
+    /// `--log-file`: redacted operation and error log. Dropped after a write failure.
+    logger: Option<Logger>,
 }
 
 impl AppState {
@@ -808,35 +1852,56 @@ impl AppState {
             selected_user_group_index: 0,
             selected_group_member_index: 0,
             selected_user_uid: None,
+            selected_user_name: None,
             selected_group_gid: None,
+            selected_group_name: None,
             selected_user_group_gid: None,
+            selected_user_group_name: None,
             selected_group_member_name: None,
+            marked_users: BTreeSet::new(),
             user_group_gids: HashMap::new(),
-            rows_per_page: 10,
+            membership_cache_bounds: MembershipCacheBounds::default(),
+            terminal_size: (80, 24),
             _table_state: TableState::default(),
             input_mode: InputMode::Normal,
-            search_query: String::new(),
+            users_query: String::new(),
+            groups_query: String::new(),
+            search_before_edit: String::new(),
             theme: Theme::mocha(),
             keymap: keymap::Keymap::default(),
-            modal: None,
+            modals: Vec::new(),
+            modal_pops: 0,
             users_focus: UsersFocus::UsersList,
             groups_focus: GroupsFocus::GroupsList,
             users_filter: None,
             groups_filter: None,
             users_filter_chips: UsersFilterChips::default(),
+            users_sort: UsersSort::default(),
+            groups_sort: GroupsSort::default(),
+            shadow_filter_skipped: None,
+            shadow_records_missing: 0,
             actions_context: None,
             show_keybinds: true,
+            settings: settings::Settings::default(),
             adapter,
             account_snapshot: Some(snapshot),
             diagnostics: CachedDiagnostics::default(),
+            last_refresh_label: String::new(),
             clock,
             diagnostic_provider,
             config_root_provider,
+            clipboard: Arc::new(StdoutClipboard),
+            notice: None,
+            config_paths: Vec::new(),
             current_username: "unknown".to_owned(),
+            sudo_group: "wheel".to_owned(),
             last_preview: Vec::new(),
             last_report: None,
             pending_operation: None,
             pending_password: None,
+            dry_run: false,
+            quit_requested: false,
+            logger: None,
         };
         app.sort_and_filter();
         app
@@ -844,9 +1909,26 @@ impl AppState {
 
     /// Production construction with explicit account/config effects.
     pub fn load_system() -> Self {
-        let mut app = Self::new();
+        Self::load_system_with(RunOptions::default())
+    }
+
+    /// Production construction honoring command-line options.
+    pub fn load_system_with(options: RunOptions) -> Self {
+        let mut app = match options.config_dir {
+            Some(dir) => Self::with_dependencies(
+                Arc::new(sys::SystemAdapter::new()),
+                AccountSnapshot::empty(),
+                Arc::new(SystemClock),
+                Arc::new(SystemDiagnosticProvider),
+                Arc::new(FixedConfigRootProvider(dir)),
+            ),
+            None => Self::new(),
+        };
+        app.dry_run = options.dry_run;
+        app.logger = options.logger;
         app.refresh_accounts();
         app.current_username = sys::current_username().unwrap_or_else(|| "unknown".to_owned());
+        app.sudo_group = sudo_group_name();
         app.load_configuration();
         app
     }
@@ -858,6 +1940,7 @@ impl AppState {
                 self.refresh_diagnostics(&snapshot);
                 self.apply_snapshot(snapshot);
                 self.diagnostics.stale_reason = None;
+                self.last_refresh_label = utc_time_label(self.clock.now());
             }
             sys::SnapshotState::Stale { prior, error } => {
                 self.refresh_diagnostics(&prior);
@@ -880,43 +1963,64 @@ impl AppState {
         self.users_all = snapshot.users.iter().cloned().map(Into::into).collect();
         self.groups_all = snapshot.groups.iter().cloned().map(Into::into).collect();
         self.account_snapshot = Some(snapshot);
+        self.prune_marks();
         self.sort_and_filter();
     }
 
     /// Load durable settings, retaining defaults and surfacing any error in UI state.
     pub fn load_configuration(&mut self) {
-        let theme_path = self
-            .config_file_read_path("theme.conf")
-            .unwrap_or_else(|| self.configuration_write_path("theme.conf"));
-        match Theme::load_or_init(&theme_path) {
-            Ok(theme) => self.theme = theme,
+        let (theme, result) = ConfigFilePaths::load(self, "theme.conf", Theme::load_or_init);
+        match result {
+            Ok(loaded) => self.theme = loaded,
             Err(error) => self.record_config_message("theme", &error),
         }
-        let keymap_path = self
-            .config_file_read_path("keybinds.conf")
-            .unwrap_or_else(|| self.configuration_write_path("keybinds.conf"));
-        match keymap::Keymap::load_or_init(&keymap_path) {
+        let (keys, result) =
+            ConfigFilePaths::load(self, "keybinds.conf", keymap::Keymap::load_or_init);
+        match result {
             Ok(keymap) => self.keymap = keymap,
             Err(error) => self.record_config_message("keymap", &error),
         }
-        let filters_path = self
-            .config_file_read_path("filter.conf")
-            .unwrap_or_else(|| self.configuration_write_path("filter.conf"));
-        match filterconf::FiltersConfig::load_or_init(&filters_path) {
-            Ok(filters) => filters.apply_to(self),
+        let (filters, result) =
+            ConfigFilePaths::load(self, "filter.conf", filterconf::FiltersConfig::load_or_init);
+        match result {
+            Ok(loaded) => loaded.apply_to(self),
             Err(error) => self.record_config_message("filter", &error),
         }
+        let (general, result) =
+            ConfigFilePaths::load(self, "settings.conf", settings::Settings::load_or_init);
+        match result {
+            Ok(loaded) => self.settings = loaded,
+            Err(error) => self.record_config_message("settings", &error),
+        }
+        self.config_paths = vec![theme, keys, filters, general];
         self.sort_and_filter();
+    }
+
+    /// Open a dialog listing the recorded configuration problems, if any.
+    /// Called once after startup so the user learns why defaults are in use.
+    pub fn show_config_problems(&mut self) {
+        if self.diagnostics.config_messages.is_empty() {
+            return;
+        }
+        let mut message = self.diagnostics.config_messages.join("\n");
+        message.push_str("\n\nDefaults are in use for the affected file.");
+        self.push_modal(ModalState::Info {
+            title: Some(CONFIG_PROBLEMS_TITLE.to_owned()),
+            message,
+        });
     }
 
     /// Retain only a small amount of non-secret configuration diagnostics.
     pub fn record_config_message(&mut self, source: &str, error: &std::io::Error) {
+        self.record_diagnostic_message(format!("{source} configuration: {error}"));
+    }
+
+    fn record_diagnostic_message(&mut self, mut message: String) {
         const MAX_CONFIG_MESSAGES: usize = 3;
         const MAX_CONFIG_MESSAGE_BYTES: usize = 256;
         if self.diagnostics.config_messages.len() >= MAX_CONFIG_MESSAGES {
             return;
         }
-        let mut message = format!("{source} configuration: {error}");
         if message.len() > MAX_CONFIG_MESSAGE_BYTES {
             let mut end = MAX_CONFIG_MESSAGE_BYTES;
             while !message.is_char_boundary(end) {
@@ -929,27 +2033,111 @@ impl AppState {
 
     pub fn sort_and_filter(&mut self) {
         self.capture_selection_identities();
-        self.users_all.sort_by_key(|user| user.uid);
-        self.groups_all.sort_by_key(|group| group.gid);
-        self.rebuild_user_group_cache();
+        // Build the membership cache from the canonical (UID, name) and
+        // (GID, name) order so its bounds depend neither on the display order
+        // nor on the order a previous sort left rows sharing an ID in.
+        self.users_all
+            .sort_by(|a, b| a.uid.cmp(&b.uid).then_with(|| a.name.cmp(&b.name)));
+        self.groups_all
+            .sort_by(|a, b| a.gid.cmp(&b.gid).then_with(|| a.name.cmp(&b.name)));
+        self.rebuild_user_group_cache(self.membership_cache_bounds);
+        // Stable sorts by the chosen key, so rows with equal keys stay in
+        // canonical order.
+        match self.users_sort {
+            UsersSort::Uid => {}
+            UsersSort::Name => self
+                .users_all
+                .sort_by_cached_key(|user| user.name.to_lowercase()),
+            UsersSort::Shell => self.users_all.sort_by(|a, b| a.shell.cmp(&b.shell)),
+            UsersSort::Home => self.users_all.sort_by(|a, b| a.home_dir.cmp(&b.home_dir)),
+        }
+        match self.groups_sort {
+            GroupsSort::Gid => {}
+            GroupsSort::Name => self
+                .groups_all
+                .sort_by_cached_key(|group| group.name.to_lowercase()),
+            GroupsSort::Members => self
+                .groups_all
+                .sort_by_key(|group| std::cmp::Reverse(group.members.len())),
+        }
         crate::search::apply_filters_and_search(self);
         self.normalize_selections();
     }
 
-    fn rebuild_user_group_cache(&mut self) {
-        const MAX_USERS: usize = 10_000;
-        const MAX_GROUPS: usize = 10_000;
-        const MAX_MEMBERSHIP_EDGES: usize = 100_000;
+    /// "Human users" is on through its chip or a hand-edited
+    /// `users_filter = OnlyUserIds` in filter.conf.
+    pub fn human_filter_on(&self) -> bool {
+        self.users_filter_chips.human_only || self.users_filter == Some(UsersFilter::OnlyUserIds)
+    }
 
+    /// "System users" is on through its chip or a hand-edited
+    /// `users_filter = OnlySystemIds` in filter.conf.
+    pub fn system_filter_on(&self) -> bool {
+        self.users_filter_chips.system_only || self.users_filter == Some(UsersFilter::OnlySystemIds)
+    }
+
+    /// Set the human/system filters. The chips carry the state from here on,
+    /// so a hand-edited `users_filter` is folded into them and cleared.
+    pub fn set_uid_range_filters(&mut self, human: bool, system: bool) {
+        self.users_filter_chips.human_only = human;
+        self.users_filter_chips.system_only = system;
+        self.users_filter = None;
+    }
+
+    /// Why the shadow chips (locked, no password, expired) cannot be used,
+    /// or `None` when they can: `shadow unavailable: <reason>` without
+    /// shadow data, `N users without shadow record` when the last filter
+    /// pass found listed users with no record. The filter menu renders and
+    /// toggles the chips by this one rule.
+    pub fn shadow_chips_blocked(&self) -> Option<String> {
+        match &self.diagnostics.shadow {
+            crate::search::ShadowState::Unavailable { reason } => {
+                Some(format!("shadow unavailable: {reason}"))
+            }
+            crate::search::ShadowState::Known(_) if self.shadow_records_missing > 0 => {
+                let count = self.shadow_records_missing;
+                let users = if count == 1 { "user" } else { "users" };
+                Some(format!("{count} {users} without shadow record"))
+            }
+            crate::search::ShadowState::Known(_) => None,
+        }
+    }
+
+    /// Short names of the user filters that narrow the list, in menu order.
+    /// Shadow chips are left out while shadow data is unavailable, because
+    /// they are disabled and not applied.
+    pub fn active_user_filter_labels(&self) -> Vec<&'static str> {
+        let chips = &self.users_filter_chips;
+        let shadow = matches!(
+            self.diagnostics.shadow,
+            crate::search::ShadowState::Known(_)
+        );
+        [
+            (self.human_filter_on(), "human"),
+            (self.system_filter_on(), "system"),
+            (chips.inactive, "inactive"),
+            (chips.no_home, "no home"),
+            (shadow && chips.locked, "locked"),
+            (shadow && chips.no_password, "no password"),
+            (shadow && chips.expired, "expired"),
+        ]
+        .into_iter()
+        .filter_map(|(on, label)| on.then_some(label))
+        .collect()
+    }
+
+    /// Rebuild `user_group_gids` from `users_all` and `groups_all` in their
+    /// current order; the bounds apply in that order.
+    fn rebuild_user_group_cache(&mut self, bounds: MembershipCacheBounds) {
         self.user_group_gids.clear();
-        for user in self.users_all.iter().take(MAX_USERS) {
+        for user in self.users_all.iter().take(bounds.max_users) {
             self.user_group_gids
                 .entry(user.name.clone())
                 .or_default()
                 .insert(user.primary_gid);
         }
-        let mut remaining_edges = MAX_MEMBERSHIP_EDGES;
-        for group in self.groups_all.iter().take(MAX_GROUPS) {
+        let mut remaining_edges = bounds.max_membership_edges;
+        for group in self.groups_all.iter().take(bounds.max_groups) {
             for member in group.members.iter().take(remaining_edges) {
                 self.user_group_gids
                     .entry(member.clone())
@@ -967,22 +2155,31 @@ impl AppState {
     /// refresh/filter/transition. When an identity disappears, use its
     /// bounded nearest visible index and capture that documented neighbor.
     pub fn normalize_selections(&mut self) {
-        self.selected_user_index = self
-            .selected_user_uid
-            .and_then(|uid| self.users.iter().position(|user| user.uid == uid))
-            .unwrap_or(self.selected_user_index)
-            .min(self.users.len().saturating_sub(1));
-        self.selected_group_index = self
-            .selected_group_gid
-            .and_then(|gid| self.groups.iter().position(|group| group.gid == gid))
-            .unwrap_or(self.selected_group_index)
-            .min(self.groups.len().saturating_sub(1));
+        self.selected_user_index = identity_position(
+            &self.users,
+            self.selected_user_uid,
+            self.selected_user_name.as_deref(),
+            |user| (user.uid, user.name.as_str()),
+        )
+        .unwrap_or(self.selected_user_index)
+        .min(self.users.len().saturating_sub(1));
+        self.selected_group_index = identity_position(
+            &self.groups,
+            self.selected_group_gid,
+            self.selected_group_name.as_deref(),
+            |group| (group.gid, group.name.as_str()),
+        )
+        .unwrap_or(self.selected_group_index)
+        .min(self.groups.len().saturating_sub(1));
         let user_groups = self.selected_user_groups();
-        self.selected_user_group_index = self
-            .selected_user_group_gid
-            .and_then(|gid| user_groups.iter().position(|group| group.gid == gid))
-            .unwrap_or(self.selected_user_group_index)
-            .min(user_groups.len().saturating_sub(1));
+        self.selected_user_group_index = identity_position(
+            &user_groups,
+            self.selected_user_group_gid,
+            self.selected_user_group_name.as_deref(),
+            |group| (group.gid, group.name.as_str()),
+        )
+        .unwrap_or(self.selected_user_group_index)
+        .min(user_groups.len().saturating_sub(1));
         let members = self
             .groups
             .get(self.selected_group_index)
@@ -998,18 +2195,18 @@ impl AppState {
 
     /// Persist stable identities after a user-driven index movement.
     pub fn capture_selection_identities(&mut self) {
-        self.selected_user_uid = self
-            .users
-            .get(self.selected_user_index)
-            .map(|user| user.uid);
-        self.selected_group_gid = self
-            .groups
-            .get(self.selected_group_index)
-            .map(|group| group.gid);
-        self.selected_user_group_gid = self
+        let user = self.users.get(self.selected_user_index);
+        self.selected_user_uid = user.map(|user| user.uid);
+        self.selected_user_name = user.map(|user| user.name.clone());
+        let group = self.groups.get(self.selected_group_index);
+        self.selected_group_gid = group.map(|group| group.gid);
+        self.selected_group_name = group.map(|group| group.name.clone());
+        let user_group = self
             .selected_user_groups()
             .get(self.selected_user_group_index)
-            .map(|group| group.gid);
+            .map(|group| (group.gid, group.name.clone()));
+        self.selected_user_group_gid = user_group.as_ref().map(|(gid, _)| *gid);
+        self.selected_user_group_name = user_group.map(|(_, name)| name);
         self.selected_group_member_name = self
             .groups
             .get(self.selected_group_index)
@@ -1017,16 +2214,177 @@ impl AppState {
             .cloned();
     }
 
+    /// Groups the selected user belongs to (primary group and supplementary
+    /// memberships). Resolved against `groups_all` so the Groups-tab filter
+    /// and search never hide memberships in the Users tab.
     pub fn selected_user_groups(&self) -> Vec<&sys::SystemGroup> {
         self.users
             .get(self.selected_user_index)
             .and_then(|user| self.user_group_gids.get(&user.name))
             .map_or_else(Vec::new, |group_gids| {
-                self.groups
+                self.groups_all
                     .iter()
                     .filter(|group| group_gids.contains(&group.gid))
                     .collect()
             })
+    }
+
+    /// Entries of the "Modify user" menu for the selected user. The lock entry
+    /// follows the cached shadow status: `Unlock account` for a locked
+    /// account, `Lock account` otherwise. When the status is unknown (shadow
+    /// unreadable or no record for the user) both are offered.
+    pub fn modify_menu_items(&self) -> Vec<ModifyMenuItem> {
+        let mut items = vec![
+            ModifyMenuItem::AddGroup,
+            ModifyMenuItem::RemoveGroup,
+            ModifyMenuItem::Details,
+            ModifyMenuItem::Password,
+        ];
+        let locked = self
+            .users
+            .get(self.selected_user_index)
+            .and_then(|user| self.diagnostics.shadow.status(&user.name))
+            .map(|status| status.locked);
+        match locked {
+            Some(true) => items.push(ModifyMenuItem::Unlock),
+            Some(false) => items.push(ModifyMenuItem::Lock),
+            None => items.extend([ModifyMenuItem::Lock, ModifyMenuItem::Unlock]),
+        }
+        items
+    }
+
+    /// Users the Groups-tab "Add members" (`adding`) or "Remove members"
+    /// dialog offers for group `gid`, in display order, without a filter.
+    pub fn group_member_candidates(&self, gid: u32, adding: bool) -> Vec<String> {
+        self.group_member_candidate_list(gid, adding, "").names
+    }
+
+    /// The members dialog list for group `gid` narrowed by `filter`. The
+    /// renderer and the key handler both index this list, so a highlighted
+    /// row is always the name that gets submitted. Adding offers users who
+    /// are not members yet; removing offers the current members.
+    pub fn group_member_candidate_list(
+        &self,
+        gid: u32,
+        adding: bool,
+        filter: &str,
+    ) -> CandidateList {
+        let list = CandidateList::from_pool(self.group_member_pool(gid, adding), filter);
+        if !adding {
+            return list;
+        }
+        // Every user is refused for the same reason when the group is.
+        let reason = self
+            .groups_all
+            .iter()
+            .find(|group| group.gid == gid)
+            .and_then(|group| self.adapter.membership_allowed(&group.name, gid).err());
+        list.with_blocks(|_| reason)
+    }
+
+    /// Ticked names the members dialog for group `gid` still offers, in
+    /// tick order. Ticks beyond the cap or hidden by the filter count.
+    pub fn offered_group_members(&self, gid: u32, adding: bool, ticked: &[String]) -> Vec<String> {
+        offered(&self.group_member_pool(gid, adding), ticked)
+    }
+
+    /// Every candidate of the members dialog for group `gid`, uncapped.
+    fn group_member_pool(&self, gid: u32, adding: bool) -> Vec<&str> {
+        let Some(group) = self
+            .groups
+            .iter()
+            .chain(&self.groups_all)
+            .find(|group| group.gid == gid)
+        else {
+            return Vec::new();
+        };
+        if adding {
+            self.users_all
+                .iter()
+                .filter(|user| !group.members.contains(&user.name))
+                .map(|user| user.name.as_str())
+                .collect()
+        } else {
+            group.members.iter().map(String::as_str).collect()
+        }
+    }
+
+    /// Groups the Users-tab "Add groups" (`adding`) or "Remove groups" dialog
+    /// offers for user `uid`, in display order, without a filter.
+    pub fn user_group_candidates(&self, uid: u32, adding: bool) -> Vec<String> {
+        self.user_group_candidate_list(uid, adding, "").names
+    }
+
+    /// The groups dialog list for user `uid` narrowed by `filter`. Adding
+    /// offers groups the user is not in; removing offers supplementary
+    /// memberships. The primary group is never offered. Shared by renderer
+    /// and key handler.
+    pub fn user_group_candidate_list(&self, uid: u32, adding: bool, filter: &str) -> CandidateList {
+        let list = CandidateList::from_pool(self.user_group_pool(uid, adding), filter);
+        if !adding {
+            return list;
+        }
+        // One lookup table instead of a scan of every group per entry. The
+        // first group of a name wins, as in `membership_block`.
+        let mut gids = HashMap::new();
+        for group in &self.groups_all {
+            gids.entry(group.name.as_str()).or_insert(group.gid);
+        }
+        list.with_blocks(|name| {
+            gids.get(name)
+                .and_then(|gid| self.adapter.membership_allowed(name, *gid).err())
+        })
+    }
+
+    /// Every group for the primary-group picker, in `groups_all` order and
+    /// without the membership-dialog cap, each with the reason the membership
+    /// policy refuses it, if it does. Reads no host state.
+    pub fn primary_group_candidate_list(&self) -> CandidateList {
+        CandidateList::every(self.groups_all.iter().map(|group| group.name.as_str()))
+            .with_blocks(|name| self.membership_block(name))
+    }
+
+    /// Why the policy refuses adding a user to group `name`, if it does.
+    /// The GID comes from the cached group list; a group that is not in it
+    /// is refused as missing. Reads no host state.
+    pub fn membership_block(&self, name: &str) -> Option<&'static str> {
+        match self.groups_all.iter().find(|group| group.name == name) {
+            Some(group) => self.adapter.membership_allowed(name, group.gid).err(),
+            None => Some("group does not exist"),
+        }
+    }
+
+    /// Ticked names the groups dialog for user `uid` still offers, in tick
+    /// order. Ticks beyond the cap or hidden by the filter count.
+    pub fn offered_user_groups(&self, uid: u32, adding: bool, ticked: &[String]) -> Vec<String> {
+        offered(&self.user_group_pool(uid, adding), ticked)
+    }
+
+    /// Every candidate of the groups dialog for user `uid`, uncapped.
+    fn user_group_pool(&self, uid: u32, adding: bool) -> Vec<&str> {
+        // Prefer the selected row so accounts sharing a UID resolve to the
+        // name the user is looking at.
+        let Some(user) = self
+            .users
+            .get(self.selected_user_index)
+            .filter(|user| user.uid == uid)
+            .or_else(|| {
+                self.users
+                    .iter()
+                    .chain(&self.users_all)
+                    .find(|user| user.uid == uid)
+            })
+        else {
+            return Vec::new();
+        };
+        self.groups_all
+            .iter()
+            .filter(|group| {
+                let member = group.members.iter().any(|name| name == &user.name);
+                group.gid != user.primary_gid && if adding { !member } else { member }
+            })
+            .map(|group| group.name.as_str())
+            .collect()
     }
 
     fn config_file_read_path(&self, name: &str) -> Option<String> {
@@ -1057,11 +2415,332 @@ impl AppState {
         self.pending_password.take().map(OneShotPassword::take)
     }
 
+    /// Attach an operation log (`--log-file`).
+    pub fn set_logger(&mut self, logger: Logger) {
+        self.logger = Some(logger);
+    }
+
+    /// Replace where the copy key writes (tests inject a recording fake).
+    pub fn set_clipboard_sink(&mut self, sink: Arc<dyn ClipboardSink>) {
+        self.clipboard = sink;
+    }
+
+    /// Name on the highlighted row of the focused pane: the user or group,
+    /// or the group or member in the child pane. `None` when that pane is
+    /// empty.
+    pub fn selected_name(&self) -> Option<&str> {
+        match (self.active_tab, self.users_focus, self.groups_focus) {
+            (ActiveTab::Users, UsersFocus::UsersList, _) => self
+                .users
+                .get(self.selected_user_index)
+                .map(|user| user.name.as_str()),
+            (ActiveTab::Users, UsersFocus::MemberOf, _) => self
+                .selected_user_groups()
+                .get(self.selected_user_group_index)
+                .map(|group| group.name.as_str()),
+            (ActiveTab::Groups, _, GroupsFocus::GroupsList) => self
+                .groups
+                .get(self.selected_group_index)
+                .map(|group| group.name.as_str()),
+            (ActiveTab::Groups, _, GroupsFocus::Members) => self
+                .groups
+                .get(self.selected_group_index)
+                .and_then(|group| group.members.get(self.selected_group_member_index))
+                .map(String::as_str),
+        }
+    }
+
+    /// Copy key: send the highlighted name (at most `MAX_COPY_BYTES`) to the
+    /// clipboard sink as an OSC 52 sequence and say so in the status bar.
+    /// Does nothing when the focused pane is empty.
+    pub fn copy_selection(&mut self) {
+        let Some(text) = self
+            .selected_name()
+            .map(|name| cap_copy_text(name).to_owned())
+        else {
+            return;
+        };
+        self.notice = Some(
+            match self.clipboard.copy(osc52_sequence(&text).as_bytes()) {
+                Ok(()) => format!("copied \"{text}\""),
+                Err(error) => format!("copy failed: {}", error.kind()),
+            },
+        );
+    }
+
+    /// Append one redacted event to the operation log, if one is open. A
+    /// failed write closes the log and records why, so later events are not
+    /// silently lost without notice.
+    pub fn log_event(&mut self, kind: &str, message: &str) {
+        let Some(logger) = self.logger.as_mut() else {
+            return;
+        };
+        let seconds = self
+            .clock
+            .now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        if let Err(error) = logger.write_event(seconds, kind, message) {
+            self.logger = None;
+            self.record_diagnostic_message(format!("log file disabled: {error}"));
+        }
+    }
+
+    /// The tab whose query is being edited, or the active tab outside search.
+    pub fn search_tab(&self) -> ActiveTab {
+        match self.input_mode {
+            InputMode::SearchUsers => ActiveTab::Users,
+            InputMode::SearchGroups => ActiveTab::Groups,
+            InputMode::Normal | InputMode::Modal => self.active_tab,
+        }
+    }
+
+    /// The search query that applies to `tab`.
+    pub fn query(&self, tab: ActiveTab) -> &str {
+        match tab {
+            ActiveTab::Users => &self.users_query,
+            ActiveTab::Groups => &self.groups_query,
+        }
+    }
+
+    fn query_mut(&mut self, tab: ActiveTab) -> &mut String {
+        match tab {
+            ActiveTab::Users => &mut self.users_query,
+            ActiveTab::Groups => &mut self.groups_query,
+        }
+    }
+
+    /// `/`: edit the active tab's query in place, remembering it for Esc.
+    pub fn start_search(&mut self) {
+        let tab = self.active_tab;
+        self.search_before_edit = self.query(tab).to_owned();
+        self.input_mode = match tab {
+            ActiveTab::Users => InputMode::SearchUsers,
+            ActiveTab::Groups => InputMode::SearchGroups,
+        };
+    }
+
+    /// Enter while searching: keep the query and return to the table.
+    pub fn finish_search(&mut self) {
+        self.search_before_edit.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Esc while searching: put back the query from before `/` was pressed.
+    pub fn cancel_search(&mut self) {
+        let tab = self.search_tab();
+        let previous = std::mem::take(&mut self.search_before_edit);
+        *self.query_mut(tab) = previous;
+        self.input_mode = InputMode::Normal;
+        self.sort_and_filter();
+    }
+
+    /// Edit the query being searched and re-run the filters.
+    pub fn edit_search(&mut self, edit: impl FnOnce(&mut String)) {
+        let tab = self.search_tab();
+        edit(self.query_mut(tab));
+        self.sort_and_filter();
+    }
+
+    /// `s`: switch the active tab to its next row order. The selected row
+    /// stays selected by its UID or GID.
+    pub fn cycle_sort(&mut self) {
+        match self.active_tab {
+            ActiveTab::Users => self.users_sort = self.users_sort.next(),
+            ActiveTab::Groups => self.groups_sort = self.groups_sort.next(),
+        }
+        self.sort_and_filter();
+    }
+
+    /// Whether `user` is marked for bulk actions.
+    pub fn is_marked(&self, user: &sys::SystemUser) -> bool {
+        // Range over the UID instead of building a key, so rendering a row
+        // allocates nothing.
+        self.marked_users
+            .range((user.uid, String::new())..)
+            .take_while(|(uid, _)| *uid == user.uid)
+            .any(|(_, name)| *name == user.name)
+    }
+
+    /// Space on the users list: mark the highlighted user, or unmark it.
+    pub fn toggle_mark(&mut self) {
+        if self.active_tab != ActiveTab::Users || self.users_focus != UsersFocus::UsersList {
+            return;
+        }
+        if let Some(user) = self.users.get(self.selected_user_index) {
+            let key = (user.uid, user.name.clone());
+            if !self.marked_users.remove(&key) {
+                self.marked_users.insert(key);
+            }
+        }
+    }
+
+    /// Unmark every user.
+    pub fn clear_marks(&mut self) {
+        self.marked_users.clear();
+    }
+
+    /// Drop marks whose user is no longer loaded.
+    fn prune_marks(&mut self) {
+        let loaded: HashSet<(u32, &str)> = self
+            .users_all
+            .iter()
+            .map(|user| (user.uid, user.name.as_str()))
+            .collect();
+        self.marked_users
+            .retain(|(uid, name)| loaded.contains(&(*uid, name.as_str())));
+    }
+
+    /// Marked users, including ones the search or filters hide, in table
+    /// order.
+    pub fn marked_user_list(&self) -> Vec<&sys::SystemUser> {
+        if self.marked_users.is_empty() {
+            return Vec::new();
+        }
+        let mut seen = HashSet::new();
+        self.users_all
+            .iter()
+            .filter(|user| self.is_marked(user) && seen.insert((user.uid, user.name.as_str())))
+            .collect()
+    }
+
+    /// Names of the marked users, in table order.
+    pub fn marked_usernames(&self) -> Vec<String> {
+        self.marked_user_list()
+            .into_iter()
+            .map(|user| user.name.clone())
+            .collect()
+    }
+
+    /// Groups for the bulk group picker, in `groups_all` order and uncapped,
+    /// each with the reason the membership policy refuses it, if it does.
+    /// Adding lists every group; removing lists the groups that have at least
+    /// one marked user as a member. Reads no host state.
+    pub fn bulk_group_candidate_list(&self, adding: bool) -> CandidateList {
+        let marked: HashSet<&str> = self
+            .marked_user_list()
+            .into_iter()
+            .map(|user| user.name.as_str())
+            .collect();
+        CandidateList::every(
+            self.groups_all
+                .iter()
+                .filter(|group| {
+                    adding
+                        || group
+                            .members
+                            .iter()
+                            .any(|name| marked.contains(name.as_str()))
+                })
+                .map(|group| group.name.as_str()),
+        )
+        .with_blocks(|name| self.membership_block(name))
+    }
+
+    /// The marked users a bulk change of group `groupname` applies to:
+    /// adding skips users already in it (as a member or by primary group),
+    /// removing skips users who are not members. In table order.
+    pub fn bulk_group_targets(&self, groupname: &str, adding: bool) -> Vec<String> {
+        let Some(group) = self.groups_all.iter().find(|group| group.name == groupname) else {
+            return Vec::new();
+        };
+        self.marked_user_list()
+            .into_iter()
+            .filter(|user| {
+                let member = group.members.contains(&user.name);
+                if adding {
+                    !member && user.primary_gid != group.gid
+                } else {
+                    member
+                }
+            })
+            .map(|user| user.name.clone())
+            .collect()
+    }
+
+    /// Clear the active tab's query (Esc in the main view).
+    pub fn clear_search(&mut self) {
+        let tab = self.active_tab;
+        if !self.query(tab).is_empty() {
+            self.query_mut(tab).clear();
+            self.sort_and_filter();
+        }
+    }
+
+    /// The dialog on top of the stack, the one shown and receiving keys.
+    pub fn modal(&self) -> Option<&ModalState> {
+        self.modals.last()
+    }
+
+    pub fn modal_mut(&mut self) -> Option<&mut ModalState> {
+        self.modals.last_mut()
+    }
+
+    /// Number of open dialogs.
+    pub fn modal_depth(&self) -> usize {
+        self.modals.len()
+    }
+
+    /// Open a dialog on top of the current one.
+    pub fn push_modal(&mut self, modal: ModalState) {
+        self.modals.push(modal);
+        self.input_mode = InputMode::Modal;
+    }
+
+    /// Close the top dialog, returning to the one below it, or to the main
+    /// view when it was the last.
+    pub fn pop_modal(&mut self) -> Option<ModalState> {
+        self.modal_pops = self.modal_pops.wrapping_add(1);
+        let modal = self.modals.pop();
+        if self.modals.is_empty() {
+            self.input_mode = InputMode::Normal;
+        }
+        modal
+    }
+
+    /// Close every dialog and return to the main view.
+    pub fn close_modals(&mut self) {
+        self.modal_pops = self.modal_pops.wrapping_add(1);
+        self.modals.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Take the top dialog out so a key handler can borrow it mutably while
+    /// also mutating the app. Its slot keeps a placeholder, so a dialog the
+    /// handler pushes lands above it and a pop or clear removes it.
+    pub(crate) fn detach_top_modal(&mut self) -> Option<(ModalState, DetachedModal)> {
+        let index = self.modals.len().checked_sub(1)?;
+        let placeholder = ModalState::Help { scroll: 0 };
+        let modal = std::mem::replace(&mut self.modals[index], placeholder);
+        Some((
+            modal,
+            DetachedModal {
+                index,
+                pops: self.modal_pops,
+            },
+        ))
+    }
+
+    /// Put a detached dialog back unless the handler popped or cleared it.
+    pub(crate) fn reattach_modal(&mut self, modal: ModalState, detached: DetachedModal) {
+        if self.modal_pops == detached.pops
+            && let Some(slot) = self.modals.get_mut(detached.index)
+        {
+            *slot = modal;
+        }
+    }
+
     pub fn clear_pending_operation(&mut self) {
         self.pending_operation = None;
         self.pending_password = None;
         self.last_preview.clear();
     }
+}
+
+/// Where a dialog was taken from by `AppState::detach_top_modal`.
+pub(crate) struct DetachedModal {
+    index: usize,
+    pops: u64,
 }
 
 impl Default for AppState {
@@ -1105,6 +2784,7 @@ pub fn config_file_write_path(name: &str) -> String {
 }
 
 pub use update::run_app as run;
+pub use update::run_app_with as run_with;
 
 /// Mirror the W3 default fail-closed policy in presentation only. Trusted
 /// preparation remains the enforcement point and supports explicit injected
@@ -1124,4 +2804,108 @@ pub fn is_default_elevation_group(name: &str) -> bool {
 
 pub fn sudo_group_name() -> String {
     std::env::var("UGM_SUDO_GROUP").unwrap_or_else(|_| "wheel".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{civil_date_label, read_process_counts, status_real_uid};
+
+    #[test]
+    fn form_limits_are_the_bridge_byte_limits() {
+        use crate::sys::{ACCOUNT_NAME_LIMIT, GECOS_LIMIT, PASSWORD_LIMIT, PATH_LIMIT};
+        assert_eq!((super::MAX_NAME_BYTES, ACCOUNT_NAME_LIMIT), (32, 32));
+        assert_eq!((super::MAX_GECOS_BYTES, GECOS_LIMIT), (256, 256));
+        assert_eq!((super::MAX_HOME_BYTES, PATH_LIMIT), (4096, 4096));
+        assert_eq!((super::MAX_PASSWORD_BYTES, PASSWORD_LIMIT), (1024, 1024));
+        assert_eq!(super::ModifyField::Username.max_bytes(), ACCOUNT_NAME_LIMIT);
+        assert_eq!(super::ModifyField::Fullname.max_bytes(), GECOS_LIMIT);
+    }
+
+    #[test]
+    fn civil_date_label_converts_days_since_the_epoch() {
+        assert_eq!(civil_date_label(0), "1970-01-01");
+        assert_eq!(civil_date_label(-1), "1969-12-31");
+        assert_eq!(civil_date_label(59), "1970-03-01");
+        // Leap day in a year divisible by 400, and the day after.
+        assert_eq!(civil_date_label(11_016), "2000-02-29");
+        assert_eq!(civil_date_label(11_017), "2000-03-01");
+        assert_eq!(civil_date_label(19_675), "2023-11-14");
+        assert_eq!(civil_date_label(20_516), "2026-03-04");
+        // 2100 is not a leap year.
+        assert_eq!(civil_date_label(47_540), "2100-02-28");
+        assert_eq!(civil_date_label(47_541), "2100-03-01");
+    }
+
+    fn write_status(root: &std::path::Path, pid: &str, status: &str) {
+        let dir = root.join(pid);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("status"), status).unwrap();
+    }
+
+    #[test]
+    fn status_real_uid_reads_the_first_uid_field() {
+        assert_eq!(
+            status_real_uid("Name:\tbash\nUid:\t1000\t0\t0\t0\nGid:\t1000\n"),
+            Some(1000)
+        );
+        assert_eq!(status_real_uid("Name:\tbash\n"), None);
+        assert_eq!(status_real_uid("Uid:\tnope\n"), None);
+    }
+
+    /// A fake /proc tree with two users' processes and non-process entries.
+    fn fake_proc() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        write_status(root.path(), "1", "Name:\tinit\nUid:\t0\t0\t0\t0\n");
+        write_status(
+            root.path(),
+            "20",
+            "Name:\tsh\nUid:\t1000\t1000\t1000\t1000\n",
+        );
+        write_status(root.path(), "21", "Name:\tvim\nUid:\t1000\t0\t0\t0\n");
+        // Not process directories.
+        write_status(root.path(), "self", "Name:\tx\n");
+        std::fs::write(root.path().join("uptime"), "1.0 1.0\n").unwrap();
+        root
+    }
+
+    /// The fake /proc lives in a temporary directory; the host /proc is never read.
+    #[test]
+    fn process_counts_group_pid_directories_by_real_uid() {
+        let root = fake_proc();
+        let counts = read_process_counts(root.path()).unwrap();
+        assert_eq!(counts.get(&1000), Some(&2));
+        assert_eq!(counts.get(&0), Some(&1));
+        assert_eq!(counts.len(), 2);
+
+        assert!(read_process_counts(&root.path().join("missing")).is_none());
+    }
+
+    #[test]
+    fn process_counts_skip_a_process_that_exited_mid_scan() {
+        let root = fake_proc();
+        // A PID directory whose status file is gone opens with NotFound.
+        std::fs::create_dir(root.path().join("30")).unwrap();
+        let counts = read_process_counts(root.path()).unwrap();
+        assert_eq!(counts.get(&1000), Some(&2));
+        assert_eq!(counts.get(&0), Some(&1));
+    }
+
+    #[test]
+    fn process_counts_fail_closed_on_a_status_read_error() {
+        let root = fake_proc();
+        // Opening a directory succeeds; reading it fails with a non-NotFound error.
+        std::fs::create_dir_all(root.path().join("40").join("status")).unwrap();
+        assert!(read_process_counts(root.path()).is_none());
+    }
+
+    #[test]
+    fn process_counts_fail_closed_on_a_status_without_uid() {
+        let root = fake_proc();
+        write_status(root.path(), "50", "Name:\todd\nGid:\t0\n");
+        assert!(read_process_counts(root.path()).is_none());
+
+        let root = fake_proc();
+        write_status(root.path(), "51", "Name:\todd\nUid:\tnope\t0\n");
+        assert!(read_process_counts(root.path()).is_none());
+    }
 }
