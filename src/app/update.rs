@@ -8920,25 +8920,24 @@ mod tests {
     /// Rejects the sudo password a set number of times, then accepts it.
     /// Commands then fail without spawning anything.
     struct DenyingRun {
-        denials_left: std::sync::atomic::AtomicU8,
+        denials_left: std::sync::Mutex<u8>,
     }
     impl DenyingRun {
         fn denying(times: u8) -> Self {
             Self {
-                denials_left: std::sync::atomic::AtomicU8::new(times),
+                denials_left: std::sync::Mutex::new(times),
             }
         }
     }
     impl CommandRunner for DenyingRun {
         fn authenticate(&self, _: SecretString) -> CoreResult<ElevationGrant> {
-            use std::sync::atomic::Ordering;
-            match self
-                .denials_left
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                    left.checked_sub(1)
-                }) {
-                Ok(_) => Err(CoreError::AuthenticationDenied),
-                Err(_) => Ok(ElevationGrant::SudoTimestamp),
+            let mut left = self.denials_left.lock().unwrap();
+            match left.checked_sub(1) {
+                Some(rest) => {
+                    *left = rest;
+                    Err(CoreError::AuthenticationDenied)
+                }
+                None => Ok(ElevationGrant::SudoTimestamp),
             }
         }
         fn run(&self, _: ElevationGrant, _: &crate::sys::CommandSpec) -> CoreResult<CommandResult> {
@@ -10086,10 +10085,11 @@ mod tests {
         app.close_modals();
         open_user_add(&mut app);
         press(&mut app, KeyCode::Down);
-        type_text(&mut app, "Tr0ub4dor&33");
+        let typed = "abcdefgh12!?";
+        type_text(&mut app, typed);
         ctrl(&mut app, 'r');
         let screen = rendered(&app);
-        assert!(screen.contains("Password: Tr0ub4dor&33▏"));
+        assert!(screen.contains(&format!("Password: {typed}▏")));
         assert!(screen.contains("Strength: strong"));
     }
 
